@@ -18,7 +18,7 @@ export default function CallAgent({ runId, agentId, apiKey, onCallEnded, onClose
   const [error, setError] = useState("");
   const [callId, setCallId] = useState<string | null>(null);
   const [duration, setDuration] = useState(0);
-  const timerRef = useRef<NodeJS.Timeout | null>(null);
+  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   useEffect(() => {
     return () => {

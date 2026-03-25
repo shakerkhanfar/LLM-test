@@ -53,7 +53,11 @@ externalPort = 3001
 localPort = 5000
 externalPort = 80
 
+[[ports]]
+localPort = 5001
+externalPort = 3000
+
 [deployment]
 deploymentTarget = "autoscale"
-run = ["bash", "-c", "node backend/dist/app.js & npx --prefix frontend vite preview --host 0.0.0.0 --port 5000"]
-build = ["bash", "-c", "npm --prefix backend install && npx --prefix backend prisma generate && npm --prefix backend run build && npm --prefix frontend install && npm --prefix frontend run build"]
+run = ["bash", "start.sh"]
+build = ["bash", "build.sh"]
