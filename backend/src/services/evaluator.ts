@@ -464,118 +464,138 @@ function evaluateLatency(criterion: Criterion, run: any) {
 }
 
 // ─── FLOW_PROGRESSION ──────────────────────────────────────────────
-// Evaluates how far the agent progressed through the expected flow.
-// Detects: stuck on single node, failed to extract variables, never
-// reached tool calls, low node coverage vs total flow nodes.
+// Sends structured call data + expected flow to GPT-4.1 for deep analysis.
+// The LLM evaluates whether the agent progressed correctly, got stuck,
+// failed to understand user intent, or missed transitions.
 
-function evaluateFlowProgression(criterion: Criterion, run: any) {
+async function evaluateFlowProgression(criterion: Criterion, run: any) {
   const callLog = run.callLog as any[];
   const transcript = run.transcript as any[];
-  const expected = criterion.expectedValue as any;
+  const agentStructure = run.project?.agentStructure;
 
   if (!callLog && !transcript) {
     return { passed: null, score: null, detail: "No data available" };
   }
 
-  // Get expected flow from agent structure or criterion config
-  const expectedMinNodes = expected?.minNodesVisited ?? 3;
-  const expectedVars = expected?.expectedVariables ?? [];
-  const expectedToolCalls = expected?.expectedToolCalls ?? 0;
-
-  // Extract flow data from call log
+  // Extract flow stats for context
   const flow = callLog ? extractFlowData(callLog) : {
     nodeMoves: 0, uniqueNodesVisited: 0, nodeSequence: [],
     extractedVars: [], toolExecutions: 0, toolSuccesses: 0,
     waitingEvents: 0, chainStarts: 0, totalNodesInFlow: 0,
   };
 
-  // Also analyze transcript for stuck detection
-  let transcriptTurns = 0;
-  let agentTurns = 0;
-  let userTurns = 0;
-  if (transcript) {
-    for (const t of transcript) {
-      if (t.Agent) agentTurns++;
-      if (t.User) userTurns++;
+  // Build the expected flow definition (only nodes the agent should traverse)
+  let expectedFlowSection = "";
+  if (agentStructure?.workflow?.nodes) {
+    const nodes = agentStructure.workflow.nodes as any[];
+    const edges = agentStructure.workflow.edges as any[];
+
+    // Build a readable flow description
+    expectedFlowSection = "EXPECTED AGENT FLOW (nodes in order):\n";
+    for (const node of nodes) {
+      const nodeEdges = edges?.filter((e: any) => e.source === node.id) || [];
+      const targets = nodeEdges.map((e: any) => e.target).join(", ");
+      expectedFlowSection += `- Node "${node.label}" (id: ${node.id}, type: ${node.type})\n`;
+      if (node.message) {
+        expectedFlowSection += `  Purpose: ${node.message.slice(0, 150)}...\n`;
+      }
+      if (node.transitions?.length) {
+        for (const t of node.transitions) {
+          expectedFlowSection += `  Transition: "${t.condition?.description || t.condition?.prompt}"\n`;
+        }
+      }
+      if (node.extractVariables?.variables?.length) {
+        expectedFlowSection += `  Extracts: ${node.extractVariables.variables.map((v: any) => v.name).join(", ")}\n`;
+      }
+      if (targets) {
+        expectedFlowSection += `  → Connects to: ${targets}\n`;
+      }
+      expectedFlowSection += "\n";
     }
-    transcriptTurns = agentTurns + userTurns;
   }
 
-  // ── Scoring dimensions ──
-
-  // 1. Node coverage: unique nodes visited / total nodes in flow
-  const nodeCoverage = flow.totalNodesInFlow > 0
-    ? flow.uniqueNodesVisited / flow.totalNodesInFlow
-    : (flow.uniqueNodesVisited >= expectedMinNodes ? 1 : flow.uniqueNodesVisited / expectedMinNodes);
-
-  // 2. Variable extraction success
-  const varScore = expectedVars.length > 0
-    ? expectedVars.filter((v: string) => flow.extractedVars.includes(v)).length / expectedVars.length
-    : (flow.extractedVars.length > 0 ? 1 : 0);
-
-  // 3. Tool call completion
-  const toolScore = expectedToolCalls > 0
-    ? Math.min(flow.toolExecutions / expectedToolCalls, 1)
-    : (flow.toolExecutions > 0 ? 1 : 0.5); // Neutral if no tools expected
-
-  // 4. Stuck detection: many user turns but very few node moves = stuck
-  const stuckRatio = userTurns > 0 && flow.nodeMoves <= 1 && userTurns >= 3
-    ? 0  // Clearly stuck
-    : userTurns > 0 && flow.chainStarts > 0
-    ? Math.min(flow.chainStarts / userTurns, 1) // How often did user input cause a transition
-    : 0.5;
-
-  // 5. Forward momentum: chain starts from tool calls = agent navigating
-  const fromToolCalls = callLog ? callLog.filter(
-    (e: any) => e.category === "FLOW" && e.message === "Starting node chain execution" && e.payload?.from_tool_call === true
-  ).length : 0;
-  const momentumScore = flow.chainStarts > 1 ? Math.min(fromToolCalls / (flow.chainStarts - 1), 1) : 0;
-
-  // Weighted final score
-  const weights = { coverage: 0.3, vars: 0.2, tools: 0.15, stuck: 0.25, momentum: 0.1 };
-  const score = Math.min(1, Math.max(0,
-    nodeCoverage * weights.coverage +
-    varScore * weights.vars +
-    toolScore * weights.tools +
-    stuckRatio * weights.stuck +
-    momentumScore * weights.momentum
-  ));
-
-  const passed = score >= 0.5;
-
-  // Build detailed report
-  const details: string[] = [];
-  details.push(`Nodes visited: ${flow.uniqueNodesVisited}/${flow.totalNodesInFlow} (${(nodeCoverage * 100).toFixed(0)}% coverage)`);
-  details.push(`Node movements: ${flow.nodeMoves}`);
-  details.push(`Variables extracted: [${flow.extractedVars.join(", ")}] (${flow.extractedVars.length}/${expectedVars.length || "?"})`);
-  details.push(`Tool executions: ${flow.toolExecutions}, successes: ${flow.toolSuccesses}`);
-  details.push(`Transcript turns: ${transcriptTurns} (agent: ${agentTurns}, user: ${userTurns})`);
-  details.push(`Chain starts: ${flow.chainStarts} (from tool calls: ${fromToolCalls})`);
-
-  if (flow.nodeMoves <= 1 && userTurns >= 3) {
-    details.push(`⚠ STUCK: Agent stayed on same node for ${userTurns} user turns`);
-  }
-  if (flow.uniqueNodesVisited <= 1 && transcriptTurns > 4) {
-    details.push(`⚠ STUCK: Only 1 unique node visited despite ${transcriptTurns} conversation turns`);
-  }
-  if (flow.extractedVars.length === 0 && userTurns >= 2) {
-    details.push(`⚠ No variables extracted despite user interaction`);
+  // Build transcript section
+  let transcriptSection = "";
+  if (transcript) {
+    transcriptSection = "CONVERSATION TRANSCRIPT:\n";
+    for (const t of transcript) {
+      if (t.Agent) transcriptSection += `[Agent]: ${t.Agent}\n`;
+      if (t.User) {
+        const meta = t.metadata ? ` (gender: ${t.metadata.gender}, time: ${t.metadata.created_at})` : "";
+        transcriptSection += `[User${meta}]: ${t.User}\n`;
+      }
+    }
   }
 
+  // Build call log section — only relevant events, with timestamps
+  let callLogSection = "";
+  if (callLog) {
+    const relevantEvents = callLog.filter((e: any) =>
+      e.type === "INFO" || (e.type === "DEBUG" && (
+        e.message?.includes("Playing message") ||
+        e.message?.includes("Tool Success") ||
+        e.message?.includes("Tool API call")
+      ))
+    );
+    callLogSection = "CALL LOG (timestamped events):\n";
+    for (const e of relevantEvents) {
+      callLogSection += `[${e.timestamp}] ${e.category}: ${e.message}`;
+      if (e.payload?.variable) callLogSection += ` → ${e.payload.variable}=${e.payload.new_value || e.payload.value}`;
+      if (e.payload?.toolName) callLogSection += ` → tool: ${e.payload.toolName}`;
+      if (e.payload?.total_nodes) callLogSection += ` (${e.payload.total_nodes} nodes)`;
+      if (e.payload?.action) callLogSection += ` (${e.payload.action})`;
+      callLogSection += "\n";
+    }
+  }
+
+  // Build summary stats
+  const statsSection = `FLOW STATISTICS:
+- Total nodes in flow: ${flow.totalNodesInFlow}
+- Node movements detected: ${flow.nodeMoves}
+- Unique nodes visited: ${flow.uniqueNodesVisited}
+- Variables extracted: [${flow.extractedVars.join(", ")}]
+- Tool executions: ${flow.toolExecutions} (successes: ${flow.toolSuccesses})
+- Times agent waited for user input: ${flow.waitingEvents}
+- Flow chain starts: ${flow.chainStarts}
+`;
+
+  const prompt = `You are evaluating a voice AI agent's ability to navigate through a multi-node conversation flow.
+
+${expectedFlowSection}
+${statsSection}
+${callLogSection}
+${transcriptSection}
+
+EVALUATION CRITERIA:
+1. **Flow Progression**: How far did the agent advance through the expected node sequence? Which node did it reach? Which nodes were never reached?
+2. **Stuck Detection**: Did the agent get stuck on any node? How many times did the user try to help it move forward but it failed?
+3. **Variable Extraction**: Did the agent successfully extract the required variables (user_name, plate_number, etc.)? Did it understand the user's responses?
+4. **Transition Understanding**: When the user provided information that should trigger a node transition (e.g., gave their name → should move to plate number node), did the agent recognize it and transition?
+5. **Failure Points**: At exactly which point did the agent fail? What was the user saying, and what should the agent have done?
+
+Respond with JSON only:
+{
+  "passed": true | false,
+  "score": 0.0 to 1.0,
+  "last_node_reached": "node label or description",
+  "nodes_completed": number,
+  "nodes_expected": number,
+  "stuck_on_node": "node label if stuck, or null",
+  "stuck_turns": number of user turns where agent was stuck,
+  "failed_transitions": ["description of each failed transition attempt"],
+  "variables_extracted": ["list of successfully extracted variables"],
+  "variables_missed": ["list of variables that should have been extracted but weren't"],
+  "detail": "2-3 sentence summary of the agent's flow performance, what went wrong, and where it got stuck"
+}`;
+
+  const result = await evaluateWithLLMJudge(prompt, "");
+
+  // Enhance with flow stats in metadata
   return {
-    passed,
-    score,
-    detail: details.join("\n"),
+    ...result,
     metadata: {
-      nodeCoverage,
-      varScore,
-      toolScore,
-      stuckRatio,
-      momentumScore,
       flow,
-      transcriptTurns,
-      agentTurns,
-      userTurns,
-    },
+      llmAnalysis: result.detail,
+    } as any,
   };
 }

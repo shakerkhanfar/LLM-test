@@ -4,11 +4,20 @@ dotenv.config();
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
+/**
+ * Simple LLM judge for transcript-based criteria (language, gender, etc.)
+ * Uses gpt-4.1-mini for speed.
+ */
 export async function evaluateWithLLMJudge(
   rule: string,
   transcriptText: string
 ): Promise<{ passed: boolean; score: number; detail: string }> {
-  const prompt = `You are evaluating a voice AI agent transcript for an Arabic-first voice AI platform.
+  // If transcriptText is empty, the rule IS the full prompt (used by FLOW_PROGRESSION)
+  const isFullPrompt = !transcriptText;
+
+  const prompt = isFullPrompt
+    ? rule
+    : `You are evaluating a voice AI agent transcript for an Arabic-first voice AI platform.
 
 Evaluation rule: "${rule}"
 
@@ -22,8 +31,11 @@ Respond with JSON only:
   "detail": "one sentence explanation in English"
 }`;
 
+  // Use gpt-4.1 for full flow analysis (complex), gpt-4.1-mini for simple checks
+  const model = isFullPrompt ? "gpt-4.1" : "gpt-4.1-mini";
+
   const response = await openai.chat.completions.create({
-    model: "gpt-4.1-mini",
+    model,
     messages: [{ role: "user", content: prompt }],
     response_format: { type: "json_object" },
     temperature: 0,
