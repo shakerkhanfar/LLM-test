@@ -100,7 +100,7 @@ export async function fetchCallLog(callId: string, apiKey?: string) {
     throw new Error(`Failed to fetch call log: ${res.status} — ${text}`);
   }
 
-  const json = await res.json();
+  const json = await res.json() as any;
   // Response is { success: true, data: [...logs] } — return the data array
   return json.data || json;
 }
