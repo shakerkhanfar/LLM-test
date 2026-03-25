@@ -132,6 +132,126 @@ export default function RunDetail() {
         </div>
       )}
 
+      {/* Metrics Breakdown (from FLOW_PROGRESSION) */}
+      {(() => {
+        const fpResult = evalResults.find((er: any) => er.criterion?.type === "FLOW_PROGRESSION");
+        const metrics = fpResult?.metadata?.metrics || (fpResult?.metadata as any)?.metrics;
+        // Try parsing from detail if metadata doesn't have it (LLM returns it in the JSON response)
+        let parsedData: any = null;
+        if (fpResult?.detail) {
+          try { parsedData = JSON.parse(fpResult.detail); } catch {}
+        }
+        const m = metrics || parsedData?.metrics;
+        const failedTransitions = parsedData?.failed_transitions || fpResult?.metadata?.failed_transitions || [];
+        const wordCount = parsedData?.word_count || fpResult?.metadata?.word_count;
+        const dialect = parsedData?.dialect || fpResult?.metadata?.dialect;
+
+        if (!m && !parsedData) return null;
+
+        const categories = m ? [
+          { key: "language_switching", label: "Language Switching", ...m.language_switching },
+          { key: "gender_detection", label: "Gender Detection", ...m.gender_detection },
+          { key: "tool_calls", label: "Tool Calls", ...m.tool_calls },
+          { key: "data_reading", label: "Data Reading", ...m.data_reading },
+          { key: "node_transitions", label: "Node Transitions", ...m.node_transitions },
+          { key: "kb_retrieval", label: "Knowledge Base", ...m.kb_retrieval },
+          { key: "mcp_usage", label: "MCP Tools", ...m.mcp_usage },
+          { key: "outcome_fields", label: "Outcome Fields", ...m.outcome_fields },
+        ] : [];
+
+        return (
+          <div style={{ marginBottom: 32 }}>
+            <h2 style={{ fontSize: 16, marginBottom: 12 }}>Detailed Metrics</h2>
+
+            {/* Summary info */}
+            <div style={{ display: "flex", gap: 12, marginBottom: 16, flexWrap: "wrap" }}>
+              {wordCount != null && (
+                <div style={{ background: "#1a1a1a", padding: "8px 14px", borderRadius: 6, border: "1px solid #222", fontSize: 13 }}>
+                  <span style={{ color: "#888" }}>Words: </span><strong>{wordCount}</strong>
+                </div>
+              )}
+              {dialect && (
+                <div style={{ background: "#1a1a1a", padding: "8px 14px", borderRadius: 6, border: "1px solid #222", fontSize: 13 }}>
+                  <span style={{ color: "#888" }}>Dialect: </span><strong>{dialect}</strong>
+                </div>
+              )}
+              {parsedData?.nodes_completed != null && (
+                <div style={{ background: "#1a1a1a", padding: "8px 14px", borderRadius: 6, border: "1px solid #222", fontSize: 13 }}>
+                  <span style={{ color: "#888" }}>Nodes: </span><strong>{parsedData.nodes_completed}/{parsedData.nodes_expected}</strong>
+                </div>
+              )}
+              {parsedData?.stuck_on_node && (
+                <div style={{ background: "#ef444418", padding: "8px 14px", borderRadius: 6, border: "1px solid #ef444433", fontSize: 13 }}>
+                  <span style={{ color: "#ef4444" }}>Stuck on: </span><strong style={{ color: "#ef4444" }}>{parsedData.stuck_on_node}</strong>
+                  {parsedData.stuck_turns > 0 && <span style={{ color: "#888" }}> ({parsedData.stuck_turns} turns)</span>}
+                </div>
+              )}
+            </div>
+
+            {/* Percentage bars */}
+            {categories.length > 0 && (
+              <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 16 }}>
+                {categories.map((cat: any) => {
+                  const total = cat.total || 0;
+                  const errors = cat.errors || 0;
+                  const success = total > 0 ? total - errors : 0;
+                  const pct = total > 0 ? Math.round((success / total) * 100) : null;
+                  const color = pct === null ? "#555" : pct >= 80 ? "#22c55e" : pct >= 50 ? "#f59e0b" : "#ef4444";
+
+                  return (
+                    <MetricRow key={cat.key} label={cat.label} total={total} errors={errors} pct={pct} color={color} comment={cat.comment} />
+                  );
+                })}
+              </div>
+            )}
+
+            {/* Failed Transitions (collapsible) */}
+            {failedTransitions.length > 0 && (
+              <CollapsibleSection title={`Failed Transitions (${failedTransitions.length})`}>
+                {failedTransitions.map((ft: any, i: number) => (
+                  <div key={i} style={{ background: "#0a0a0a", padding: 12, borderRadius: 6, marginBottom: 8, border: "1px solid #1a1a1a" }}>
+                    <div style={{ fontSize: 12, marginBottom: 4 }}>
+                      <span style={{ color: "#22c55e" }}>User said:</span> <span style={{ color: "#ccc" }}>{ft.user_said}</span>
+                    </div>
+                    <div style={{ fontSize: 12, marginBottom: 4 }}>
+                      <span style={{ color: "#3b82f6" }}>Expected:</span> <span style={{ color: "#ccc" }}>{ft.expected_action}</span>
+                    </div>
+                    <div style={{ fontSize: 12, marginBottom: 4 }}>
+                      <span style={{ color: "#ef4444" }}>Actual:</span> <span style={{ color: "#ccc" }}>{ft.actual_action}</span>
+                    </div>
+                    {ft.comment && (
+                      <div style={{ fontSize: 11, color: "#888", fontStyle: "italic" }}>{ft.comment}</div>
+                    )}
+                  </div>
+                ))}
+              </CollapsibleSection>
+            )}
+
+            {/* Variables */}
+            {(parsedData?.variables_extracted?.length > 0 || parsedData?.variables_missed?.length > 0) && (
+              <div style={{ display: "flex", gap: 16, marginTop: 12, fontSize: 12 }}>
+                {parsedData.variables_extracted?.length > 0 && (
+                  <div>
+                    <span style={{ color: "#888" }}>Extracted: </span>
+                    {parsedData.variables_extracted.map((v: string, i: number) => (
+                      <span key={i} style={{ color: "#22c55e", marginRight: 6 }}>{v}</span>
+                    ))}
+                  </div>
+                )}
+                {parsedData.variables_missed?.length > 0 && (
+                  <div>
+                    <span style={{ color: "#888" }}>Missed: </span>
+                    {parsedData.variables_missed.map((v: string, i: number) => (
+                      <span key={i} style={{ color: "#ef4444", marginRight: 6 }}>{v}</span>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        );
+      })()}
+
       {/* Flow Progression Visual */}
       {run.project?.agentStructure?.workflow?.nodes && run.callLog && (
         <FlowProgressionView
@@ -540,6 +660,86 @@ function FlowProgressionView({
           )}
         </div>
       </div>
+    </div>
+  );
+}
+
+// ─── Metric Row Component ──────────────────────────────────────────
+
+function MetricRow({ label, total, errors, pct, color, comment }: {
+  label: string; total: number; errors: number; pct: number | null; color: string; comment?: string;
+}) {
+  const [expanded, setExpanded] = useState(false);
+
+  return (
+    <div>
+      <div
+        onClick={() => setExpanded(!expanded)}
+        style={{
+          display: "flex", alignItems: "center", gap: 12, padding: "10px 14px",
+          background: "#111", borderRadius: 6, border: "1px solid #222", cursor: "pointer",
+        }}
+      >
+        {/* Label */}
+        <div style={{ width: 140, fontSize: 13, fontWeight: 500 }}>{label}</div>
+
+        {/* Bar */}
+        <div style={{ flex: 1, height: 8, background: "#222", borderRadius: 4, overflow: "hidden" }}>
+          {pct != null && (
+            <div style={{ width: `${pct}%`, height: "100%", background: color, borderRadius: 4, transition: "width 0.3s" }} />
+          )}
+        </div>
+
+        {/* Percentage */}
+        <div style={{ width: 50, textAlign: "right", fontSize: 14, fontWeight: 700, color }}>
+          {pct != null ? `${pct}%` : "N/A"}
+        </div>
+
+        {/* Error badge */}
+        {errors > 0 && (
+          <div style={{ fontSize: 11, padding: "2px 6px", borderRadius: 3, background: "#ef444422", color: "#ef4444", border: "1px solid #ef444433" }}>
+            {errors} error{errors > 1 ? "s" : ""}
+          </div>
+        )}
+
+        {/* Expand arrow */}
+        <span style={{ color: "#555", fontSize: 10 }}>{expanded ? "\u25B2" : "\u25BC"}</span>
+      </div>
+
+      {/* Expanded details */}
+      {expanded && (
+        <div style={{ padding: "8px 14px 8px 26px", fontSize: 12, color: "#888", background: "#0a0a0a", borderRadius: "0 0 6px 6px", borderTop: "none" }}>
+          <span>Total: {total} | Errors: {errors} | Success: {total - errors}</span>
+          {comment && <div style={{ marginTop: 4, color: "#aaa", fontStyle: "italic" }}>{comment}</div>}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── Collapsible Section Component ─────────────────────────────────
+
+function CollapsibleSection({ title, children }: { title: string; children: React.ReactNode }) {
+  const [open, setOpen] = useState(false);
+
+  return (
+    <div style={{ marginTop: 8 }}>
+      <button
+        onClick={() => setOpen(!open)}
+        style={{
+          background: "#1a1a1a", border: "1px solid #333", borderRadius: 6,
+          padding: "8px 14px", color: "#ccc", cursor: "pointer", fontSize: 13,
+          width: "100%", textAlign: "left", display: "flex", justifyContent: "space-between",
+        }}
+      >
+        <span>{title}</span>
+        <span style={{ color: "#555" }}>{open ? "\u25B2" : "\u25BC"}</span>
+      </button>
+      {open && (
+        <div style={{ padding: "12px 0" }}>
+          {children}
+        </div>
+      )}
     </div>
   );
 }
