@@ -566,26 +566,60 @@ ${statsSection}
 ${callLogSection}
 ${transcriptSection}
 
-EVALUATION CRITERIA:
-1. **Flow Progression**: How far did the agent advance through the expected node sequence? Which node did it reach? Which nodes were never reached?
-2. **Stuck Detection**: Did the agent get stuck on any node? How many times did the user try to help it move forward but it failed?
-3. **Variable Extraction**: Did the agent successfully extract the required variables (user_name, plate_number, etc.)? Did it understand the user's responses?
-4. **Transition Understanding**: When the user provided information that should trigger a node transition (e.g., gave their name → should move to plate number node), did the agent recognize it and transition?
-5. **Failure Points**: At exactly which point did the agent fail? What was the user saying, and what should the agent have done?
+EVALUATION CRITERIA — analyze the call data and produce exact numeric counts for each metric:
+
+1. **Word Count**: Total number of words spoken by the agent across the entire conversation
+2. **Dialect**: What Arabic dialect was used (0=none/English, identify if Gulf/Egyptian/Levantine etc.)
+3. **Language Switch Requests**: How many times did the user request or trigger a language switch?
+4. **Language Switching Errors**: How many times did the agent fail to switch language correctly when requested?
+5. **Gender Detection**: Did the agent correctly detect and use the right gender grammar? (1=correct, 0=not applicable)
+6. **Gender Detection Errors**: How many times did the agent use wrong gender-inflected Arabic grammar?
+7. **Tools Executed**: How many tool/function calls were executed during the call?
+8. **Failed Tool Calls**: How many tool calls failed or returned errors?
+9. **Data Retrieved**: How many pieces of data were successfully retrieved from tool calls?
+10. **Data Reading Errors**: How many times did the agent fail to read or use retrieved data correctly?
+11. **Node Transitions**: Total number of node transitions that occurred
+12. **Node Transition Errors**: How many times did the agent fail to transition when it should have? (user provided required info but agent stayed on same node)
+13. **Knowledge Base Requests**: How many knowledge base queries were made?
+14. **Knowledge Base Errors**: How many KB queries failed or returned wrong info?
+15. **MCP Requests**: How many MCP tool requests were made?
+16. **MCP Usage Errors**: How many MCP requests failed?
+17. **Outcome Fields**: How many outcome fields were filled?
+18. **Wrong Outcomes**: How many outcome fields had incorrect values?
+19. **Flow Progression**: Which node did the agent reach? How far through the expected flow?
+20. **Failed Transition Details**: For each failed transition, describe what the user said and what should have happened
 
 Respond with JSON only:
 {
   "passed": true | false,
   "score": 0.0 to 1.0,
-  "last_node_reached": "node label or description",
+  "word_count": number,
+  "dialect": "Gulf/Egyptian/Levantine/English/None",
+  "language_switch_requests": number,
+  "language_switching_errors": number,
+  "gender_detection": number (1=correct, 0=N/A),
+  "gender_detection_errors": number,
+  "tools_executed": number,
+  "failed_tool_calls": number,
+  "data_retrieved": number,
+  "data_reading_errors": number,
+  "node_transitions": number,
+  "node_transition_errors": number,
+  "kb_requests": number,
+  "kb_errors": number,
+  "mcp_requests": number,
+  "mcp_errors": number,
+  "outcome_fields": number,
+  "wrong_outcomes": number,
+  "last_node_reached": "node label",
   "nodes_completed": number,
   "nodes_expected": number,
   "stuck_on_node": "node label if stuck, or null",
-  "stuck_turns": number of user turns where agent was stuck,
-  "failed_transitions": ["description of each failed transition attempt"],
-  "variables_extracted": ["list of successfully extracted variables"],
-  "variables_missed": ["list of variables that should have been extracted but weren't"],
-  "detail": "2-3 sentence summary of the agent's flow performance, what went wrong, and where it got stuck"
+  "stuck_turns": number,
+  "failed_transitions": [{"user_said": "what user said", "expected_action": "what should have happened", "actual_action": "what agent did instead"}],
+  "variables_extracted": ["list"],
+  "variables_missed": ["list"],
+  "detail": "2-3 sentence summary including: how many transitions failed, where agent got stuck, key errors"
 }`;
 
   const result = await evaluateWithLLMJudge(prompt, "");
