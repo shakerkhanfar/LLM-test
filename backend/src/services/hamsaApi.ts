@@ -34,12 +34,26 @@ export async function updateAgentModel(
     groq: "Groq",
   };
 
+  // Hamsa expects exact model names: GPT-5, GPT-5-Mini, GPT-5-Nano, GPT-4.1, GPT-4.1-Mini, GPT-4.1-Nano, GPT-4o, GPT-4o-mini
+  const MODEL_MAP: Record<string, string> = {
+    "gpt-5": "GPT-5",
+    "gpt-5-mini": "GPT-5-Mini",
+    "gpt-5-nano": "GPT-5-Nano",
+    "gpt-4.1": "GPT-4.1",
+    "gpt-4.1-mini": "GPT-4.1-Mini",
+    "gpt-4.1-nano": "GPT-4.1-Nano",
+    "gpt-4o": "GPT-4o",
+    "gpt-4o-mini": "GPT-4o-mini",
+    "gpt-120-oss": "openai/gpt-oss-120b",
+    "gpt-20-oss": "openai/gpt-oss-20b",
+  };
+
   let llmProvider = provider;
   let llmModel = model;
   if (!provider && model.includes("/")) {
     const [p, m] = model.split("/", 2);
     llmProvider = PROVIDER_MAP[p.toLowerCase()] || p;
-    llmModel = m;
+    llmModel = MODEL_MAP[m.toLowerCase()] || m;
   } else if (llmProvider) {
     llmProvider = PROVIDER_MAP[llmProvider.toLowerCase()] || llmProvider;
   }
@@ -48,6 +62,7 @@ export async function updateAgentModel(
     llm: {
       provider: llmProvider,
       model: llmModel,
+      temperature: 0.2,
     },
   };
 
