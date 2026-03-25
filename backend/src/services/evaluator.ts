@@ -102,9 +102,90 @@ async function evaluateCriterion(criterion: Criterion, run: any) {
       return evaluateWordAccuracy(criterion, run);
     case "LATENCY":
       return evaluateLatency(criterion, run);
+    case "FLOW_PROGRESSION":
+      return evaluateFlowProgression(criterion, run);
     default:
       return { passed: null, score: null, detail: `Unknown type: ${criterion.type}` };
   }
+}
+
+// ─── Helpers: extract flow data from call log ──────────────────────
+
+function extractFlowData(callLog: any[]) {
+  // Count node movements
+  const nodeMoves = callLog.filter(
+    (e: any) => e.category === "node_movement" && e.message === "Node moved"
+  );
+
+  // Count unique nodes visited (by node_id or by inferring from conversation prompts)
+  const visitedNodeIds = new Set<string>();
+  const nodeSequence: string[] = [];
+
+  for (const e of callLog) {
+    if (e.category === "node_movement" && e.node_id) {
+      visitedNodeIds.add(e.node_id);
+      nodeSequence.push(e.node_id);
+    }
+  }
+
+  // If node_ids are null, infer from conversation prompts (each unique prompt = different node)
+  if (visitedNodeIds.size === 0) {
+    const prompts = callLog.filter(
+      (e: any) => e.category === "CONVERSATION" && e.message === "Playing message (prompt) [non-blocking]"
+    );
+    for (const p of prompts) {
+      const msg = p.payload?.message?.slice(0, 80) || "unknown";
+      visitedNodeIds.add(msg);
+      nodeSequence.push(msg);
+    }
+  }
+
+  // Extract variable extractions completed
+  const extractedVars = callLog
+    .filter((e: any) =>
+      e.category === "VARIABLE_EXTRACTION" &&
+      (e.message?.includes("Updated variable") || e.message?.includes("Extracted variable"))
+    )
+    .map((e: any) => e.payload?.variable || e.payload?.name)
+    .filter(Boolean);
+
+  // Extract tool executions
+  const toolExecutions = callLog.filter(
+    (e: any) => e.category === "TOOLS" && e.message === "Executing Tool"
+  );
+
+  // Extract tool successes
+  const toolSuccesses = callLog.filter(
+    (e: any) => e.category === "TOOLS" && e.message === "Tool Success"
+  );
+
+  // Count "Waiting for user input" events (each = a turn where agent asked and waited)
+  const waitingEvents = callLog.filter(
+    (e: any) => e.category === "CONVERSATION" && e.message === "Waiting for user input"
+  );
+
+  // Count flow chain starts
+  const chainStarts = callLog.filter(
+    (e: any) => e.category === "FLOW" && e.message === "Starting node chain execution"
+  );
+
+  // Total nodes in flow
+  const initEvent = callLog.find(
+    (e: any) => e.category === "FLOW" && e.message === "Initializing flow runtime"
+  );
+  const totalNodesInFlow = initEvent?.payload?.total_nodes || 0;
+
+  return {
+    nodeMoves: nodeMoves.length,
+    uniqueNodesVisited: visitedNodeIds.size,
+    nodeSequence,
+    extractedVars: [...new Set(extractedVars)],
+    toolExecutions: toolExecutions.length,
+    toolSuccesses: toolSuccesses.length,
+    waitingEvents: waitingEvents.length,
+    chainStarts: chainStarts.length,
+    totalNodesInFlow,
+  };
 }
 
 // ─── DETERMINISTIC — Tool Calls ────────────────────────────────────
@@ -379,5 +460,122 @@ function evaluateLatency(criterion: Criterion, run: any) {
     score: toolScore,
     detail: `Tool latencies: ${toolLatencies.map((t) => `${t.tool}: ${t.durationMs}ms`).join(", ")}. Total call: ${totalDurationMs ? `${(totalDurationMs / 1000).toFixed(1)}s` : "N/A"}`,
     metadata: { toolLatencies, nodeTransitions, totalDurationMs },
+  };
+}
+
+// ─── FLOW_PROGRESSION ──────────────────────────────────────────────
+// Evaluates how far the agent progressed through the expected flow.
+// Detects: stuck on single node, failed to extract variables, never
+// reached tool calls, low node coverage vs total flow nodes.
+
+function evaluateFlowProgression(criterion: Criterion, run: any) {
+  const callLog = run.callLog as any[];
+  const transcript = run.transcript as any[];
+  const expected = criterion.expectedValue as any;
+
+  if (!callLog && !transcript) {
+    return { passed: null, score: null, detail: "No data available" };
+  }
+
+  // Get expected flow from agent structure or criterion config
+  const expectedMinNodes = expected?.minNodesVisited ?? 3;
+  const expectedVars = expected?.expectedVariables ?? [];
+  const expectedToolCalls = expected?.expectedToolCalls ?? 0;
+
+  // Extract flow data from call log
+  const flow = callLog ? extractFlowData(callLog) : {
+    nodeMoves: 0, uniqueNodesVisited: 0, nodeSequence: [],
+    extractedVars: [], toolExecutions: 0, toolSuccesses: 0,
+    waitingEvents: 0, chainStarts: 0, totalNodesInFlow: 0,
+  };
+
+  // Also analyze transcript for stuck detection
+  let transcriptTurns = 0;
+  let agentTurns = 0;
+  let userTurns = 0;
+  if (transcript) {
+    for (const t of transcript) {
+      if (t.Agent) agentTurns++;
+      if (t.User) userTurns++;
+    }
+    transcriptTurns = agentTurns + userTurns;
+  }
+
+  // ── Scoring dimensions ──
+
+  // 1. Node coverage: unique nodes visited / total nodes in flow
+  const nodeCoverage = flow.totalNodesInFlow > 0
+    ? flow.uniqueNodesVisited / flow.totalNodesInFlow
+    : (flow.uniqueNodesVisited >= expectedMinNodes ? 1 : flow.uniqueNodesVisited / expectedMinNodes);
+
+  // 2. Variable extraction success
+  const varScore = expectedVars.length > 0
+    ? expectedVars.filter((v: string) => flow.extractedVars.includes(v)).length / expectedVars.length
+    : (flow.extractedVars.length > 0 ? 1 : 0);
+
+  // 3. Tool call completion
+  const toolScore = expectedToolCalls > 0
+    ? Math.min(flow.toolExecutions / expectedToolCalls, 1)
+    : (flow.toolExecutions > 0 ? 1 : 0.5); // Neutral if no tools expected
+
+  // 4. Stuck detection: many user turns but very few node moves = stuck
+  const stuckRatio = userTurns > 0 && flow.nodeMoves <= 1 && userTurns >= 3
+    ? 0  // Clearly stuck
+    : userTurns > 0 && flow.chainStarts > 0
+    ? Math.min(flow.chainStarts / userTurns, 1) // How often did user input cause a transition
+    : 0.5;
+
+  // 5. Forward momentum: chain starts from tool calls = agent navigating
+  const fromToolCalls = callLog ? callLog.filter(
+    (e: any) => e.category === "FLOW" && e.message === "Starting node chain execution" && e.payload?.from_tool_call === true
+  ).length : 0;
+  const momentumScore = flow.chainStarts > 1 ? Math.min(fromToolCalls / (flow.chainStarts - 1), 1) : 0;
+
+  // Weighted final score
+  const weights = { coverage: 0.3, vars: 0.2, tools: 0.15, stuck: 0.25, momentum: 0.1 };
+  const score = Math.min(1, Math.max(0,
+    nodeCoverage * weights.coverage +
+    varScore * weights.vars +
+    toolScore * weights.tools +
+    stuckRatio * weights.stuck +
+    momentumScore * weights.momentum
+  ));
+
+  const passed = score >= 0.5;
+
+  // Build detailed report
+  const details: string[] = [];
+  details.push(`Nodes visited: ${flow.uniqueNodesVisited}/${flow.totalNodesInFlow} (${(nodeCoverage * 100).toFixed(0)}% coverage)`);
+  details.push(`Node movements: ${flow.nodeMoves}`);
+  details.push(`Variables extracted: [${flow.extractedVars.join(", ")}] (${flow.extractedVars.length}/${expectedVars.length || "?"})`);
+  details.push(`Tool executions: ${flow.toolExecutions}, successes: ${flow.toolSuccesses}`);
+  details.push(`Transcript turns: ${transcriptTurns} (agent: ${agentTurns}, user: ${userTurns})`);
+  details.push(`Chain starts: ${flow.chainStarts} (from tool calls: ${fromToolCalls})`);
+
+  if (flow.nodeMoves <= 1 && userTurns >= 3) {
+    details.push(`⚠ STUCK: Agent stayed on same node for ${userTurns} user turns`);
+  }
+  if (flow.uniqueNodesVisited <= 1 && transcriptTurns > 4) {
+    details.push(`⚠ STUCK: Only 1 unique node visited despite ${transcriptTurns} conversation turns`);
+  }
+  if (flow.extractedVars.length === 0 && userTurns >= 2) {
+    details.push(`⚠ No variables extracted despite user interaction`);
+  }
+
+  return {
+    passed,
+    score,
+    detail: details.join("\n"),
+    metadata: {
+      nodeCoverage,
+      varScore,
+      toolScore,
+      stuckRatio,
+      momentumScore,
+      flow,
+      transcriptTurns,
+      agentTurns,
+      userTurns,
+    },
   };
 }

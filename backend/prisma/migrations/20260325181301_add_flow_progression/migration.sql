@@ -1,0 +1,2 @@
+-- AlterEnum
+ALTER TYPE "CriterionType" ADD VALUE 'FLOW_PROGRESSION';

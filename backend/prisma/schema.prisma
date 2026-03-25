@@ -42,6 +42,7 @@ enum CriterionType {
   STRUCTURAL
   WORD_ACCURACY
   LATENCY
+  FLOW_PROGRESSION
 }
 
 model Run {
