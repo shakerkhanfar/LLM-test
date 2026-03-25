@@ -82,6 +82,28 @@ router.post("/:id/switch-model", async (req, res) => {
   }
 });
 
+// Fetch call log from Hamsa API for a run
+router.post("/:id/fetch-logs", async (req, res) => {
+  const run = await prisma.run.findUnique({
+    where: { id: req.params.id },
+    include: { project: true },
+  });
+  if (!run) return res.status(404).json({ error: "Run not found" });
+  if (!run.hamsaCallId) return res.status(400).json({ error: "No call ID on this run" });
+
+  try {
+    const { fetchCallLog } = await import("../services/hamsaApi");
+    const logs = await fetchCallLog(run.hamsaCallId, run.project.hamsaApiKey || undefined);
+    await prisma.run.update({
+      where: { id: run.id },
+      data: { callLog: logs as any },
+    });
+    res.json({ ok: true, events: Array.isArray(logs) ? logs.length : 0 });
+  } catch (err) {
+    res.status(500).json({ error: (err as Error).message });
+  }
+});
+
 // Manually attach call log to a run (for local testing without API)
 router.post("/:id/call-log", async (req, res) => {
   const { callLog } = req.body;

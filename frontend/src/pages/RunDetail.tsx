@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useParams, Link } from "react-router-dom";
-import { getRun, createLabel, deleteLabel, triggerEvaluation } from "../api/client";
+import { getRun, createLabel, deleteLabel, triggerEvaluation, fetchLogs } from "../api/client";
 
 const LABEL_TYPES = ["WRONG_WORD", "WRONG_LANGUAGE", "WRONG_GENDER", "HALLUCINATED"] as const;
 const LABEL_COLORS: Record<string, string> = {
@@ -73,13 +73,28 @@ export default function RunDetail() {
         <span style={{ color: run.status === "COMPLETE" ? "#22c55e" : "#f59e0b", fontSize: 14 }}>
           {run.status}
         </span>
-        {run.status !== "COMPLETE" && (run.callLog || run.transcript) && (
+        {run.hamsaCallId && (!run.callLog || (Array.isArray(run.callLog) && run.callLog.length === 0)) && (
           <button
-            onClick={async () => { await triggerEvaluation(runId!); load(); }}
-            style={{ background: "#2563eb", color: "#fff", padding: "6px 12px", borderRadius: 4, border: "none", cursor: "pointer", fontSize: 12 }}
+            onClick={async () => {
+              try {
+                const r = await fetchLogs(runId!);
+                alert(`Fetched ${r.events} log events`);
+                load();
+              } catch (err) { alert("Failed: " + (err as Error).message); }
+            }}
+            style={{ background: "#f59e0b", color: "#000", padding: "6px 12px", borderRadius: 4, border: "none", cursor: "pointer", fontSize: 12, fontWeight: 600 }}
           >
-            Re-evaluate
+            Fetch Logs
           </button>
+        )}
+        <button
+          onClick={async () => { await triggerEvaluation(runId!); setTimeout(load, 3000); }}
+          style={{ background: "#2563eb", color: "#fff", padding: "6px 12px", borderRadius: 4, border: "none", cursor: "pointer", fontSize: 12 }}
+        >
+          Re-evaluate
+        </button>
+        {run.status !== "COMPLETE" && (run.callLog || run.transcript) && (
+          <span style={{ fontSize: 12, color: "#888" }}>evaluating...</span>
         )}
       </div>
 

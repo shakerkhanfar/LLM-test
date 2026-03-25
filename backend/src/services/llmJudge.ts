@@ -5,13 +5,13 @@ dotenv.config();
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
 /**
- * Simple LLM judge for transcript-based criteria (language, gender, etc.)
- * Uses gpt-4.1-mini for speed.
+ * LLM judge for transcript-based criteria.
+ * Returns null scores when the criterion doesn't apply.
  */
 export async function evaluateWithLLMJudge(
   rule: string,
   transcriptText: string
-): Promise<{ passed: boolean; score: number; detail: string }> {
+): Promise<{ passed: boolean | null; score: number | null; detail: string }> {
   // If transcriptText is empty, the rule IS the full prompt (used by FLOW_PROGRESSION)
   const isFullPrompt = !transcriptText;
 
@@ -24,10 +24,15 @@ Evaluation rule: "${rule}"
 Transcript:
 ${transcriptText}
 
+IMPORTANT: If this criterion is NOT APPLICABLE to this conversation (e.g. evaluating "language switching" but no language switch was requested, or evaluating "gender detection" but gender was not relevant), you MUST return:
+{ "passed": null, "score": null, "detail": "Not applicable — [reason]" }
+
+Only evaluate if the criterion actually applies to what happened in the conversation.
+
 Respond with JSON only:
 {
-  "passed": true | false,
-  "score": 0.0 to 1.0,
+  "passed": true | false | null,
+  "score": 0.0 to 1.0 | null,
   "detail": "one sentence explanation in English"
 }`;
 
@@ -43,17 +48,17 @@ Respond with JSON only:
 
   const content = response.choices[0]?.message?.content;
   if (!content) {
-    return { passed: false, score: 0, detail: "LLM judge returned empty response" };
+    return { passed: null, score: null, detail: "LLM judge returned empty response" };
   }
 
   try {
     const result = JSON.parse(content);
     return {
-      passed: Boolean(result.passed),
-      score: Number(result.score) || 0,
+      passed: result.passed === null ? null : Boolean(result.passed),
+      score: result.score === null ? null : Number(result.score) || 0,
       detail: String(result.detail || ""),
     };
   } catch {
-    return { passed: false, score: 0, detail: `Failed to parse LLM response: ${content}` };
+    return { passed: null, score: null, detail: `Failed to parse LLM response: ${content}` };
   }
 }

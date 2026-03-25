@@ -96,6 +96,10 @@ export function triggerEvaluation(runId: string) {
   return request<any>(`/runs/${runId}/evaluate`, { method: "POST" });
 }
 
+export function fetchLogs(runId: string) {
+  return request<any>(`/runs/${runId}/fetch-logs`, { method: "POST" });
+}
+
 export function switchModel(runId: string) {
   return request<any>(`/runs/${runId}/switch-model`, { method: "POST" });
 }

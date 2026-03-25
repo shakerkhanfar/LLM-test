@@ -301,6 +301,7 @@ function evaluateStructural(criterion: Criterion, run: any) {
 async function evaluateLLMJudge(criterion: Criterion, run: any) {
   const transcript = run.transcript as any[];
   const expected = criterion.expectedValue as any;
+  const criterionKey = (criterion as any).key || "";
 
   if (!transcript) {
     return { passed: null, score: null, detail: "No transcript available" };
