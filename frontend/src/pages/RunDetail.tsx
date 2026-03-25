@@ -132,6 +132,16 @@ export default function RunDetail() {
         </div>
       )}
 
+      {/* Flow Progression Visual */}
+      {run.project?.agentStructure?.workflow?.nodes && run.callLog && (
+        <FlowProgressionView
+          workflowNodes={run.project.agentStructure.workflow.nodes}
+          workflowEdges={run.project.agentStructure.workflow.edges || []}
+          callLog={run.callLog}
+          evalResult={evalResults.find((er: any) => er.criterion?.type === "FLOW_PROGRESSION")}
+        />
+      )}
+
       {/* Transcript with word labeling */}
       {transcript.length > 0 && (
         <div style={{ marginBottom: 32 }}>
@@ -298,6 +308,238 @@ export default function RunDetail() {
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+// ─── Flow Progression Visual Component ─────────────────────────────
+
+function FlowProgressionView({
+  workflowNodes,
+  workflowEdges,
+  callLog,
+  evalResult,
+}: {
+  workflowNodes: any[];
+  workflowEdges: any[];
+  callLog: any[];
+  evalResult?: any;
+}) {
+  // Determine which nodes were visited from the call log
+  const visitedNodeIds = new Set<string>();
+  const nodeMovements: Array<{ nodeId: string; timestamp: string }> = [];
+
+  for (const e of callLog) {
+    if (e.category === "node_movement" && e.node_id) {
+      visitedNodeIds.add(e.node_id);
+      nodeMovements.push({ nodeId: e.node_id, timestamp: e.timestamp });
+    }
+  }
+
+  // If node_ids are null, try matching by conversation prompt messages
+  if (visitedNodeIds.size === 0) {
+    const prompts = callLog.filter(
+      (e: any) => e.category === "CONVERSATION" && e.message === "Playing message (prompt) [non-blocking]"
+    );
+    for (const p of prompts) {
+      const msg = p.payload?.message || "";
+      // Match prompt to workflow node
+      for (const node of workflowNodes) {
+        if (node.message && msg.includes(node.message.slice(0, 50))) {
+          visitedNodeIds.add(node.id);
+          nodeMovements.push({ nodeId: node.id, timestamp: p.timestamp });
+          break;
+        }
+      }
+    }
+  }
+
+  // Extract variables
+  const extractedVars = callLog
+    .filter((e: any) =>
+      (e.category === "VARIABLE_EXTRACTION" && e.message?.includes("Updated variable")) ||
+      (e.category === "VARIABLE" && e.message?.includes("Extracted variable"))
+    )
+    .map((e: any) => ({
+      name: e.payload?.variable || e.payload?.name,
+      value: e.payload?.new_value || e.payload?.value,
+      timestamp: e.timestamp,
+    }))
+    .filter((v: any) => v.name);
+
+  // Extract tool calls
+  const toolCalls = callLog
+    .filter((e: any) => e.category === "TOOLS" && e.message === "Executing Tool")
+    .map((e: any) => ({
+      name: e.payload?.toolName,
+      nodeId: e.node_id,
+      timestamp: e.timestamp,
+    }));
+
+  // Build ordered node list based on flow (start node first, then follow edges)
+  const startNode = workflowNodes.find((n: any) => n.type === "start");
+  const orderedNodes: any[] = [];
+  const visited = new Set<string>();
+
+  function walkFlow(nodeId: string) {
+    if (visited.has(nodeId)) return;
+    visited.add(nodeId);
+    const node = workflowNodes.find((n: any) => n.id === nodeId);
+    if (node) orderedNodes.push(node);
+    const outEdges = workflowEdges.filter((e: any) => e.source === nodeId);
+    const uniqueTargets = [...new Set(outEdges.map((e: any) => e.target))];
+    for (const t of uniqueTargets) walkFlow(t);
+  }
+  if (startNode) walkFlow(startNode.id);
+  // Add any unvisited nodes
+  for (const n of workflowNodes) {
+    if (!visited.has(n.id)) orderedNodes.push(n);
+  }
+
+  // Find last reached node
+  const lastReachedIdx = orderedNodes.reduce((maxIdx, node, idx) => {
+    return visitedNodeIds.has(node.id) ? idx : maxIdx;
+  }, -1);
+
+  const nodeTypeColors: Record<string, string> = {
+    start: "#22c55e",
+    conversation: "#3b82f6",
+    tool: "#f59e0b",
+    router: "#a855f7",
+    end: "#ef4444",
+  };
+
+  return (
+    <div style={{ marginBottom: 32 }}>
+      <h2 style={{ fontSize: 16, marginBottom: 12 }}>Flow Progression</h2>
+
+      {/* LLM Analysis Summary */}
+      {evalResult?.detail && (
+        <div style={{
+          background: evalResult.passed ? "#22c55e11" : "#ef444411",
+          border: `1px solid ${evalResult.passed ? "#22c55e33" : "#ef444433"}`,
+          borderRadius: 8, padding: 14, marginBottom: 16, fontSize: 13, lineHeight: 1.6,
+          color: "#ccc", whiteSpace: "pre-wrap",
+        }}>
+          {evalResult.detail}
+        </div>
+      )}
+
+      {/* Node Flow Visual */}
+      <div style={{ background: "#111", borderRadius: 8, padding: 16, border: "1px solid #222" }}>
+        <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+          {orderedNodes.map((node: any, idx: number) => {
+            const wasVisited = visitedNodeIds.has(node.id);
+            const isStuckHere = wasVisited && idx === lastReachedIdx && lastReachedIdx < orderedNodes.length - 1;
+            const isPastReach = idx > lastReachedIdx && lastReachedIdx >= 0;
+            const nodeVars = node.extractVariables?.variables?.map((v: any) => v.name) || [];
+            const extractedHere = extractedVars.filter((v: any) => nodeVars.includes(v.name));
+            const toolHere = toolCalls.find((t: any) => t.nodeId === node.id);
+            const typeColor = nodeTypeColors[node.type] || "#888";
+
+            return (
+              <div key={node.id}>
+                <div style={{
+                  display: "flex", alignItems: "center", gap: 12, padding: "10px 14px",
+                  background: isStuckHere ? "#ef444418" : wasVisited ? "#22c55e0a" : "#0a0a0a",
+                  border: `1px solid ${isStuckHere ? "#ef444444" : wasVisited ? "#22c55e33" : "#1a1a1a"}`,
+                  borderRadius: 6, opacity: isPastReach ? 0.4 : 1,
+                }}>
+                  {/* Status indicator */}
+                  <div style={{
+                    width: 24, height: 24, borderRadius: "50%", flexShrink: 0,
+                    display: "flex", alignItems: "center", justifyContent: "center",
+                    fontSize: 12,
+                    background: wasVisited
+                      ? (isStuckHere ? "#ef444433" : "#22c55e33")
+                      : "#222",
+                    color: wasVisited
+                      ? (isStuckHere ? "#ef4444" : "#22c55e")
+                      : "#555",
+                  }}>
+                    {wasVisited ? (isStuckHere ? "!" : "\u2713") : idx + 1}
+                  </div>
+
+                  {/* Node info */}
+                  <div style={{ flex: 1 }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                      <span style={{ fontWeight: 600, fontSize: 13 }}>{node.label}</span>
+                      <span style={{
+                        fontSize: 10, padding: "1px 6px", borderRadius: 3,
+                        background: `${typeColor}22`, color: typeColor, border: `1px solid ${typeColor}44`,
+                      }}>
+                        {node.type}
+                      </span>
+                      {isStuckHere && (
+                        <span style={{
+                          fontSize: 10, padding: "1px 6px", borderRadius: 3,
+                          background: "#ef444422", color: "#ef4444", border: "1px solid #ef444444",
+                        }}>
+                          STUCK HERE
+                        </span>
+                      )}
+                    </div>
+
+                    {/* Variables extracted at this node */}
+                    {extractedHere.length > 0 && (
+                      <div style={{ fontSize: 11, color: "#22c55e", marginTop: 4 }}>
+                        Extracted: {extractedHere.map((v: any) => `${v.name}="${v.value}"`).join(", ")}
+                      </div>
+                    )}
+
+                    {/* Tool called at this node */}
+                    {toolHere && (
+                      <div style={{ fontSize: 11, color: "#f59e0b", marginTop: 2 }}>
+                        Tool: {toolHere.name}
+                      </div>
+                    )}
+
+                    {/* Expected variables not extracted */}
+                    {wasVisited && isStuckHere && nodeVars.length > 0 && extractedHere.length === 0 && (
+                      <div style={{ fontSize: 11, color: "#ef4444", marginTop: 2 }}>
+                        Failed to extract: {nodeVars.join(", ")}
+                      </div>
+                    )}
+
+                    {/* Transitions */}
+                    {node.transitions?.length > 0 && (
+                      <div style={{ fontSize: 10, color: "#666", marginTop: 2 }}>
+                        Transitions: {node.transitions.map((t: any) => t.condition?.description || t.condition?.prompt).join(" | ")}
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                {/* Connector arrow */}
+                {idx < orderedNodes.length - 1 && (
+                  <div style={{ display: "flex", justifyContent: "flex-start", paddingLeft: 22 }}>
+                    <div style={{
+                      width: 2, height: 12,
+                      background: wasVisited && !isStuckHere ? "#22c55e44" : "#222",
+                    }} />
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+
+        {/* Summary bar */}
+        <div style={{
+          marginTop: 16, padding: "8px 12px", background: "#0a0a0a",
+          borderRadius: 6, fontSize: 12, color: "#888",
+          display: "flex", gap: 16, flexWrap: "wrap",
+        }}>
+          <span>Nodes reached: <strong style={{ color: "#fff" }}>{visitedNodeIds.size}/{orderedNodes.length}</strong></span>
+          <span>Variables: <strong style={{ color: "#fff" }}>{extractedVars.length}</strong></span>
+          <span>Tools: <strong style={{ color: "#fff" }}>{toolCalls.length}</strong></span>
+          {lastReachedIdx >= 0 && lastReachedIdx < orderedNodes.length - 1 && (
+            <span style={{ color: "#ef4444" }}>
+              Stopped at node {lastReachedIdx + 1}/{orderedNodes.length}
+            </span>
+          )}
+        </div>
+      </div>
     </div>
   );
 }
