@@ -271,7 +271,7 @@ export default function RunDetail() {
               (click words to label)
             </span>
           </h2>
-          <div style={{ background: "#111", borderRadius: 8, padding: 16, border: "1px solid #222" }}>
+          <div style={{ background: "#111", borderRadius: 8, padding: 16, border: "1px solid #222", maxHeight: 500, overflow: "auto" }}>
             {transcript.map((utt: any, ui: number) => {
               const isAgent = !!utt.Agent;
               const text = utt.Agent || utt.User || "";
@@ -394,40 +394,8 @@ export default function RunDetail() {
         </div>
       )}
 
-      {/* Call Log timeline */}
-      {run.callLog && (
-        <div style={{ marginBottom: 32 }}>
-          <h2 style={{ fontSize: 16, marginBottom: 12 }}>Call Log Timeline</h2>
-          <div style={{ background: "#111", borderRadius: 8, padding: 16, border: "1px solid #222", maxHeight: 400, overflow: "auto" }}>
-            {(run.callLog as any[])
-              .filter((e: any) => e.type === "INFO")
-              .map((event: any, i: number) => (
-                <div key={i} style={{ display: "flex", gap: 12, marginBottom: 6, fontSize: 12 }}>
-                  <span style={{ color: "#666", fontFamily: "monospace", whiteSpace: "nowrap" }}>
-                    {event.timestamp?.split("T")[1]?.slice(0, 12)}
-                  </span>
-                  <span style={{
-                    color: event.category === "node_movement" ? "#3b82f6"
-                      : event.category === "TOOLS" ? "#f59e0b"
-                      : event.category === "VARIABLE_EXTRACTION" || event.category === "VARIABLE" ? "#a855f7"
-                      : event.category === "ROUTER" ? "#ec4899"
-                      : "#888",
-                    width: 140,
-                    flexShrink: 0,
-                  }}>
-                    {event.category}
-                  </span>
-                  <span style={{ color: "#ccc" }}>{event.message}</span>
-                  {event.node_id && (
-                    <span style={{ color: "#555", fontFamily: "monospace" }}>
-                      [{event.node_id.slice(0, 10)}]
-                    </span>
-                  )}
-                </div>
-              ))}
-          </div>
-        </div>
-      )}
+      {/* Call Log with category counts and filtering */}
+      {run.callLog && <CallLogViewer callLog={run.callLog as any[]} />}
     </div>
   );
 }
@@ -740,6 +708,101 @@ function CollapsibleSection({ title, children }: { title: string; children: Reac
           {children}
         </div>
       )}
+    </div>
+  );
+}
+
+// ─── Call Log Viewer with category counts ──────────────────────────
+
+function CallLogViewer({ callLog }: { callLog: any[] }) {
+  const [filter, setFilter] = useState<string | null>(null);
+  const [showDebug, setShowDebug] = useState(false);
+
+  const CATEGORY_COLORS: Record<string, string> = {
+    node_movement: "#3b82f6",
+    FLOW: "#3b82f6",
+    TOOLS: "#f59e0b",
+    VARIABLE_EXTRACTION: "#a855f7",
+    VARIABLE: "#a855f7",
+    CONVERSATION: "#22c55e",
+    ROUTER: "#ec4899",
+    TRANSITION: "#ec4899",
+  };
+
+  const categoryCounts: Record<string, { total: number; info: number; debug: number }> = {};
+  for (const e of callLog) {
+    const cat = e.category || "OTHER";
+    if (!categoryCounts[cat]) categoryCounts[cat] = { total: 0, info: 0, debug: 0 };
+    categoryCounts[cat].total++;
+    if (e.type === "INFO") categoryCounts[cat].info++;
+    if (e.type === "DEBUG") categoryCounts[cat].debug++;
+  }
+
+  const filtered = callLog.filter((e: any) => {
+    if (!showDebug && e.type === "DEBUG") return false;
+    if (filter && e.category !== filter) return false;
+    return true;
+  });
+
+  return (
+    <div style={{ marginBottom: 32 }}>
+      <h2 style={{ fontSize: 16, marginBottom: 12 }}>Call Log</h2>
+
+      <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 12 }}>
+        <button onClick={() => setFilter(null)} style={{
+          padding: "4px 10px", borderRadius: 4, fontSize: 11, cursor: "pointer",
+          border: `1px solid ${!filter ? "#fff" : "#333"}`,
+          background: !filter ? "#222" : "#111", color: !filter ? "#fff" : "#888",
+        }}>
+          All ({callLog.length})
+        </button>
+        {Object.entries(categoryCounts).sort((a, b) => b[1].total - a[1].total).map(([cat, counts]) => (
+          <button key={cat} onClick={() => setFilter(filter === cat ? null : cat)} style={{
+            padding: "4px 10px", borderRadius: 4, fontSize: 11, cursor: "pointer",
+            border: `1px solid ${filter === cat ? (CATEGORY_COLORS[cat] || "#888") : "#333"}`,
+            background: filter === cat ? `${CATEGORY_COLORS[cat] || "#888"}22` : "#111",
+            color: CATEGORY_COLORS[cat] || "#888",
+          }}>
+            {cat} ({counts.total})
+          </button>
+        ))}
+        <label style={{ fontSize: 11, color: "#666", display: "flex", alignItems: "center", gap: 4, marginLeft: 8 }}>
+          <input type="checkbox" checked={showDebug} onChange={(e) => setShowDebug(e.target.checked)} />
+          Show DEBUG
+        </label>
+      </div>
+
+      <div style={{ background: "#111", borderRadius: 8, padding: 16, border: "1px solid #222", maxHeight: 500, overflow: "auto" }}>
+        {filtered.map((event: any, i: number) => (
+          <div key={i} style={{
+            display: "flex", gap: 8, marginBottom: 4, fontSize: 11, lineHeight: 1.6,
+            opacity: event.type === "DEBUG" ? 0.6 : 1, padding: "2px 0",
+            borderBottom: event.category === "node_movement" ? "1px solid #222" : "none",
+          }}>
+            <span style={{ color: "#555", fontFamily: "monospace", whiteSpace: "nowrap", width: 85, flexShrink: 0 }}>
+              {event.timestamp?.split("T")[1]?.slice(0, 12)}
+            </span>
+            <span style={{ color: event.type === "DEBUG" ? "#555" : "#888", width: 40, flexShrink: 0, fontSize: 10 }}>
+              {event.type}
+            </span>
+            <span style={{ color: CATEGORY_COLORS[event.category] || "#888", width: 130, flexShrink: 0 }}>
+              {event.category}
+            </span>
+            <span style={{ color: "#ccc", flex: 1 }}>
+              {event.message}
+              {event.payload?.variable && <span style={{ color: "#a855f7" }}> {event.payload.variable}={event.payload.new_value || event.payload.value}</span>}
+              {event.payload?.toolName && <span style={{ color: "#f59e0b" }}> [{event.payload.toolName}]</span>}
+              {event.payload?.total_nodes && <span style={{ color: "#666" }}> ({event.payload.total_nodes} nodes)</span>}
+              {event.payload?.action && <span style={{ color: "#3b82f6" }}> ({event.payload.action})</span>}
+              {event.payload?.success === false && <span style={{ color: "#ef4444" }}> FAILED</span>}
+              {event.payload?.tools && <span style={{ color: "#666" }}> [{event.payload.tools.join(", ")}]</span>}
+              {event.payload?.next_node && <span style={{ color: "#3b82f6" }}> → {event.payload.next_node}</span>}
+            </span>
+            {event.node_id && <span style={{ color: "#444", fontFamily: "monospace", fontSize: 10, flexShrink: 0 }}>{event.node_id.slice(0, 8)}</span>}
+          </div>
+        ))}
+        {filtered.length === 0 && <div style={{ color: "#555", fontSize: 12, padding: 8 }}>No events match the current filter.</div>}
+      </div>
     </div>
   );
 }
