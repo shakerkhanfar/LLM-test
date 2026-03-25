@@ -1,9 +1,9 @@
-run = "cd backend && npm install && npx prisma generate && npx tsx src/app.ts"
+run = "npm run build && cd backend && npx tsx src/app.ts"
 entrypoint = "backend/src/app.ts"
 
 [deployment]
-run = ["sh", "-c", "cd backend && npm install && npx prisma generate && npx tsx src/app.ts"]
-build = ["sh", "-c", "cd backend && npm install && npx prisma generate && cd ../frontend && npm install && npm run build"]
+run = ["sh", "-c", "cd backend && npx tsx src/app.ts"]
+build = ["sh", "-c", "npm run build"]
 
 [nix]
 channel = "stable-24_05"
