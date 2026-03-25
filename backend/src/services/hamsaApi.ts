@@ -2,19 +2,19 @@ import dotenv from "dotenv";
 dotenv.config();
 
 const HAMSA_API_BASE =
-  process.env.HAMSA_API_BASE || "https://api.tryhamsa.ai";
+  process.env.HAMSA_API_BASE || "https://api.tryhamsa.com";
 const DEFAULT_API_KEY = process.env.HAMSA_API_KEY || "";
 
 function headers(apiKey?: string) {
   return {
     "Content-Type": "application/json",
-    Authorization: `Bearer ${apiKey || DEFAULT_API_KEY}`,
+    Authorization: `Token ${apiKey || DEFAULT_API_KEY}`,
   };
 }
 
 /**
  * Update the LLM model on a Hamsa voice agent.
- * Uses: PATCH /v2/voice-agents/{agentId}
+ * Docs: https://docs.tryhamsa.com/api-reference/endpoint/update-voice-agent-v2
  */
 export async function updateAgentModel(
   agentId: string,
@@ -56,10 +56,13 @@ export async function updateAgentModel(
 
 /**
  * Fetch the call log for a completed call.
- * Uses: GET /calls/{callId}/log
+ * Docs: https://docs.tryhamsa.com/api-reference/endpoint/get-call-log
+ * Endpoint: GET /v1/agent-analytics/logs/{callId}
  */
 export async function fetchCallLog(callId: string, apiKey?: string) {
-  const url = `${HAMSA_API_BASE}/calls/${callId}/log`;
+  const url = `${HAMSA_API_BASE}/v1/agent-analytics/logs/${callId}`;
+
+  console.log(`[HamsaAPI] Fetching call log: ${url}`);
 
   const res = await fetch(url, {
     method: "GET",
@@ -76,7 +79,6 @@ export async function fetchCallLog(callId: string, apiKey?: string) {
 
 /**
  * Get agent details.
- * Uses: GET /v2/voice-agents/{agentId}
  */
 export async function getAgent(agentId: string, apiKey?: string) {
   const url = `${HAMSA_API_BASE}/v2/voice-agents/${agentId}`;
