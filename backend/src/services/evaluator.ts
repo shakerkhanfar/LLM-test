@@ -122,9 +122,10 @@ function extractFlowData(callLog: any[]) {
   const nodeSequence: string[] = [];
 
   for (const e of callLog) {
-    if (e.category === "node_movement" && e.node_id) {
-      visitedNodeIds.add(e.node_id);
-      nodeSequence.push(e.node_id);
+    const nid = e.node_id || e.nodeId;
+    if (e.category === "node_movement" && nid) {
+      visitedNodeIds.add(nid);
+      nodeSequence.push(nid);
     }
   }
 

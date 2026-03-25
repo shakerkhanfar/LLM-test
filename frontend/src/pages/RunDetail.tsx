@@ -417,35 +417,63 @@ function FlowProgressionView({
   const visitedNodeIds = new Set<string>();
   const nodeMovements: Array<{ nodeId: string; timestamp: string }> = [];
 
+  // Check both node_id and nodeId (API returns camelCase)
   for (const e of callLog) {
-    if (e.category === "node_movement" && e.node_id) {
-      visitedNodeIds.add(e.node_id);
-      nodeMovements.push({ nodeId: e.node_id, timestamp: e.timestamp });
+    const nid = e.node_id || e.nodeId;
+    if (e.category === "node_movement" && nid) {
+      visitedNodeIds.add(nid);
+      nodeMovements.push({ nodeId: nid, timestamp: e.timestamp });
     }
   }
 
-  // If node_ids are null, try matching by conversation prompt messages
+  // If node_ids are null, match by conversation prompts and variables/tools
   if (visitedNodeIds.size === 0) {
+    // Match by prompt content (fuzzy — first 30 chars of the node message, ignoring template vars)
     const prompts = callLog.filter(
-      (e: any) => e.category === "CONVERSATION" && e.message === "Playing message (prompt) [non-blocking]"
+      (e: any) => e.message?.includes("Playing message")
     );
     for (const p of prompts) {
-      const msg = p.payload?.message || "";
-      // Match prompt to workflow node
+      const msg = (p.payload?.message || "").replace(/\{\{.*?\}\}/g, "").trim();
+      if (!msg) continue;
       for (const node of workflowNodes) {
-        if (node.message && msg.includes(node.message.slice(0, 50))) {
+        if (!node.message) continue;
+        const nodeMsg = node.message.replace(/\{\{.*?\}\}/g, "").trim();
+        // Match if first 30 non-template chars overlap
+        const msgStart = msg.slice(0, 40).trim();
+        const nodeStart = nodeMsg.slice(0, 40).trim();
+        if (msgStart && nodeStart && (msgStart.includes(nodeStart.slice(0, 20)) || nodeStart.includes(msgStart.slice(0, 20)))) {
           visitedNodeIds.add(node.id);
           nodeMovements.push({ nodeId: node.id, timestamp: p.timestamp });
           break;
         }
       }
     }
+
+    // Match tool nodes by tool name
+    const toolEvents = callLog.filter((e: any) => e.category === "TOOLS" && e.message === "Executing Tool");
+    for (const te of toolEvents) {
+      const toolName = te.payload?.toolName || "";
+      for (const node of workflowNodes) {
+        if (node.type === "tool" && node.description && toolName.includes(node.description.trim().slice(0, 15))) {
+          visitedNodeIds.add(node.id);
+          break;
+        }
+      }
+    }
+
+    // Match router nodes if we see ROUTER events
+    const routerEvents = callLog.filter((e: any) => e.category === "ROUTER");
+    if (routerEvents.length > 0) {
+      for (const node of workflowNodes) {
+        if (node.type === "router") visitedNodeIds.add(node.id);
+      }
+    }
   }
 
-  // Extract variables
+  // Extract variables (check both field naming conventions)
   const extractedVars = callLog
     .filter((e: any) =>
-      (e.category === "VARIABLE_EXTRACTION" && e.message?.includes("Updated variable")) ||
+      (e.category === "VARIABLE_EXTRACTION" && (e.message?.includes("Updated variable") || e.message?.includes("Extracted"))) ||
       (e.category === "VARIABLE" && e.message?.includes("Extracted variable"))
     )
     .map((e: any) => ({
@@ -457,10 +485,10 @@ function FlowProgressionView({
 
   // Extract tool calls
   const toolCalls = callLog
-    .filter((e: any) => e.category === "TOOLS" && e.message === "Executing Tool")
+    .filter((e: any) => e.category === "TOOLS" && (e.message === "Executing Tool" || e.message?.includes("Executing")))
     .map((e: any) => ({
       name: e.payload?.toolName,
-      nodeId: e.node_id,
+      nodeId: e.node_id || e.nodeId,
       timestamp: e.timestamp,
     }));
 
