@@ -25,12 +25,23 @@ export async function updateAgentModel(
   const url = `${HAMSA_API_BASE}/v2/voice-agents/${agentId}`;
 
   // Parse provider from model string if not given (e.g. "openai/gpt-4o" -> provider=OpenAI, model=gpt-4o)
+  // Hamsa expects exact casing: OpenAI, Gemini, deepmyst, Custom, Groq
+  const PROVIDER_MAP: Record<string, string> = {
+    openai: "OpenAI",
+    gemini: "Gemini",
+    deepmyst: "deepmyst",
+    custom: "Custom",
+    groq: "Groq",
+  };
+
   let llmProvider = provider;
   let llmModel = model;
   if (!provider && model.includes("/")) {
     const [p, m] = model.split("/", 2);
-    llmProvider = p;
+    llmProvider = PROVIDER_MAP[p.toLowerCase()] || p;
     llmModel = m;
+  } else if (llmProvider) {
+    llmProvider = PROVIDER_MAP[llmProvider.toLowerCase()] || llmProvider;
   }
 
   const body: Record<string, unknown> = {
