@@ -1,0 +1,109 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Project {
+  id              String      @id @default(cuid())
+  name            String
+  agentId         String      // Hamsa agent ID
+  hamsaApiKey     String?     // Hamsa API key for this agent
+  description     String?
+  agentStructure  Json?       // Full agent JSON (workflow nodes, edges, tools)
+  flowDefinition  Json?       // Extracted expected node sequence + tool calls
+  criteria        Criterion[]
+  runs            Run[]
+  createdAt       DateTime    @default(now())
+  updatedAt       DateTime    @updatedAt
+}
+
+model Criterion {
+  id            String        @id @default(cuid())
+  projectId     String
+  project       Project       @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  key           String        // e.g. "language_switching", "tool_calls"
+  label         String?       // Human-readable name
+  type          CriterionType
+  expectedValue Json          // Flexible — depends on type
+  weight        Float         @default(1.0)
+  results       EvalResult[]
+  createdAt     DateTime      @default(now())
+
+  @@unique([projectId, key])
+}
+
+enum CriterionType {
+  DETERMINISTIC
+  LLM_JUDGE
+  STRUCTURAL
+  WORD_ACCURACY
+  LATENCY
+}
+
+model Run {
+  id            String      @id @default(cuid())
+  projectId     String
+  project       Project     @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  modelUsed     String      // e.g. "openai/gpt-4o", "groq/llama-3.3-70b-versatile"
+  hamsaCallId   String?     // Returned by Hamsa after call is initiated
+  status        RunStatus   @default(PENDING)
+  callLog       Json?       // Raw Hamsa call log array (nodes, tools, timestamps)
+  transcript    Json?       // Raw webhook transcript payload
+  webhookData   Json?       // Full webhook payload (includes summary, recording URL, etc.)
+  overallScore  Float?      // Computed weighted average of all criteria
+  errorLog      String?
+  startedAt     DateTime?
+  completedAt   DateTime?
+  evalResults   EvalResult[]
+  wordLabels    WordLabel[]
+  createdAt     DateTime    @default(now())
+}
+
+enum RunStatus {
+  PENDING
+  RUNNING
+  AWAITING_DATA
+  EVALUATING
+  COMPLETE
+  FAILED
+}
+
+model EvalResult {
+  id            String    @id @default(cuid())
+  runId         String
+  run           Run       @relation(fields: [runId], references: [id], onDelete: Cascade)
+  criterionId   String
+  criterion     Criterion @relation(fields: [criterionId], references: [id], onDelete: Cascade)
+  passed        Boolean?
+  score         Float?    // 0.0 - 1.0
+  detail        String?   // Explanation from LLM judge or diff output
+  metadata      Json?     // Extra data (e.g. timing breakdown for LATENCY)
+  evaluatedAt   DateTime  @default(now())
+
+  @@unique([runId, criterionId])
+}
+
+model WordLabel {
+  id            String    @id @default(cuid())
+  runId         String
+  run           Run       @relation(fields: [runId], references: [id], onDelete: Cascade)
+  wordIndex     Int       // Position in flattened transcript word array
+  utteranceIndex Int      // Which utterance this word belongs to
+  originalWord  String    // What the transcript says
+  labelType     LabelType
+  correction    String?   // What it should have been
+  createdAt     DateTime  @default(now())
+
+  @@unique([runId, wordIndex])
+}
+
+enum LabelType {
+  WRONG_WORD
+  WRONG_LANGUAGE
+  WRONG_GENDER
+  HALLUCINATED
+}
