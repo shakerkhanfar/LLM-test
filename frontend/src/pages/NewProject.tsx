@@ -3,7 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { createProject } from "../api/client";
 
 const DEFAULT_CRITERIA = [
-  { key: "language_switching", label: "Language Switching", type: "LLM_JUDGE", expectedValue: { rule: "Agent must respond in the same language the user spoke in" }, weight: 1 },
+  { key: "language_switching", label: "Language Switching", type: "LLM_JUDGE", expectedValue: { rule: "Evaluate language consistency: The agent should maintain the primary language chosen by the user throughout the conversation. If the user speaks Arabic, the agent should respond in Arabic even if the user mixes in English words (like plate numbers, names, etc). Mixing in technical terms or data in English is NOT an error. Only flag if the agent switches its primary response language without being asked to, or if the user explicitly requests a language switch and the agent fails to comply. If no language switch was requested and the agent stayed consistent, return passed=null and score=null (not applicable)." }, weight: 1 },
   { key: "gender_detection", label: "Gender Detection", type: "LLM_JUDGE", expectedValue: { rule: "Agent must use gender-appropriate Arabic grammar matching the detected customer gender" }, weight: 1 },
   { key: "tool_calls", label: "Tool Calls", type: "DETERMINISTIC", expectedValue: { requiredTools: [] }, weight: 1 },
   { key: "node_transitions", label: "Node Transitions", type: "STRUCTURAL", expectedValue: { expectedSequence: [] }, weight: 1 },
@@ -32,8 +32,13 @@ export default function NewProject() {
       let agentStructure;
       if (agentJson.trim()) {
         agentStructure = JSON.parse(agentJson);
-        // If it's wrapped in { data: { ... } }, unwrap
-        if (agentStructure.data) agentStructure = agentStructure.data;
+        // Unwrap various wrapper formats
+        if (agentStructure.data?.workflow) agentStructure = agentStructure.data;
+        else if (agentStructure.data?.id) agentStructure = agentStructure.data;
+        // Verify it has the workflow
+        if (!agentStructure.workflow) {
+          console.warn("Agent JSON doesn't contain a workflow. Keys:", Object.keys(agentStructure));
+        }
       }
 
       const project = await createProject({
