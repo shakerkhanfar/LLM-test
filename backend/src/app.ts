@@ -1,5 +1,6 @@
 import express from "express";
 import cors from "cors";
+import path from "path";
 import dotenv from "dotenv";
 
 dotenv.config();
@@ -15,7 +16,7 @@ const PORT = process.env.PORT || 3001;
 app.use(cors());
 app.use(express.json({ limit: "10mb" }));
 
-// Routes
+// API Routes
 app.use("/api/projects", projectsRouter);
 app.use("/api/runs", runsRouter);
 app.use("/api/labels", labelsRouter);
@@ -24,6 +25,13 @@ app.use("/api/webhooks", webhooksRouter);
 // Health check
 app.get("/api/health", (_req, res) => {
   res.json({ ok: true, timestamp: new Date().toISOString() });
+});
+
+// Serve frontend build (for Replit / production)
+const frontendDist = path.join(__dirname, "../../frontend/dist");
+app.use(express.static(frontendDist));
+app.get("*", (_req, res) => {
+  res.sendFile(path.join(frontendDist, "index.html"));
 });
 
 import { initQueue } from "./services/evaluationRunner";
