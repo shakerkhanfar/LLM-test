@@ -86,7 +86,7 @@ export async function updateAgentModel(
  * Endpoint: GET /v1/agent-analytics/logs/{callId}
  */
 export async function fetchCallLog(callId: string, apiKey?: string) {
-  const url = `${HAMSA_API_BASE}/v1/agent-analytics/logs/${callId}`;
+  const url = `${HAMSA_API_BASE}/v1/agent-analytics/logs?jobId=${callId}`;
 
   console.log(`[HamsaAPI] Fetching call log: ${url}`);
 
@@ -100,7 +100,9 @@ export async function fetchCallLog(callId: string, apiKey?: string) {
     throw new Error(`Failed to fetch call log: ${res.status} — ${text}`);
   }
 
-  return res.json();
+  const json = await res.json();
+  // Response is { success: true, data: [...logs] } — return the data array
+  return json.data || json;
 }
 
 /**
