@@ -2,19 +2,36 @@ import { useEffect, useState } from "react";
 import { useParams, Link } from "react-router-dom";
 import { getRun, createLabel, deleteLabel, triggerEvaluation, fetchLogs } from "../api/client";
 
-const LABEL_TYPES = ["WRONG_WORD", "WRONG_LANGUAGE", "WRONG_GENDER", "HALLUCINATED"] as const;
+// Labels for Agent utterances
+const AGENT_LABEL_TYPES = [
+  { type: "LLM_ERROR", label: "Wrong Word (LLM)", desc: "LLM generated the wrong word" },
+  { type: "TTS_ERROR", label: "Wrong Pronunciation (TTS)", desc: "Text-to-speech mispronounced" },
+  { type: "WRONG_LANGUAGE", label: "Wrong Language", desc: "Word in wrong language" },
+  { type: "WRONG_GENDER", label: "Wrong Gender", desc: "Wrong gender inflection" },
+  { type: "HALLUCINATED", label: "Hallucinated", desc: "Word shouldn't have been said" },
+];
+
+// Labels for User utterances
+const USER_LABEL_TYPES = [
+  { type: "ASR_ERROR", label: "Wrong Transcription (ASR)", desc: "Speech-to-text transcribed incorrectly" },
+  { type: "WRONG_WORD", label: "Wrong Word", desc: "Word is incorrect" },
+];
+
 const LABEL_COLORS: Record<string, string> = {
   WRONG_WORD: "#ef4444",
   WRONG_LANGUAGE: "#f59e0b",
   WRONG_GENDER: "#a855f7",
   HALLUCINATED: "#ec4899",
+  LLM_ERROR: "#ef4444",
+  TTS_ERROR: "#f97316",
+  ASR_ERROR: "#06b6d4",
 };
 
 export default function RunDetail() {
   const { id, runId } = useParams();
   const [run, setRun] = useState<any>(null);
   const [loading, setLoading] = useState(true);
-  const [labelingWord, setLabelingWord] = useState<{ wordIndex: number; utteranceIndex: number; word: string } | null>(null);
+  const [labelingWord, setLabelingWord] = useState<{ wordIndex: number; utteranceIndex: number; word: string; speaker: string } | null>(null);
 
   const load = () => {
     getRun(runId!)
@@ -311,7 +328,7 @@ export default function RunDetail() {
                         <span
                           key={wi}
                           onClick={() =>
-                            setLabelingWord({ wordIndex: actualGlobalIndex, utteranceIndex: ui, word })
+                            setLabelingWord({ wordIndex: actualGlobalIndex, utteranceIndex: ui, word, speaker })
                           }
                           style={{
                             cursor: "pointer",
@@ -335,31 +352,41 @@ export default function RunDetail() {
 
           {/* Labeling popup */}
           {labelingWord && (
+            <div
+              onClick={() => setLabelingWord(null)}
+              style={{ position: "fixed", top: 0, left: 0, right: 0, bottom: 0, background: "rgba(0,0,0,0.5)", zIndex: 999 }}
+            />
+          )}
+          {labelingWord && (
             <div style={{
               position: "fixed", top: "50%", left: "50%", transform: "translate(-50%, -50%)",
               background: "#1a1a1a", border: "1px solid #333", borderRadius: 8, padding: 20,
-              zIndex: 1000, minWidth: 280,
+              zIndex: 1001, minWidth: 280,
             }}>
-              <div style={{ fontSize: 14, marginBottom: 12 }}>
+              <div style={{ fontSize: 14, marginBottom: 4 }}>
                 Label word: <strong style={{ color: "#fff" }}>{labelingWord.word}</strong>
               </div>
-              <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-                {LABEL_TYPES.map((type) => (
+              <div style={{ fontSize: 11, color: "#888", marginBottom: 12 }}>
+                Speaker: <span style={{ color: labelingWord.speaker === "Agent" ? "#3b82f6" : "#22c55e" }}>{labelingWord.speaker}</span>
+              </div>
+              <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                {(labelingWord.speaker === "Agent" ? AGENT_LABEL_TYPES : USER_LABEL_TYPES).map((lt) => (
                   <button
-                    key={type}
-                    onClick={() => handleLabel(type)}
+                    key={lt.type}
+                    onClick={() => handleLabel(lt.type)}
                     style={{
-                      background: `${LABEL_COLORS[type]}22`,
-                      color: LABEL_COLORS[type],
-                      border: `1px solid ${LABEL_COLORS[type]}44`,
-                      padding: "6px 12px",
+                      background: `${LABEL_COLORS[lt.type] || "#888"}22`,
+                      color: LABEL_COLORS[lt.type] || "#888",
+                      border: `1px solid ${LABEL_COLORS[lt.type] || "#888"}44`,
+                      padding: "8px 14px",
                       borderRadius: 4,
                       cursor: "pointer",
                       fontSize: 13,
                       textAlign: "left",
                     }}
                   >
-                    {type.replace(/_/g, " ")}
+                    <div style={{ fontWeight: 500 }}>{lt.label}</div>
+                    <div style={{ fontSize: 11, opacity: 0.7 }}>{lt.desc}</div>
                   </button>
                 ))}
                 {/* Check if already labeled — show remove option */}
@@ -383,13 +410,6 @@ export default function RunDetail() {
               </div>
             </div>
           )}
-          {labelingWord && (
-            <div
-              onClick={() => setLabelingWord(null)}
-              style={{ position: "fixed", top: 0, left: 0, right: 0, bottom: 0, background: "rgba(0,0,0,0.5)", zIndex: 999 }}
-            />
-          )}
-
           {/* Word accuracy stats */}
           {wordLabels.length > 0 && (
             <div style={{ marginTop: 16, padding: 12, background: "#111", borderRadius: 6, border: "1px solid #222" }}>
