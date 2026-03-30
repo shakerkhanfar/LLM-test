@@ -459,9 +459,8 @@ export default function CallAgent({ runId, agentId, apiKey, webhookUrl, onCallEn
                     borderRadius: msg.speaker === "User" ? "12px 12px 0 12px" : "12px 12px 12px 0",
                     background: msg.speaker === "Agent" ? "#1a2332" : "#1a331a",
                     border: `1px solid ${msg.speaker === "Agent" ? "#1e3a5f" : "#1e5f1e"}`,
-                    direction: "auto" as const,
                     textAlign: "start" as const,
-                  }}>
+                  }} dir="auto">
                     <div style={{ fontSize: 10, color: msg.speaker === "Agent" ? "#3b82f6" : "#22c55e", marginBottom: 4 }}>
                       {msg.speaker === "Agent" ? "Agent" : "You"}
                     </div>
