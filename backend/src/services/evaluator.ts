@@ -104,6 +104,8 @@ async function evaluateCriterion(criterion: Criterion, run: any) {
       return evaluateLatency(criterion, run);
     case "FLOW_PROGRESSION":
       return evaluateFlowProgression(criterion, run);
+    case "ACTION_CONSISTENCY":
+      return evaluateActionConsistency(criterion, run);
     default:
       return { passed: null, score: null, detail: `Unknown type: ${criterion.type}` };
   }
@@ -630,6 +632,218 @@ Respond with JSON only:
     metadata: {
       flow,
       llmAnalysis: result.detail,
+    } as any,
+  };
+}
+
+// ─── ACTION_CONSISTENCY — Logs vs Transcript Cross-Reference ──────
+// Compares what the agent said (transcript) against what the system
+// logs show it actually did. Identifies mismatches, errors, root causes,
+// and actionable fix suggestions.
+
+async function evaluateActionConsistency(criterion: Criterion, run: any) {
+  const callLog = run.callLog as any[] | null;
+  const transcript = run.transcript as any[] | null;
+  const agentStructure = run.project?.agentStructure;
+
+  if (!callLog && !transcript) {
+    return { passed: null, score: null, detail: "No data available for consistency check" };
+  }
+  if (!callLog || (Array.isArray(callLog) && callLog.length === 0)) {
+    return { passed: null, score: null, detail: "No call log available — cannot cross-reference actions" };
+  }
+  if (!transcript || (Array.isArray(transcript) && transcript.length === 0)) {
+    return { passed: null, score: null, detail: "No transcript available — cannot cross-reference speech" };
+  }
+
+  // ── Build AGENT DEFINITION section ──
+  let agentDefSection = "";
+  if (agentStructure?.workflow?.nodes) {
+    const nodes = agentStructure.workflow.nodes as any[];
+    const edges = agentStructure.workflow.edges as any[];
+    agentDefSection = "AGENT DEFINITION (what the agent is designed to do):\n";
+    for (const node of nodes) {
+      agentDefSection += `- Node "${node.label}" (id: ${node.id}, type: ${node.type})\n`;
+      if (node.message) {
+        agentDefSection += `  Prompt: ${node.message.slice(0, 200)}${node.message.length > 200 ? "..." : ""}\n`;
+      }
+      if (node.transitions?.length) {
+        for (const t of node.transitions) {
+          agentDefSection += `  Transition: "${t.condition?.description || t.condition?.prompt || "auto"}"\n`;
+        }
+      }
+      if (node.extractVariables?.variables?.length) {
+        agentDefSection += `  Extracts: ${node.extractVariables.variables.map((v: any) => `${v.name} (${v.type || "string"})`).join(", ")}\n`;
+      }
+      if (node.tools?.length) {
+        agentDefSection += `  Tools: ${node.tools.map((t: any) => t.name || t).join(", ")}\n`;
+      }
+      const nodeEdges = edges?.filter((e: any) => e.source === node.id) || [];
+      if (nodeEdges.length) {
+        agentDefSection += `  → Connects to: ${nodeEdges.map((e: any) => e.target).join(", ")}\n`;
+      }
+      agentDefSection += "\n";
+    }
+  }
+
+  // ── Build CALL LOG section (actions the system recorded) ──
+  // Filter to relevant events, cap at 250 to stay within context limits
+  const relevantCategories = new Set([
+    "node_movement", "CONVERSATION", "TOOLS", "VARIABLE_EXTRACTION",
+    "VARIABLE", "FLOW", "ROUTER", "ERROR", "WARNING", "KNOWLEDGE_BASE", "MCP",
+  ]);
+  const relevantEvents = callLog.filter((e: any) =>
+    relevantCategories.has(e.category) ||
+    e.type === "ERROR" ||
+    e.type === "WARNING"
+  );
+  const cappedEvents = relevantEvents.slice(0, 250);
+  const wasTruncated = relevantEvents.length > 250;
+
+  let callLogSection = "CALL LOG (timestamped system events — what the agent actually did):\n";
+  if (wasTruncated) {
+    callLogSection += `[NOTE: Log truncated to 250 of ${relevantEvents.length} events]\n`;
+  }
+  for (const e of cappedEvents) {
+    callLogSection += `[${e.timestamp}] ${e.category}: ${e.message}`;
+    if (e.payload?.variable) callLogSection += ` → ${e.payload.variable}=${e.payload.new_value || e.payload.value || ""}`;
+    if (e.payload?.toolName) callLogSection += ` → tool: ${e.payload.toolName}`;
+    if (e.payload?.response?.ok === false) callLogSection += ` [FAILED]`;
+    if (e.payload?.error) callLogSection += ` [ERROR: ${e.payload.error}]`;
+    if (e.payload?.message && e.category === "CONVERSATION") {
+      const msg = String(e.payload.message).slice(0, 120);
+      callLogSection += ` → "${msg}${String(e.payload.message).length > 120 ? "..." : ""}"`;
+    }
+    if (e.payload?.total_nodes) callLogSection += ` (${e.payload.total_nodes} nodes)`;
+    if (e.payload?.action) callLogSection += ` (${e.payload.action})`;
+    callLogSection += "\n";
+  }
+
+  // ── Extract tool results specifically for cross-referencing ──
+  const toolResults: string[] = [];
+  for (let i = 0; i < callLog.length; i++) {
+    const e = callLog[i];
+    if (e.category === "TOOLS" && e.message === "Tool Success" && e.payload?.response) {
+      const toolName = e.payload.toolName || "unknown";
+      const response = JSON.stringify(e.payload.response).slice(0, 300);
+      toolResults.push(`Tool "${toolName}" returned: ${response}`);
+    }
+    if (e.category === "TOOLS" && (e.payload?.response?.ok === false || e.payload?.error)) {
+      const toolName = e.payload.toolName || "unknown";
+      toolResults.push(`Tool "${toolName}" FAILED: ${e.payload.error || JSON.stringify(e.payload.response).slice(0, 200)}`);
+    }
+  }
+  let toolResultsSection = "";
+  if (toolResults.length > 0) {
+    toolResultsSection = "TOOL EXECUTION RESULTS:\n" + toolResults.join("\n") + "\n";
+  }
+
+  // ── Build TRANSCRIPT section ──
+  let transcriptSection = "CONVERSATION TRANSCRIPT (what was said):\n";
+  for (const t of transcript) {
+    if (t.Agent) transcriptSection += `[Agent]: ${t.Agent}\n`;
+    if (t.User) {
+      const meta = t.metadata ? ` (gender: ${t.metadata.gender || "unknown"}, time: ${t.metadata.created_at || "?"})` : "";
+      transcriptSection += `[User${meta}]: ${t.User}\n`;
+    }
+  }
+
+  // ── Build the prompt ──
+  const prompt = `You are a QA engineer performing a detailed cross-reference analysis between an AI voice agent's CALL LOG (system events) and its TRANSCRIPT (what was said).
+
+Your task is to verify that what the agent SAID matches what it actually DID, identify every discrepancy, analyze the root cause of each error, and suggest specific fixes.
+
+${agentDefSection}
+${callLogSection}
+${toolResultsSection}
+${transcriptSection}
+
+ANALYSIS INSTRUCTIONS:
+Go through the conversation turn by turn. For each agent turn in the transcript:
+1. Find the corresponding system events in the call log
+2. Verify the agent's speech matches what the logs show happened
+3. Check these specific categories:
+
+A. **Tool Call Accuracy**: Agent says "I found your balance is X" — does the log show a tool was called? Did the tool return X? Or did the agent misread/hallucinate the data?
+B. **Action Execution**: Agent says "I've transferred you" or "I've updated your info" — does the log confirm this action was executed successfully?
+C. **Variable Extraction**: Agent confirms a value from the user — does the log show the variable was extracted correctly with the right value?
+D. **Error Handling**: When a tool fails or an error occurs in the log, did the agent handle it gracefully or did it pretend the action succeeded?
+E. **Node Transition Correctness**: Based on what the user said, did the agent transition to the correct node? Or did it stay stuck / go to the wrong node?
+F. **Phantom Actions**: Did the agent claim to do something that has no corresponding event in the logs?
+G. **Missed Actions**: Did the logs show an action was needed but the agent never performed it?
+H. **Data Accuracy**: When the agent read data from a tool response, did it read ALL fields correctly, or did it skip, misread, or hallucinate values?
+
+For each error found, determine the ROOT CAUSE:
+- "LLM_HALLUCINATION" — the LLM generated information not in the tool response
+- "LLM_MISREAD" — the LLM read the tool response but extracted wrong values
+- "TOOL_FAILURE" — the tool/API call failed and agent didn't handle it
+- "TOOL_NOT_CALLED" — the agent should have called a tool but didn't
+- "WRONG_TOOL" — the agent called the wrong tool
+- "WRONG_TRANSITION" — the flow moved to an incorrect node
+- "STUCK_TRANSITION" — the flow should have advanced but didn't
+- "ASR_ERROR" — speech recognition misheard the user, causing downstream issues
+- "PROMPT_ISSUE" — the node's prompt is ambiguous or incomplete, causing wrong behavior
+- "MISSING_ERROR_HANDLING" — no fallback for a failure scenario
+
+Respond with JSON only:
+{
+  "passed": true | false,
+  "score": 0.0 to 1.0,
+  "total_agent_turns": number,
+  "turns_with_errors": number,
+  "errors": [
+    {
+      "turn_index": number,
+      "timestamp": "from call log if available",
+      "category": "TOOL_ACCURACY" | "ACTION_EXECUTION" | "VARIABLE_EXTRACTION" | "ERROR_HANDLING" | "NODE_TRANSITION" | "PHANTOM_ACTION" | "MISSED_ACTION" | "DATA_ACCURACY",
+      "severity": "critical" | "major" | "minor",
+      "what_agent_said": "exact quote from transcript",
+      "what_log_shows": "what the system log recorded",
+      "expected_behavior": "what should have happened",
+      "root_cause": "LLM_HALLUCINATION | LLM_MISREAD | TOOL_FAILURE | TOOL_NOT_CALLED | WRONG_TOOL | WRONG_TRANSITION | STUCK_TRANSITION | ASR_ERROR | PROMPT_ISSUE | MISSING_ERROR_HANDLING",
+      "suggested_fix": "specific actionable fix — be concrete (e.g., 'Add null check for field X in tool response', 'Add fallback message when API returns empty')",
+      "impact": "what user-facing impact this had"
+    }
+  ],
+  "correct_actions": [
+    {
+      "category": "TOOL_ACCURACY" | "ACTION_EXECUTION" | "VARIABLE_EXTRACTION" | "NODE_TRANSITION" | "DATA_ACCURACY",
+      "description": "what went right"
+    }
+  ],
+  "error_summary": {
+    "by_root_cause": { "LLM_HALLUCINATION": number, "LLM_MISREAD": number, "TOOL_FAILURE": number, "TOOL_NOT_CALLED": number, "WRONG_TOOL": number, "WRONG_TRANSITION": number, "STUCK_TRANSITION": number, "ASR_ERROR": number, "PROMPT_ISSUE": number, "MISSING_ERROR_HANDLING": number },
+    "by_severity": { "critical": number, "major": number, "minor": number },
+    "by_category": { "TOOL_ACCURACY": number, "ACTION_EXECUTION": number, "VARIABLE_EXTRACTION": number, "ERROR_HANDLING": number, "NODE_TRANSITION": number, "PHANTOM_ACTION": number, "MISSED_ACTION": number, "DATA_ACCURACY": number }
+  },
+  "recommendations": [
+    "Top priority fix — most impactful change to improve the agent",
+    "Second priority fix",
+    "Third priority fix"
+  ],
+  "detail": "3-5 sentence executive summary: how well the agent's speech matched its actions, main failure patterns, and what to fix first"
+}`;
+
+  const result = await evaluateWithLLMJudge(prompt, "");
+
+  // Parse the structured response from detail for metadata
+  let parsedAnalysis: any = null;
+  if (result.detail) {
+    try { parsedAnalysis = JSON.parse(result.detail); } catch {}
+  }
+
+  return {
+    passed: parsedAnalysis?.passed ?? result.passed,
+    score: parsedAnalysis?.score ?? result.score,
+    detail: result.detail,
+    metadata: {
+      type: "ACTION_CONSISTENCY",
+      errors: parsedAnalysis?.errors || [],
+      correct_actions: parsedAnalysis?.correct_actions || [],
+      error_summary: parsedAnalysis?.error_summary || null,
+      recommendations: parsedAnalysis?.recommendations || [],
+      total_agent_turns: parsedAnalysis?.total_agent_turns || 0,
+      turns_with_errors: parsedAnalysis?.turns_with_errors || 0,
     } as any,
   };
 }

@@ -53,9 +53,20 @@ Respond with JSON only:
 
   try {
     const result = JSON.parse(content);
+
+    // For full-prompt callers (FLOW_PROGRESSION, ACTION_CONSISTENCY), return
+    // the raw JSON as detail so they can parse the full structured response.
+    if (isFullPrompt) {
+      return {
+        passed: result.passed === null ? null : Boolean(result.passed),
+        score: result.score === null ? null : (Number(result.score) || 0),
+        detail: content,
+      };
+    }
+
     return {
       passed: result.passed === null ? null : Boolean(result.passed),
-      score: result.score === null ? null : Number(result.score) || 0,
+      score: result.score === null ? null : (Number(result.score) || 0),
       detail: String(result.detail || ""),
     };
   } catch {

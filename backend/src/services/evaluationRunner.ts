@@ -79,16 +79,39 @@ export async function runCallLogFetch(runId: string, callId: string, apiKey?: st
     return;
   }
 
-  // Inline execution
-  try {
-    const logData = await fetchCallLog(callId, apiKey);
-    await prisma.run.update({
-      where: { id: runId },
-      data: { callLog: logData as any },
-    });
-    console.log(`[Eval] Call log fetched for run ${runId}`);
-    await runEvaluationCheck(runId);
-  } catch (err) {
-    console.error(`[Eval] Failed to fetch call log for run ${runId}: ${err}`);
+  // Inline execution with retry (Hamsa API may not have logs ready immediately)
+  const maxRetries = 3;
+  const retryDelayMs = 2000;
+
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      const logData = await fetchCallLog(callId, apiKey);
+      const hasData = Array.isArray(logData) ? logData.length > 0 : logData != null;
+      if (!hasData && attempt < maxRetries) {
+        console.log(`[Eval] Call log empty for run ${runId}, retry ${attempt}/${maxRetries}...`);
+        await new Promise((r) => setTimeout(r, retryDelayMs * attempt));
+        continue;
+      }
+      await prisma.run.update({
+        where: { id: runId },
+        data: { callLog: logData as any },
+      });
+      console.log(`[Eval] Call log fetched for run ${runId} (attempt ${attempt})`);
+      await runEvaluationCheck(runId);
+      return;
+    } catch (err) {
+      if (attempt < maxRetries) {
+        console.log(`[Eval] Call log fetch failed for run ${runId}, retry ${attempt}/${maxRetries}: ${err}`);
+        await new Promise((r) => setTimeout(r, retryDelayMs * attempt));
+      } else {
+        console.error(`[Eval] Failed to fetch call log for run ${runId} after ${maxRetries} attempts: ${err}`);
+        // Still trigger evaluation with whatever data we have
+        try {
+          await runEvaluationCheck(runId);
+        } catch (evalErr) {
+          console.error(`[Eval] Evaluation also failed for run ${runId}: ${evalErr}`);
+        }
+      }
+    }
   }
 }

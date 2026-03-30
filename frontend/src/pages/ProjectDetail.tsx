@@ -100,6 +100,7 @@ export default function ProjectDetail() {
         </Link>
         <h1 style={{ margin: "8px 0" }}>{project.name}</h1>
         {project.description && <p style={{ color: "#888", margin: 0 }}>{project.description}</p>}
+        {project.hamsaApiKey && <WebhookUrlBar url={`${window.location.origin}/api/webhooks/hamsa`} />}
       </div>
 
       {/* Summary cards */}
@@ -223,7 +224,12 @@ export default function ProjectDetail() {
                 </Link>
               </td>
               <td style={tdStyle}>
-                <span style={{ color: STATUS_COLORS[run.status] || "#888" }}>{run.status}</span>
+                <span style={{ color: STATUS_COLORS[run.status] || "#888", display: "flex", alignItems: "center", gap: 4 }}>
+                  {(run.status === "RUNNING" || run.status === "AWAITING_DATA" || run.status === "EVALUATING") && (
+                    <span style={{ display: "inline-block", width: 10, height: 10, border: "2px solid currentColor", borderTopColor: "transparent", borderRadius: "50%", animation: "spin 1s linear infinite" }} />
+                  )}
+                  {run.status}
+                </span>
               </td>
               <td style={tdStyle}>
                 {run.overallScore != null ? (
@@ -286,14 +292,17 @@ export default function ProjectDetail() {
         </tbody>
       </table>
 
+      <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
+
       {/* Call Agent dialog */}
       {callingRunId && project.hamsaApiKey && (
         <CallAgent
           runId={callingRunId}
           agentId={project.agentId}
           apiKey={project.hamsaApiKey}
+          webhookUrl={`${window.location.origin}/api/webhooks/hamsa`}
           onCallEnded={() => {
-            setTimeout(load, 2000); // Reload after a short delay for webhook
+            setTimeout(load, 2000);
           }}
           onClose={() => {
             setCallingRunId(null);
@@ -352,3 +361,29 @@ const smallBtnStyle: React.CSSProperties = {
 };
 const thStyle: React.CSSProperties = { padding: "8px 12px", fontSize: 13 };
 const tdStyle: React.CSSProperties = { padding: "8px 12px" };
+
+function WebhookUrlBar({ url }: { url: string }) {
+  const [copied, setCopied] = useState(false);
+  return (
+    <div style={{
+      marginTop: 8, padding: "6px 12px", background: "#0a0a0a", borderRadius: 6,
+      border: "1px solid #222", display: "flex", alignItems: "center", gap: 8,
+    }}>
+      <span style={{ fontSize: 11, color: "#666" }}>Webhook URL:</span>
+      <code style={{ fontSize: 11, color: "#888", flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+        {url}
+      </code>
+      <button
+        onClick={() => { navigator.clipboard.writeText(url).catch(() => {}); setCopied(true); setTimeout(() => setCopied(false), 2000); }}
+        style={{
+          background: copied ? "#22c55e22" : "#1a1a1a",
+          border: `1px solid ${copied ? "#22c55e44" : "#333"}`,
+          color: copied ? "#22c55e" : "#888",
+          padding: "2px 10px", borderRadius: 3, cursor: "pointer", fontSize: 11,
+        }}
+      >
+        {copied ? "Copied!" : "Copy"}
+      </button>
+    </div>
+  );
+}

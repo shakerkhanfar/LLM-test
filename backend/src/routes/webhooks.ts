@@ -1,6 +1,6 @@
 import { Router } from "express";
 import { PrismaClient } from "@prisma/client";
-import { runEvaluationCheck, runCallLogFetch } from "../services/evaluationRunner";
+import { runCallLogFetch } from "../services/evaluationRunner";
 
 const router = Router();
 const prisma = new PrismaClient();
@@ -64,12 +64,14 @@ router.post("/hamsa", async (req, res) => {
 
   console.log(`[Webhook] Stored transcript for run ${run.id} (callId=${callId})`);
 
-  // Fetch call log from Hamsa API
+  // Fetch call log from Hamsa API (includes retry logic + triggers evaluation)
+  // Wrapped in try-catch so webhook always returns 200 (transcript is already saved)
   const apiKey = (run as any).project?.hamsaApiKey || undefined;
-  await runCallLogFetch(run.id, callId, apiKey);
-
-  // Also trigger evaluation check (in case call log already exists)
-  await runEvaluationCheck(run.id);
+  try {
+    await runCallLogFetch(run.id, callId, apiKey);
+  } catch (err) {
+    console.error(`[Webhook] runCallLogFetch failed for run ${run.id}: ${err}`);
+  }
 
   res.json({ ok: true, runId: run.id });
 });

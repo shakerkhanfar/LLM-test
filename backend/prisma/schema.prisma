@@ -43,6 +43,7 @@ enum CriterionType {
   WORD_ACCURACY
   LATENCY
   FLOW_PROGRESSION
+  ACTION_CONSISTENCY
 }
 
 model Run {

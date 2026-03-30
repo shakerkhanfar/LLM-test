@@ -17,6 +17,11 @@ const USER_LABEL_TYPES = [
   { type: "WRONG_WORD", label: "Wrong Word", desc: "Word is incorrect" },
 ];
 
+const LABEL_TYPES = [
+  ...AGENT_LABEL_TYPES.map((t) => t.type),
+  ...USER_LABEL_TYPES.map((t) => t.type),
+];
+
 const LABEL_COLORS: Record<string, string> = {
   WRONG_WORD: "#ef4444",
   WRONG_LANGUAGE: "#f59e0b",
@@ -278,6 +283,193 @@ export default function RunDetail() {
                     ))}
                   </div>
                 )}
+              </div>
+            )}
+          </div>
+        );
+      })()}
+
+      {/* Action Consistency Analysis (from ACTION_CONSISTENCY) */}
+      {(() => {
+        const acResult = evalResults.find((er: any) => er.criterion?.type === "ACTION_CONSISTENCY");
+        if (!acResult) return null;
+
+        let parsed: any = null;
+        if (acResult.detail) {
+          try { parsed = JSON.parse(acResult.detail); } catch {}
+        }
+        const meta = acResult.metadata || {};
+        const errors: any[] = parsed?.errors || meta.errors || [];
+        const correctActions: any[] = parsed?.correct_actions || meta.correct_actions || [];
+        const errSummary = parsed?.error_summary || meta.error_summary;
+        const recommendations: string[] = parsed?.recommendations || meta.recommendations || [];
+        const totalTurns = parsed?.total_agent_turns || meta.total_agent_turns || 0;
+        const turnsWithErrors = parsed?.turns_with_errors || meta.turns_with_errors || 0;
+
+        const severityColors: Record<string, string> = { critical: "#ef4444", major: "#f59e0b", minor: "#888" };
+        const rootCauseLabels: Record<string, string> = {
+          LLM_HALLUCINATION: "LLM Hallucination",
+          LLM_MISREAD: "LLM Misread Data",
+          TOOL_FAILURE: "Tool Failure",
+          TOOL_NOT_CALLED: "Tool Not Called",
+          WRONG_TOOL: "Wrong Tool",
+          WRONG_TRANSITION: "Wrong Transition",
+          STUCK_TRANSITION: "Stuck Transition",
+          ASR_ERROR: "ASR Error",
+          PROMPT_ISSUE: "Prompt Issue",
+          MISSING_ERROR_HANDLING: "Missing Error Handling",
+        };
+
+        return (
+          <div style={{ marginBottom: 32 }}>
+            <h2 style={{ fontSize: 16, marginBottom: 12 }}>Action Consistency Analysis</h2>
+
+            {/* Summary bar */}
+            <div style={{ display: "flex", gap: 12, marginBottom: 16, flexWrap: "wrap" }}>
+              <div style={{ background: "#1a1a1a", padding: "8px 14px", borderRadius: 6, border: "1px solid #222", fontSize: 13 }}>
+                <span style={{ color: "#888" }}>Score: </span>
+                <strong style={{ color: acResult.score == null ? "#888" : acResult.score >= 0.8 ? "#22c55e" : acResult.score >= 0.5 ? "#f59e0b" : "#ef4444" }}>
+                  {acResult.score != null ? `${(acResult.score * 100).toFixed(0)}%` : "—"}
+                </strong>
+              </div>
+              <div style={{ background: "#1a1a1a", padding: "8px 14px", borderRadius: 6, border: "1px solid #222", fontSize: 13 }}>
+                <span style={{ color: "#888" }}>Turns: </span>
+                <strong>{turnsWithErrors > 0 ? <span style={{ color: "#ef4444" }}>{turnsWithErrors} errors</span> : <span style={{ color: "#22c55e" }}>clean</span>} / {totalTurns}</strong>
+              </div>
+              {errors.length > 0 && errSummary?.by_severity && (
+                <>
+                  {errSummary.by_severity.critical > 0 && (
+                    <div style={{ background: "#ef444418", padding: "8px 14px", borderRadius: 6, border: "1px solid #ef444433", fontSize: 13 }}>
+                      <span style={{ color: "#ef4444" }}>{errSummary.by_severity.critical} critical</span>
+                    </div>
+                  )}
+                  {errSummary.by_severity.major > 0 && (
+                    <div style={{ background: "#f59e0b18", padding: "8px 14px", borderRadius: 6, border: "1px solid #f59e0b33", fontSize: 13 }}>
+                      <span style={{ color: "#f59e0b" }}>{errSummary.by_severity.major} major</span>
+                    </div>
+                  )}
+                  {errSummary.by_severity.minor > 0 && (
+                    <div style={{ background: "#1a1a1a", padding: "8px 14px", borderRadius: 6, border: "1px solid #222", fontSize: 13 }}>
+                      <span style={{ color: "#888" }}>{errSummary.by_severity.minor} minor</span>
+                    </div>
+                  )}
+                </>
+              )}
+            </div>
+
+            {/* Root cause breakdown */}
+            {errSummary?.by_root_cause && (
+              <div style={{ marginBottom: 16 }}>
+                <div style={{ fontSize: 13, color: "#888", marginBottom: 8 }}>Errors by Root Cause</div>
+                <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                  {Object.entries(errSummary.by_root_cause as Record<string, number>)
+                    .filter(([, count]) => count > 0)
+                    .sort(([, a], [, b]) => b - a)
+                    .map(([cause, count]) => (
+                      <span key={cause} style={{
+                        background: "#0a0a0a", padding: "4px 10px", borderRadius: 4,
+                        border: "1px solid #222", fontSize: 11, color: "#ccc",
+                      }}>
+                        {rootCauseLabels[cause] || cause}: <strong>{count}</strong>
+                      </span>
+                    ))}
+                </div>
+              </div>
+            )}
+
+            {/* Errors list */}
+            {errors.length > 0 && (
+              <CollapsibleSection title={`Errors Found (${errors.length})`} defaultOpen={true}>
+                {errors.map((err: any, i: number) => (
+                  <div key={i} style={{
+                    background: "#0a0a0a", padding: 14, borderRadius: 6, marginBottom: 8,
+                    border: `1px solid ${severityColors[err.severity] || "#222"}33`,
+                    borderLeft: `3px solid ${severityColors[err.severity] || "#888"}`,
+                  }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+                      <span style={{ fontSize: 11, color: severityColors[err.severity], textTransform: "uppercase", fontWeight: 600 }}>
+                        {err.severity} — {err.category?.replace(/_/g, " ")}
+                      </span>
+                      {err.timestamp && <span style={{ fontSize: 10, color: "#555" }}>{err.timestamp}</span>}
+                    </div>
+                    {err.what_agent_said && (
+                      <div style={{ fontSize: 12, marginBottom: 4 }}>
+                        <span style={{ color: "#3b82f6" }}>Agent said:</span>{" "}
+                        <span style={{ color: "#ccc" }}>"{err.what_agent_said}"</span>
+                      </div>
+                    )}
+                    {err.what_log_shows && (
+                      <div style={{ fontSize: 12, marginBottom: 4 }}>
+                        <span style={{ color: "#f59e0b" }}>Log shows:</span>{" "}
+                        <span style={{ color: "#ccc" }}>{err.what_log_shows}</span>
+                      </div>
+                    )}
+                    {err.expected_behavior && (
+                      <div style={{ fontSize: 12, marginBottom: 4 }}>
+                        <span style={{ color: "#22c55e" }}>Expected:</span>{" "}
+                        <span style={{ color: "#ccc" }}>{err.expected_behavior}</span>
+                      </div>
+                    )}
+                    <div style={{ display: "flex", gap: 12, marginTop: 8, flexWrap: "wrap" }}>
+                      {err.root_cause && (
+                        <span style={{ fontSize: 11, padding: "2px 8px", borderRadius: 3, background: "#1a1a1a", border: "1px solid #333", color: "#ccc" }}>
+                          Cause: {rootCauseLabels[err.root_cause] || err.root_cause}
+                        </span>
+                      )}
+                      {err.impact && (
+                        <span style={{ fontSize: 11, color: "#888" }}>
+                          Impact: {err.impact}
+                        </span>
+                      )}
+                    </div>
+                    {err.suggested_fix && (
+                      <div style={{ fontSize: 12, marginTop: 8, padding: "6px 10px", background: "#22c55e0a", border: "1px solid #22c55e22", borderRadius: 4, color: "#22c55e" }}>
+                        Fix: {err.suggested_fix}
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </CollapsibleSection>
+            )}
+
+            {/* Correct actions */}
+            {correctActions.length > 0 && (
+              <CollapsibleSection title={`Correct Actions (${correctActions.length})`} defaultOpen={false}>
+                {correctActions.map((a: any, i: number) => (
+                  <div key={i} style={{ fontSize: 12, padding: "6px 10px", marginBottom: 4, color: "#aaa" }}>
+                    <span style={{ color: "#22c55e", marginRight: 8 }}>{a.category?.replace(/_/g, " ")}</span>
+                    {a.description}
+                  </div>
+                ))}
+              </CollapsibleSection>
+            )}
+
+            {/* Recommendations */}
+            {recommendations.length > 0 && (
+              <div style={{ marginTop: 16 }}>
+                <div style={{ fontSize: 13, color: "#888", marginBottom: 8 }}>Top Recommendations</div>
+                <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                  {recommendations.map((rec: string, i: number) => (
+                    <div key={i} style={{
+                      display: "flex", gap: 10, alignItems: "flex-start",
+                      fontSize: 13, padding: "8px 12px", background: "#0a0a0a",
+                      borderRadius: 6, border: "1px solid #1a1a1a",
+                    }}>
+                      <span style={{ color: "#2563eb", fontWeight: 700, minWidth: 20 }}>#{i + 1}</span>
+                      <span style={{ color: "#ccc" }}>{rec}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Executive summary */}
+            {parsed?.detail && (
+              <div style={{
+                marginTop: 16, padding: 14, background: "#111", borderRadius: 8,
+                border: "1px solid #222", fontSize: 13, color: "#aaa", lineHeight: 1.6,
+              }}>
+                {parsed.detail}
               </div>
             )}
           </div>
@@ -750,8 +942,8 @@ function MetricRow({ label, total, errors, pct, color, comment }: {
 
 // ─── Collapsible Section Component ─────────────────────────────────
 
-function CollapsibleSection({ title, children }: { title: string; children: React.ReactNode }) {
-  const [open, setOpen] = useState(false);
+function CollapsibleSection({ title, children, defaultOpen = false }: { title: string; children: React.ReactNode; defaultOpen?: boolean }) {
+  const [open, setOpen] = useState(defaultOpen);
 
   return (
     <div style={{ marginTop: 8 }}>

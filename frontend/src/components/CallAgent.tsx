@@ -1,51 +1,101 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, useCallback } from "react";
 import { HamsaVoiceAgent } from "@hamsa-ai/voice-agents-sdk";
-import { updateRun } from "../api/client";
+import { updateRun, fetchLogs, triggerEvaluation, getRun } from "../api/client";
 
 interface CallAgentProps {
   runId: string;
   agentId: string;
   apiKey: string;
+  webhookUrl: string;
   onCallEnded: () => void;
   onClose: () => void;
 }
 
-export default function CallAgent({ runId, agentId, apiKey, onCallEnded, onClose }: CallAgentProps) {
+interface TranscriptMessage {
+  id: number;
+  speaker: "Agent" | "User";
+  text: string;
+  timestamp: number;
+}
+
+type CallPhase = "idle" | "connecting" | "in_call" | "call_ended" | "fetching_data" | "evaluating" | "complete" | "error";
+
+export default function CallAgent({ runId, agentId, apiKey, webhookUrl, onCallEnded, onClose }: CallAgentProps) {
   const agentRef = useRef<HamsaVoiceAgent | null>(null);
-  const [status, setStatus] = useState<"idle" | "connecting" | "connected" | "ended">("idle");
+  const transcriptEndRef = useRef<HTMLDivElement>(null);
+  const msgIdRef = useRef(0);
+  const unmountedRef = useRef(false);
+  const timeoutsRef = useRef<ReturnType<typeof setTimeout>[]>([]);
+  const startingRef = useRef(false);
+
+  const [phase, setPhase] = useState<CallPhase>("idle");
   const [agentState, setAgentState] = useState<string>("idle");
-  const [transcript, setTranscript] = useState<Array<{ speaker: string; text: string }>>([]);
+  const [transcript, setTranscript] = useState<TranscriptMessage[]>([]);
   const [error, setError] = useState("");
   const [callId, setCallId] = useState<string | null>(null);
   const [duration, setDuration] = useState(0);
+  const [webhookCopied, setWebhookCopied] = useState(false);
+  const [evalScore, setEvalScore] = useState<number | null>(null);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
+  // Safe setTimeout that tracks handles for cleanup
+  const safeTimeout = useCallback((fn: () => void, ms: number) => {
+    const handle = setTimeout(() => {
+      if (!unmountedRef.current) fn();
+    }, ms);
+    timeoutsRef.current.push(handle);
+    return handle;
+  }, []);
+
+  // Auto-scroll transcript
+  useEffect(() => {
+    transcriptEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [transcript]);
+
+  // Cleanup
   useEffect(() => {
     return () => {
+      unmountedRef.current = true;
       if (timerRef.current) clearInterval(timerRef.current);
+      timeoutsRef.current.forEach(clearTimeout);
       if (agentRef.current) {
         try { agentRef.current.end(); } catch {}
       }
     };
   }, []);
 
+  const addMessage = useCallback((speaker: "Agent" | "User", text: string) => {
+    const id = ++msgIdRef.current;
+    setTranscript((prev) => [...prev, { id, speaker, text, timestamp: Date.now() }]);
+  }, []);
+
   async function startCall() {
+    // Guard against double invocation (ref survives across closures, unlike phase state)
+    if (startingRef.current) return;
+    if (phase !== "idle" && phase !== "error") return;
+    startingRef.current = true;
+
+    // Reset state for retry
     setError("");
-    setStatus("connecting");
+    setPhase("connecting");
+    setTranscript([]);
+    setCallId(null);
+    setDuration(0);
+    setEvalScore(null);
+    setAgentState("idle");
+    msgIdRef.current = 0;
 
     try {
       const agent = new HamsaVoiceAgent(apiKey);
       agentRef.current = agent;
 
       agent.on("callStarted", ({ jobId }: any) => {
-        console.log("Call started, jobId:", jobId);
+        startingRef.current = false;
         setCallId(jobId);
-        setStatus("connected");
+        setPhase("in_call");
+        updateRun(runId, { hamsaCallId: jobId, status: "RUNNING" }).catch(() => {});
 
-        // Save the call ID to the run
-        updateRun(runId, { hamsaCallId: jobId, status: "RUNNING" });
-
-        // Start duration timer
+        if (timerRef.current) clearInterval(timerRef.current);
         timerRef.current = setInterval(() => {
           setDuration((d) => d + 1);
         }, 1000);
@@ -56,43 +106,143 @@ export default function CallAgent({ runId, agentId, apiKey, onCallEnded, onClose
       });
 
       agent.on("transcriptionReceived", (text: string) => {
-        setTranscript((prev) => [...prev, { speaker: "User", text }]);
+        addMessage("User", text);
       });
 
       agent.on("answerReceived", (text: string) => {
-        setTranscript((prev) => [...prev, { speaker: "Agent", text }]);
+        addMessage("Agent", text);
       });
 
       agent.on("callEnded", () => {
-        setStatus("ended");
         if (timerRef.current) clearInterval(timerRef.current);
+        setPhase("call_ended");
+        updateRun(runId, { status: "AWAITING_DATA" }).catch(() => {});
 
-        // Update run status — webhook will handle the rest
-        updateRun(runId, { status: "AWAITING_DATA" });
+        // Start post-call data fetch after a short delay for webhook
+        safeTimeout(() => startPostCallProcess(), 3000);
+        // Notify parent after post-call process is queued
         onCallEnded();
       });
 
       agent.on("error", (e: any) => {
-        console.error("Call error:", e);
+        startingRef.current = false;
         setError(typeof e === "string" ? e : e?.message || "Call error");
-        setStatus("ended");
+        setPhase("error");
         if (timerRef.current) clearInterval(timerRef.current);
       });
 
-      await agent.start({
-        agentId,
-        voiceEnablement: true,
-      });
+      await agent.start({ agentId, voiceEnablement: true });
     } catch (err) {
+      startingRef.current = false;
       setError((err as Error).message);
-      setStatus("idle");
+      setPhase("error");
     }
+  }
+
+  async function startPostCallProcess() {
+    if (unmountedRef.current) return;
+    setPhase("fetching_data");
+
+    let attempts = 0;
+    const maxAttempts = 20;
+
+    async function pollForData() {
+      if (unmountedRef.current) return;
+      attempts++;
+
+      try {
+        const run = await getRun(runId);
+        if (unmountedRef.current) return;
+
+        const hasTranscript = run.transcript != null;
+        const hasCallLog = run.callLog != null && (Array.isArray(run.callLog) ? run.callLog.length > 0 : true);
+
+        if (!hasCallLog && run.hamsaCallId) {
+          try { await fetchLogs(runId); } catch {}
+        }
+
+        if (hasTranscript && hasCallLog) {
+          await runEvaluation();
+          return;
+        }
+
+        if (attempts >= maxAttempts) {
+          // Final attempt: try fetching logs one more time then evaluate anyway
+          if (!hasCallLog && run.hamsaCallId) {
+            try { await fetchLogs(runId); } catch {}
+          }
+          await runEvaluation();
+          return;
+        }
+      } catch {
+        if (attempts >= maxAttempts) {
+          if (!unmountedRef.current) setPhase("complete");
+          return;
+        }
+      }
+
+      // Schedule next poll (recursive setTimeout prevents overlapping ticks)
+      safeTimeout(pollForData, 3000);
+    }
+
+    async function runEvaluation() {
+      if (unmountedRef.current) return;
+      setPhase("evaluating");
+
+      try {
+        await triggerEvaluation(runId);
+        if (unmountedRef.current) return;
+        await pollForEvalComplete();
+      } catch {
+        if (!unmountedRef.current) setPhase("complete");
+      }
+    }
+
+    async function pollForEvalComplete(evalAttempts = 0) {
+      if (unmountedRef.current) return;
+      if (evalAttempts >= 30) {
+        setPhase("complete");
+        return;
+      }
+
+      safeTimeout(async () => {
+        if (unmountedRef.current) return;
+        try {
+          const updatedRun = await getRun(runId);
+          if (unmountedRef.current) return;
+          if (updatedRun.status === "COMPLETE") {
+            setEvalScore(updatedRun.overallScore);
+            setPhase("complete");
+          } else {
+            await pollForEvalComplete(evalAttempts + 1);
+          }
+        } catch {
+          if (!unmountedRef.current) setPhase("complete");
+        }
+      }, 2000);
+    }
+
+    pollForData();
   }
 
   function endCall() {
     if (agentRef.current) {
       agentRef.current.end();
     }
+  }
+
+  function copyWebhook() {
+    navigator.clipboard.writeText(webhookUrl).catch(() => {});
+    setWebhookCopied(true);
+    safeTimeout(() => setWebhookCopied(false), 2000);
+  }
+
+  function handleClose() {
+    // End the call if still active before closing
+    if (phase === "in_call" && agentRef.current) {
+      try { agentRef.current.end(); } catch {}
+    }
+    onClose();
   }
 
   const formatTime = (s: number) => `${Math.floor(s / 60)}:${(s % 60).toString().padStart(2, "0")}`;
@@ -105,114 +255,296 @@ export default function CallAgent({ runId, agentId, apiKey, onCallEnded, onClose
     speaking: "#a855f7",
   };
 
+  const stateIcons: Record<string, string> = {
+    idle: "📞",
+    initializing: "⏳",
+    listening: "🎙",
+    thinking: "💭",
+    speaking: "🔊",
+  };
+
+  const phaseLabels: Record<CallPhase, string> = {
+    idle: "Ready",
+    connecting: "Connecting...",
+    in_call: "In Call",
+    call_ended: "Call Ended",
+    fetching_data: "Fetching call data...",
+    evaluating: "Running evaluation...",
+    complete: "Evaluation Complete",
+    error: "Error",
+  };
+
   return (
     <div style={{
       position: "fixed", top: 0, left: 0, right: 0, bottom: 0,
-      background: "rgba(0,0,0,0.8)", zIndex: 1000,
+      background: "rgba(0,0,0,0.85)", zIndex: 1000,
       display: "flex", alignItems: "center", justifyContent: "center",
     }}>
       <div style={{
         background: "#111", border: "1px solid #333", borderRadius: 12,
-        padding: 24, width: 500, maxHeight: "80vh", overflow: "auto",
+        width: 600, maxHeight: "90vh", display: "flex", flexDirection: "column",
       }}>
         {/* Header */}
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20 }}>
-          <h2 style={{ margin: 0, fontSize: 18 }}>Voice Call</h2>
-          <button onClick={onClose} style={{ background: "none", border: "none", color: "#666", cursor: "pointer", fontSize: 18 }}>
-            &times;
+        <div style={{
+          padding: "16px 20px", borderBottom: "1px solid #222",
+          display: "flex", justifyContent: "space-between", alignItems: "center",
+        }}>
+          <div>
+            <h2 style={{ margin: 0, fontSize: 16 }}>Voice Call</h2>
+            <span style={{ fontSize: 12, color: phaseLabels[phase] === "Error" ? "#ef4444" : "#888" }}>
+              {phaseLabels[phase]}
+            </span>
+          </div>
+          <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+            {phase === "in_call" && (
+              <span style={{ fontFamily: "monospace", color: "#888", fontSize: 16 }}>
+                {formatTime(duration)}
+              </span>
+            )}
+            <button onClick={handleClose} style={{
+              background: "none", border: "none", color: "#666",
+              cursor: "pointer", fontSize: 20, padding: 4,
+            }}>
+              &times;
+            </button>
+          </div>
+        </div>
+
+        {/* Webhook URL bar */}
+        <div style={{
+          padding: "8px 20px", background: "#0a0a0a", borderBottom: "1px solid #1a1a1a",
+          display: "flex", alignItems: "center", gap: 8, fontSize: 11,
+        }}>
+          <span style={{ color: "#666" }}>Webhook:</span>
+          <code style={{ color: "#888", flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+            {webhookUrl}
+          </code>
+          <button onClick={copyWebhook} style={{
+            background: webhookCopied ? "#22c55e22" : "#1a1a1a",
+            border: `1px solid ${webhookCopied ? "#22c55e44" : "#333"}`,
+            color: webhookCopied ? "#22c55e" : "#888",
+            padding: "2px 8px", borderRadius: 3, cursor: "pointer", fontSize: 11,
+          }}>
+            {webhookCopied ? "Copied!" : "Copy"}
           </button>
         </div>
 
-        {/* Status */}
-        <div style={{ textAlign: "center", marginBottom: 20 }}>
-          {status === "connected" && (
-            <>
-              <div style={{
-                width: 80, height: 80, borderRadius: "50%", margin: "0 auto 12px",
-                background: `${stateColors[agentState] || "#888"}33`,
-                border: `2px solid ${stateColors[agentState] || "#888"}`,
-                display: "flex", alignItems: "center", justifyContent: "center",
-                animation: agentState === "speaking" ? "pulse 1.5s infinite" : "none",
-              }}>
-                <span style={{ fontSize: 28 }}>
-                  {agentState === "listening" ? "🎙" : agentState === "speaking" ? "🔊" : agentState === "thinking" ? "💭" : "📞"}
-                </span>
-              </div>
-              <div style={{ color: stateColors[agentState] || "#888", fontSize: 14, marginBottom: 4 }}>
+        {/* Agent state indicator */}
+        {phase === "in_call" && (
+          <div style={{
+            padding: "12px 20px", display: "flex", alignItems: "center", gap: 12,
+            borderBottom: "1px solid #1a1a1a",
+          }}>
+            <div style={{
+              width: 36, height: 36, borderRadius: "50%",
+              background: `${stateColors[agentState] || "#888"}22`,
+              border: `2px solid ${stateColors[agentState] || "#888"}`,
+              display: "flex", alignItems: "center", justifyContent: "center",
+              fontSize: 16,
+              animation: agentState === "speaking" ? "pulse 1.5s infinite" : "none",
+            }}>
+              {stateIcons[agentState] || "📞"}
+            </div>
+            <div>
+              <div style={{ color: stateColors[agentState] || "#888", fontSize: 13, fontWeight: 600 }}>
                 {agentState.charAt(0).toUpperCase() + agentState.slice(1)}
               </div>
-              <div style={{ color: "#888", fontSize: 24, fontFamily: "monospace" }}>
-                {formatTime(duration)}
+              <div style={{ fontSize: 11, color: "#555" }}>
+                {agentState === "listening" ? "Your turn to speak..." : agentState === "speaking" ? "Agent is responding..." : agentState === "thinking" ? "Processing..." : ""}
               </div>
-            </>
-          )}
+            </div>
+            {transcript.length > 0 && (
+              <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 4 }}>
+                <div style={{ width: 6, height: 6, borderRadius: "50%", background: "#22c55e", animation: "pulse 2s infinite" }} />
+                <span style={{ fontSize: 10, color: "#22c55e" }}>LIVE</span>
+              </div>
+            )}
+          </div>
+        )}
 
-          {status === "idle" && (
-            <div style={{ color: "#888", fontSize: 14, marginBottom: 12 }}>
-              Ready to call agent. Make sure your microphone is available.
+        {/* Post-call progress */}
+        {(phase === "call_ended" || phase === "fetching_data" || phase === "evaluating") && (
+          <div style={{ padding: "16px 20px", borderBottom: "1px solid #1a1a1a" }}>
+            <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+              {[
+                { label: "Call Ended", done: true },
+                { label: "Fetching Data", done: phase !== "call_ended", active: phase === "fetching_data" },
+                { label: "Evaluating", done: phase === "evaluating" || phase === "complete", active: phase === "evaluating" },
+              ].map((step, i) => (
+                <div key={i} style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                  <div style={{
+                    width: 20, height: 20, borderRadius: "50%", fontSize: 10,
+                    display: "flex", alignItems: "center", justifyContent: "center",
+                    background: step.done ? "#22c55e22" : "#222",
+                    border: `1px solid ${step.active ? "#f59e0b" : step.done ? "#22c55e44" : "#333"}`,
+                    color: step.done ? "#22c55e" : "#666",
+                    animation: step.active ? "pulse 1.5s infinite" : "none",
+                  }}>
+                    {step.done && !step.active ? "✓" : step.active ? "⏳" : i + 1}
+                  </div>
+                  <span style={{ fontSize: 11, color: step.active ? "#f59e0b" : step.done ? "#22c55e" : "#666" }}>
+                    {step.label}
+                  </span>
+                  {i < 2 && <span style={{ color: "#333", margin: "0 4px" }}>→</span>}
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Evaluation complete banner */}
+        {phase === "complete" && (
+          <div style={{
+            padding: "16px 20px", borderBottom: "1px solid #1a1a1a",
+            background: evalScore != null ? (evalScore >= 0.8 ? "#22c55e11" : evalScore >= 0.5 ? "#f59e0b11" : "#ef444411") : "#1a1a1a",
+          }}>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+              <div>
+                <div style={{ fontSize: 13, fontWeight: 600, color: "#fff" }}>Evaluation Complete</div>
+                <div style={{ fontSize: 11, color: "#888" }}>
+                  {callId && `Call ID: ${callId}`}
+                </div>
+              </div>
+              {evalScore != null && (
+                <div style={{
+                  fontSize: 24, fontWeight: 700,
+                  color: evalScore >= 0.8 ? "#22c55e" : evalScore >= 0.5 ? "#f59e0b" : "#ef4444",
+                }}>
+                  {(evalScore * 100).toFixed(0)}%
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* Conversation transcript */}
+        <div style={{
+          flex: 1, overflow: "auto", padding: "16px 20px",
+          minHeight: 200, maxHeight: 400,
+        }}>
+          {phase === "idle" && (
+            <div style={{ textAlign: "center", padding: "40px 0" }}>
+              <div style={{ fontSize: 40, marginBottom: 12 }}>🎙</div>
+              <div style={{ color: "#888", fontSize: 14, marginBottom: 8 }}>
+                Ready to call agent
+              </div>
+              <div style={{ color: "#555", fontSize: 12 }}>
+                Make sure your microphone is available and the webhook URL is configured in the Hamsa dashboard.
+              </div>
             </div>
           )}
 
-          {status === "connecting" && (
-            <div style={{ color: "#f59e0b", fontSize: 14 }}>Connecting...</div>
+          {phase === "connecting" && (
+            <div style={{ textAlign: "center", padding: "40px 0" }}>
+              <div style={{ fontSize: 14, color: "#f59e0b", animation: "pulse 1.5s infinite" }}>
+                Connecting to agent...
+              </div>
+            </div>
           )}
 
-          {status === "ended" && (
-            <div style={{ color: "#22c55e", fontSize: 14 }}>
-              Call ended. Waiting for webhook data...
-              {callId && <div style={{ fontSize: 12, color: "#888", marginTop: 4 }}>Call ID: {callId}</div>}
+          {transcript.length > 0 && (
+            <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+              {transcript.map((msg) => (
+                <div
+                  key={msg.id}
+                  style={{
+                    display: "flex",
+                    flexDirection: msg.speaker === "User" ? "row-reverse" : "row",
+                    gap: 8,
+                  }}
+                >
+                  <div style={{
+                    maxWidth: "80%",
+                    padding: "10px 14px",
+                    borderRadius: msg.speaker === "User" ? "12px 12px 0 12px" : "12px 12px 12px 0",
+                    background: msg.speaker === "Agent" ? "#1a2332" : "#1a331a",
+                    border: `1px solid ${msg.speaker === "Agent" ? "#1e3a5f" : "#1e5f1e"}`,
+                    direction: "auto",
+                    textAlign: "start",
+                  }}>
+                    <div style={{ fontSize: 10, color: msg.speaker === "Agent" ? "#3b82f6" : "#22c55e", marginBottom: 4 }}>
+                      {msg.speaker === "Agent" ? "Agent" : "You"}
+                    </div>
+                    <div style={{ fontSize: 13, color: "#e0e0e0", lineHeight: 1.5 }}>
+                      {msg.text}
+                    </div>
+                  </div>
+                </div>
+              ))}
+              <div ref={transcriptEndRef} />
+            </div>
+          )}
+
+          {error && (
+            <div style={{
+              background: "#ef444418", border: "1px solid #ef444433", borderRadius: 8,
+              padding: 12, fontSize: 13, color: "#ef4444", marginTop: 8,
+            }}>
+              {error}
             </div>
           )}
         </div>
 
-        {error && (
-          <div style={{ background: "#ef444422", border: "1px solid #ef4444", borderRadius: 6, padding: 8, marginBottom: 12, fontSize: 13, color: "#ef4444" }}>
-            {error}
-          </div>
-        )}
-
-        {/* Transcript */}
-        {transcript.length > 0 && (
-          <div style={{
-            background: "#0a0a0a", borderRadius: 8, padding: 12, marginBottom: 16,
-            maxHeight: 200, overflow: "auto", border: "1px solid #222",
-          }}>
-            {transcript.map((t, i) => (
-              <div key={i} style={{ marginBottom: 6, fontSize: 13 }}>
-                <span style={{ color: t.speaker === "Agent" ? "#3b82f6" : "#22c55e", fontWeight: 600 }}>
-                  [{t.speaker}]
-                </span>{" "}
-                <span style={{ color: "#ccc" }}>{t.text}</span>
-              </div>
-            ))}
-          </div>
-        )}
-
-        {/* Actions */}
-        <div style={{ display: "flex", gap: 8, justifyContent: "center" }}>
-          {status === "idle" && (
+        {/* Actions footer */}
+        <div style={{
+          padding: "12px 20px", borderTop: "1px solid #222",
+          display: "flex", gap: 8, justifyContent: "center",
+        }}>
+          {phase === "idle" && (
             <button onClick={startCall} style={{
-              background: "#22c55e", color: "#fff", padding: "10px 24px",
+              background: "#22c55e", color: "#fff", padding: "10px 32px",
               borderRadius: 8, border: "none", cursor: "pointer", fontSize: 14, fontWeight: 600,
+              display: "flex", alignItems: "center", gap: 8,
             }}>
-              Start Call
+              🎙 Start Call
             </button>
           )}
-          {status === "connected" && (
+          {phase === "in_call" && (
             <button onClick={endCall} style={{
-              background: "#ef4444", color: "#fff", padding: "10px 24px",
+              background: "#ef4444", color: "#fff", padding: "10px 32px",
               borderRadius: 8, border: "none", cursor: "pointer", fontSize: 14, fontWeight: 600,
+              display: "flex", alignItems: "center", gap: 8,
             }}>
-              End Call
+              📞 End Call
             </button>
           )}
-          {status === "ended" && (
-            <button onClick={onClose} style={{
-              background: "#374151", color: "#fff", padding: "10px 24px",
-              borderRadius: 8, border: "none", cursor: "pointer", fontSize: 14,
+          {phase === "connecting" && (
+            <button disabled style={{
+              background: "#374151", color: "#888", padding: "10px 32px",
+              borderRadius: 8, border: "none", fontSize: 14,
             }}>
-              Close
+              Connecting...
             </button>
+          )}
+          {(phase === "call_ended" || phase === "fetching_data" || phase === "evaluating") && (
+            <div style={{ display: "flex", alignItems: "center", gap: 8, color: "#888", fontSize: 13 }}>
+              <div style={{ width: 14, height: 14, border: "2px solid #888", borderTopColor: "transparent", borderRadius: "50%", animation: "spin 1s linear infinite" }} />
+              Processing...
+            </div>
+          )}
+          {phase === "complete" && (
+            <button onClick={handleClose} style={{
+              background: "#2563eb", color: "#fff", padding: "10px 32px",
+              borderRadius: 8, border: "none", cursor: "pointer", fontSize: 14, fontWeight: 600,
+            }}>
+              View Results
+            </button>
+          )}
+          {phase === "error" && (
+            <>
+              <button onClick={startCall} style={{
+                background: "#374151", color: "#fff", padding: "10px 24px",
+                borderRadius: 8, border: "none", cursor: "pointer", fontSize: 14,
+              }}>
+                Retry
+              </button>
+              <button onClick={handleClose} style={{
+                background: "none", color: "#888", padding: "10px 24px",
+                borderRadius: 8, border: "1px solid #333", cursor: "pointer", fontSize: 14,
+              }}>
+                Close
+              </button>
+            </>
           )}
         </div>
       </div>
@@ -221,6 +553,9 @@ export default function CallAgent({ runId, agentId, apiKey, onCallEnded, onClose
         @keyframes pulse {
           0%, 100% { transform: scale(1); opacity: 1; }
           50% { transform: scale(1.05); opacity: 0.8; }
+        }
+        @keyframes spin {
+          to { transform: rotate(360deg); }
         }
       `}</style>
     </div>
