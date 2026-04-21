@@ -86,6 +86,7 @@ export default function ProjectDetail() {
   const [showUpload, setShowUpload] = useState<string | null>(null);
   const [callingRunId, setCallingRunId] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<"evaluation" | "outcomes">("evaluation");
+  const [searchQuery, setSearchQuery] = useState("");
 
   // History import state — always use date range (CUSTOM period)
   const [showHistoryImport, setShowHistoryImport] = useState(false);
@@ -504,7 +505,7 @@ export default function ProjectDetail() {
       <ImportProgressBanner runs={project.runs ?? []} />
 
       {/* Runs table */}
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8, flexWrap: "wrap", gap: 8 }}>
         <h2 style={{ fontSize: 16, margin: 0 }}>
           {isWebhook ? "Incoming Calls" : isHistory ? "Imported Calls" : "Runs"}
           {project.runs?.length > 0 && (
@@ -513,6 +514,23 @@ export default function ProjectDetail() {
             </span>
           )}
         </h2>
+        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+          <input
+            type="text"
+            placeholder="Search by call ID, conv ID, outcome..."
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            style={{
+              padding: "5px 10px",
+              background: "#1a1a1a",
+              border: "1px solid #333",
+              borderRadius: 4,
+              color: "#e0e0e0",
+              fontSize: 12,
+              width: 260,
+            }}
+          />
+        </div>
         {outcomeColumns.length > 0 && (
           <div style={{ display: "flex", gap: 0, borderRadius: 6, overflow: "hidden", border: "1px solid #333" }}>
             {(["evaluation", "outcomes"] as const).map((tab) => (
@@ -580,7 +598,17 @@ export default function ProjectDetail() {
                 return db - da;   // newest → oldest
               })
             : (project.runs ?? [])
-          ).map((run: any) => (
+          ).filter((run: any) => {
+            if (!searchQuery.trim()) return true;
+            const q = searchQuery.toLowerCase();
+            return (
+              (run.hamsaCallId || "").toLowerCase().includes(q) ||
+              (run.conversationId || "").toLowerCase().includes(q) ||
+              (run.callOutcome || "").toLowerCase().includes(q) ||
+              (run.callStatus || "").toLowerCase().includes(q) ||
+              (run.modelUsed || "").toLowerCase().includes(q)
+            );
+          }).map((run: any) => (
             <tr key={run.id} style={{ borderBottom: "1px solid #1a1a1a" }}>
               {(isHistory || isWebhook) ? (
                 <>
