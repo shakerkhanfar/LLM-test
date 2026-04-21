@@ -143,11 +143,7 @@ export default function NewProject() {
         hamsaApiKey,
         description,
         projectType,
-        criteria: useCriteria
-          ? (projectType === "WEBHOOK"
-            ? DEFAULT_CRITERIA.filter(c => !["DETERMINISTIC", "STRUCTURAL", "LATENCY", "ACTION_CONSISTENCY"].includes(c.type))
-            : DEFAULT_CRITERIA)
-          : [],
+        criteria: useCriteria ? DEFAULT_CRITERIA : [],
         ...(projectType === "HISTORY" && startDate ? { historyStartDate: startDate } : {}),
         ...(projectType === "HISTORY" && endDate ? { historyEndDate: endDate } : {}),
       };

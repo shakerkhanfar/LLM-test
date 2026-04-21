@@ -85,6 +85,7 @@ export default function ProjectDetail() {
   const [modelInput, setModelInput] = useState("openai/gpt-4.1");
   const [showUpload, setShowUpload] = useState<string | null>(null);
   const [callingRunId, setCallingRunId] = useState<string | null>(null);
+  const [activeTab, setActiveTab] = useState<"evaluation" | "outcomes">("evaluation");
 
   // History import state — always use date range (CUSTOM period)
   const [showHistoryImport, setShowHistoryImport] = useState(false);
@@ -503,14 +504,37 @@ export default function ProjectDetail() {
       <ImportProgressBanner runs={project.runs ?? []} />
 
       {/* Runs table */}
-      <h2 style={{ fontSize: 16, marginBottom: 8 }}>
-        {isWebhook ? "Incoming Calls" : isHistory ? "Imported Calls" : "Runs"}
-        {project.runs?.length > 0 && (
-          <span style={{ fontSize: 12, color: "#666", fontWeight: 400, marginLeft: 8 }}>
-            ({project.runs.length} total{(isHistory || isWebhook) ? ", latest first" : ""})
-          </span>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+        <h2 style={{ fontSize: 16, margin: 0 }}>
+          {isWebhook ? "Incoming Calls" : isHistory ? "Imported Calls" : "Runs"}
+          {project.runs?.length > 0 && (
+            <span style={{ fontSize: 12, color: "#666", fontWeight: 400, marginLeft: 8 }}>
+              ({project.runs.length} total{(isHistory || isWebhook) ? ", latest first" : ""})
+            </span>
+          )}
+        </h2>
+        {outcomeColumns.length > 0 && (
+          <div style={{ display: "flex", gap: 0, borderRadius: 6, overflow: "hidden", border: "1px solid #333" }}>
+            {(["evaluation", "outcomes"] as const).map((tab) => (
+              <button
+                key={tab}
+                onClick={() => setActiveTab(tab)}
+                style={{
+                  padding: "5px 14px",
+                  background: activeTab === tab ? "#2563eb" : "#111",
+                  color: activeTab === tab ? "#fff" : "#888",
+                  border: "none",
+                  cursor: "pointer",
+                  fontSize: 12,
+                  fontWeight: activeTab === tab ? 600 : 400,
+                }}
+              >
+                {tab === "evaluation" ? "Evaluation" : `Outcomes (${outcomeColumns.length})`}
+              </button>
+            ))}
+          </div>
         )}
-      </h2>
+      </div>
       <table style={{ width: "100%", borderCollapse: "collapse" }}>
         <thead>
           <tr style={{ borderBottom: "1px solid #333", textAlign: "left" }}>
@@ -525,18 +549,25 @@ export default function ProjectDetail() {
             ) : (
               <th style={thStyle}>Model</th>
             )}
-            <th style={thStyle}>Goal</th>
-            <th style={thStyle}>Status</th>
-            <th style={thStyle}>Score</th>
-            <th style={{ ...thStyle, fontSize: 11 }}>Cost</th>
-            {project.criteria?.map((c: any) => (
-              <th key={c.id} style={{ ...thStyle, fontSize: 11 }}>{c.label || c.key}</th>
-            ))}
-            {outcomeColumns.map((key) => (
-              <th key={`oc-${key}`} style={{ ...thStyle, fontSize: 11, color: "#9333ea" }}>
-                {key.replace(/_/g, " ")}
-              </th>
-            ))}
+            {activeTab === "evaluation" ? (
+              <>
+                <th style={thStyle}>Goal</th>
+                <th style={thStyle}>Status</th>
+                <th style={thStyle}>Score</th>
+                <th style={{ ...thStyle, fontSize: 11 }}>Cost</th>
+                {project.criteria?.map((c: any) => (
+                  <th key={c.id} style={{ ...thStyle, fontSize: 11 }}>{c.label || c.key}</th>
+                ))}
+              </>
+            ) : (
+              <>
+                {outcomeColumns.map((key) => (
+                  <th key={`oc-${key}`} style={{ ...thStyle, fontSize: 11, color: "#9333ea" }}>
+                    {key.replace(/_/g, " ")}
+                  </th>
+                ))}
+              </>
+            )}
             <th style={thStyle}>Actions</th>
           </tr>
         </thead>
@@ -578,48 +609,55 @@ export default function ProjectDetail() {
                   </Link>
                 </td>
               )}
-              <td style={tdStyle}><GoalBadge run={run} /></td>
-              <td style={tdStyle}>
-                <span style={{ color: STATUS_COLORS[run.status] || "#888", display: "flex", alignItems: "center", gap: 4 }}>
-                  {["RUNNING", "AWAITING_DATA", "EVALUATING"].includes(run.status) && (
-                    <span style={{ display: "inline-block", width: 10, height: 10, border: "2px solid currentColor", borderTopColor: "transparent", borderRadius: "50%", animation: "spin 1s linear infinite" }} />
-                  )}
-                  {run.status}
-                </span>
-              </td>
-              <td style={tdStyle}>
-                {run.overallScore != null ? (
-                  <span style={{ color: run.overallScore >= 0.8 ? "#22c55e" : run.overallScore >= 0.5 ? "#f59e0b" : "#ef4444" }}>
-                    {(run.overallScore * 100).toFixed(0)}%
-                  </span>
-                ) : "—"}
-              </td>
-              <td style={{ ...tdStyle, fontSize: 11, color: "#555" }}>
-                {run.evalCost != null && run.evalCost > 0
-                  ? `$${run.evalCost < 0.01 ? run.evalCost.toFixed(4) : run.evalCost.toFixed(3)}`
-                  : "—"}
-              </td>
-              {project.criteria?.map((c: any) => {
-                const er = run.evalResults?.find((r: any) => r.criterionId === c.id);
-                return (
-                  <td key={c.id} style={{ ...tdStyle, fontSize: 12 }}>
-                    {er?.score != null ? (
-                      <span style={{ color: er.passed ? "#22c55e" : "#ef4444" }}>
-                        {(er.score * 100).toFixed(0)}%
+              {activeTab === "evaluation" ? (
+                <>
+                  <td style={tdStyle}><GoalBadge run={run} /></td>
+                  <td style={tdStyle}>
+                    <span style={{ color: STATUS_COLORS[run.status] || "#888", display: "flex", alignItems: "center", gap: 4 }}>
+                      {["RUNNING", "AWAITING_DATA", "EVALUATING"].includes(run.status) && (
+                        <span style={{ display: "inline-block", width: 10, height: 10, border: "2px solid currentColor", borderTopColor: "transparent", borderRadius: "50%", animation: "spin 1s linear infinite" }} />
+                      )}
+                      {run.status}
+                    </span>
+                  </td>
+                  <td style={tdStyle}>
+                    {run.overallScore != null ? (
+                      <span style={{ color: run.overallScore >= 0.8 ? "#22c55e" : run.overallScore >= 0.5 ? "#f59e0b" : "#ef4444" }}>
+                        {(run.overallScore * 100).toFixed(0)}%
                       </span>
                     ) : "—"}
                   </td>
-                );
-              })}
-              {outcomeColumns.map((key) => {
-                const val = run.outcomeResult?.[key];
-                const display = val == null || val === "" ? "—" : (typeof val === "object" ? JSON.stringify(val) : String(val));
-                return (
-                  <td key={`oc-${key}`} style={{ ...tdStyle, fontSize: 11, color: "#a78bfa", maxWidth: 120, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={display}>
-                    {display}
+                  <td style={{ ...tdStyle, fontSize: 11, color: "#555" }}>
+                    {run.evalCost != null && run.evalCost > 0
+                      ? `$${run.evalCost < 0.01 ? run.evalCost.toFixed(4) : run.evalCost.toFixed(3)}`
+                      : "—"}
                   </td>
-                );
-              })}
+                  {project.criteria?.map((c: any) => {
+                    const er = run.evalResults?.find((r: any) => r.criterionId === c.id);
+                    return (
+                      <td key={c.id} style={{ ...tdStyle, fontSize: 12 }}>
+                        {er?.score != null ? (
+                          <span style={{ color: er.passed ? "#22c55e" : "#ef4444" }}>
+                            {(er.score * 100).toFixed(0)}%
+                          </span>
+                        ) : "—"}
+                      </td>
+                    );
+                  })}
+                </>
+              ) : (
+                <>
+                  {outcomeColumns.map((key) => {
+                    const val = run.outcomeResult?.[key];
+                    const display = val == null || val === "" ? "—" : (typeof val === "object" ? JSON.stringify(val) : String(val));
+                    return (
+                      <td key={`oc-${key}`} style={{ ...tdStyle, fontSize: 11, color: "#a78bfa", maxWidth: 160, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={display}>
+                        {display}
+                      </td>
+                    );
+                  })}
+                </>
+              )}
               <td style={tdStyle}>
                 <div style={{ display: "flex", gap: 4, flexWrap: "wrap", alignItems: "center" }}>
                   {/* Live runs: Call button */}

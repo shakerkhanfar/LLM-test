@@ -1108,10 +1108,28 @@ function FlowProgressionView({
   }, -1);
 
 
+  const [flowExpanded, setFlowExpanded] = useState(false);
+
   return (
     <div style={{ marginBottom: 32 }}>
-      <h2 style={{ fontSize: 16, marginBottom: 12 }}>Flow Progression</h2>
+      <div
+        onClick={() => setFlowExpanded(!flowExpanded)}
+        style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", userSelect: "none", marginBottom: flowExpanded ? 12 : 0 }}
+      >
+        <span style={{ color: "#888", fontSize: 12, transition: "transform 0.15s", transform: flowExpanded ? "rotate(90deg)" : "rotate(0deg)" }}>&#9654;</span>
+        <h2 style={{ fontSize: 16, margin: 0 }}>Flow Progression</h2>
+        {evalResult && (
+          <span style={{
+            fontSize: 11, padding: "2px 8px", borderRadius: 10,
+            background: evalResult.passed ? "#14532d22" : "#7f1d1d22",
+            color: evalResult.passed ? "#22c55e" : "#ef4444",
+          }}>
+            {evalResult.passed ? "PASS" : "FAIL"} {evalResult.score != null ? `${(evalResult.score * 100).toFixed(0)}%` : ""}
+          </span>
+        )}
+      </div>
 
+      {!flowExpanded ? null : <>
       {/* LLM Analysis Summary — parse JSON detail, show only the human narrative */}
       {(() => {
         if (!evalResult?.detail) return null;
@@ -1247,6 +1265,7 @@ function FlowProgressionView({
           )}
         </div>
       </div>
+      </>}
     </div>
   );
 }
