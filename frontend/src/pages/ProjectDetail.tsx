@@ -87,6 +87,7 @@ export default function ProjectDetail() {
   const [callingRunId, setCallingRunId] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<"evaluation" | "outcomes">("evaluation");
   const [searchQuery, setSearchQuery] = useState("");
+  const [channelFilter, setChannelFilter] = useState<string | null>(null);
 
   // History import state — always use date range (CUSTOM period)
   const [showHistoryImport, setShowHistoryImport] = useState(false);
@@ -530,6 +531,37 @@ export default function ProjectDetail() {
               width: 260,
             }}
           />
+          {(isHistory || isWebhook) && (() => {
+            const channels = new Set<string>();
+            for (const r of (project.runs ?? [])) {
+              const ch = getChannel(r.webhookData);
+              if (ch) channels.add(ch);
+            }
+            if (channels.size < 2) return null;
+            return (
+              <div style={{ display: "flex", gap: 0, borderRadius: 4, overflow: "hidden", border: "1px solid #333" }}>
+                <button
+                  onClick={() => setChannelFilter(null)}
+                  style={{
+                    padding: "4px 10px", border: "none", cursor: "pointer", fontSize: 11,
+                    background: channelFilter === null ? "#2563eb" : "#111",
+                    color: channelFilter === null ? "#fff" : "#888",
+                  }}
+                >All</button>
+                {[...channels].sort().map((ch) => (
+                  <button
+                    key={ch}
+                    onClick={() => setChannelFilter(channelFilter === ch ? null : ch)}
+                    style={{
+                      padding: "4px 10px", border: "none", cursor: "pointer", fontSize: 11,
+                      background: channelFilter === ch ? "#2563eb" : "#111",
+                      color: channelFilter === ch ? "#fff" : "#888",
+                    }}
+                  >{ch}</button>
+                ))}
+              </div>
+            );
+          })()}
         </div>
         {outcomeColumns.length > 0 && (
           <div style={{ display: "flex", gap: 0, borderRadius: 6, overflow: "hidden", border: "1px solid #333" }}>
@@ -559,6 +591,7 @@ export default function ProjectDetail() {
             {(isHistory || isWebhook) ? (
               <>
                 <th style={thStyle}>Date</th>
+                <th style={thStyle}>Channel</th>
                 <th style={thStyle}>Duration</th>
                 <th style={thStyle}>Call Status</th>
                 <th style={thStyle}>Call Outcome</th>
@@ -599,6 +632,12 @@ export default function ProjectDetail() {
               })
             : (project.runs ?? [])
           ).filter((run: any) => {
+            // Channel filter
+            if (channelFilter) {
+              const ch = getChannel(run.webhookData);
+              if (!ch || ch.toLowerCase() !== channelFilter.toLowerCase()) return false;
+            }
+            // Text search
             if (!searchQuery.trim()) return true;
             const q = searchQuery.toLowerCase();
             return (
@@ -606,7 +645,8 @@ export default function ProjectDetail() {
               (run.conversationId || "").toLowerCase().includes(q) ||
               (run.callOutcome || "").toLowerCase().includes(q) ||
               (run.callStatus || "").toLowerCase().includes(q) ||
-              (run.modelUsed || "").toLowerCase().includes(q)
+              (run.modelUsed || "").toLowerCase().includes(q) ||
+              (getChannel(run.webhookData) || "").toLowerCase().includes(q)
             );
           }).map((run: any) => (
             <tr key={run.id} style={{ borderBottom: "1px solid #1a1a1a" }}>
@@ -616,6 +656,9 @@ export default function ProjectDetail() {
                     <Link to={`/projects/${id}/runs/${run.id}`} style={{ color: "#60a5fa", textDecoration: "none", whiteSpace: "nowrap" }}>
                       {formatDate(run.callDate || run.createdAt)}
                     </Link>
+                  </td>
+                  <td style={{ ...tdStyle, fontSize: 11 }}>
+                    <ChannelBadge webhookData={run.webhookData} />
                   </td>
                   <td style={{ ...tdStyle, color: "#666", fontSize: 12, whiteSpace: "nowrap" }}>
                     {run.callDuration ? `${run.callDuration}s` : "—"}
@@ -922,6 +965,28 @@ const CALL_STATUS_STYLE: Record<string, { color: string; bg: string; label: stri
   IN_PROGRESS:{ color: "#3b82f6", bg: "#1e3a5f22", label: "In Progress" },
   PENDING:    { color: "#888",    bg: "#1a1a1a",   label: "Pending" },
 };
+
+function getChannel(webhookData: any): string | null {
+  if (!webhookData) return null;
+  return webhookData.caller_info?.call_type || webhookData.data?.channelType || webhookData.channelType || null;
+}
+
+function ChannelBadge({ webhookData }: { webhookData: any }) {
+  const channel = getChannel(webhookData);
+  if (!channel) return <span style={{ color: "#444", fontSize: 12 }}>—</span>;
+  const isWeb = channel.toLowerCase() === "web";
+  return (
+    <span style={{
+      fontSize: 10, padding: "2px 7px", borderRadius: 10,
+      background: isWeb ? "#1e3a5f22" : "#14532d22",
+      color: isWeb ? "#60a5fa" : "#4ade80",
+      border: `1px solid ${isWeb ? "#60a5fa" : "#4ade80"}44`,
+      whiteSpace: "nowrap",
+    }}>
+      {isWeb ? "Web" : channel}
+    </span>
+  );
+}
 
 function CallStatusBadge({ status }: { status: string | null | undefined }) {
   if (!status) return <span style={{ color: "#444", fontSize: 12 }}>—</span>;
