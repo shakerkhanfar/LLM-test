@@ -763,17 +763,26 @@ function computeGoal(run: any): { status: GoalStatus; reason: string } | null {
     .filter(Boolean) as string[];
   const failedStr = failedCriteria.length ? ` Issues: ${failedCriteria.join(", ")}.` : "";
 
+  // Check objective_met from outcomeResult — this is the most reliable signal
+  const objectiveMet = (run.outcomeResult?.objective_met || "").toLowerCase();
+
   // Classify call outcome string
   // Check negative BEFORE positive — "not_interested" ⊃ "interested"
   const isNegative = outcome.includes("not_interested") || outcome.includes("rejected")
-                  || outcome.includes("refused")        || outcome.includes("declined");
+                  || outcome.includes("refused")        || outcome.includes("declined")
+                  || outcome.includes("hangup")         || outcome.includes("hang_up")
+                  || objectiveMet === "no";
   const isPositive = !isNegative && (
     outcome.includes("interested") || outcome.includes("success")  ||
     outcome.includes("booked")     || outcome.includes("converted") ||
     outcome.includes("completed")  || outcome.includes("agreed")
+    || objectiveMet === "yes"
   );
-  const isFollowup = outcome.includes("followup") || outcome.includes("callback")
-                  || outcome.includes("pending")   || outcome.includes("later");
+  const isFollowup = !isNegative && !isPositive && (
+    outcome.includes("followup") || outcome.includes("callback")
+    || outcome.includes("pending")   || outcome.includes("later")
+    || objectiveMet === "partial"
+  );
 
   if (isNegative) {
     // Customer said no — goal failed regardless of agent quality.

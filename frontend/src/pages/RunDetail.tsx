@@ -183,6 +183,7 @@ export default function RunDetail() {
   const recordingUrl: string | null = (() => {
     const w = run.webhookData as any;
     return (
+      w?.data?.conversationRecording ||      // webhook: payload.data.conversationRecording
       w?.mediaUrl ||                         // history runs: conv.mediaUrl
       w?.data?.recordingUrl ||               // live webhook: payload.data.recordingUrl
       w?.data?.recording_url ||
