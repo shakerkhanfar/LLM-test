@@ -312,6 +312,47 @@ export default function RunDetail() {
         >
           {reEvaluating ? "Evaluating…" : "Re-evaluate"}
         </button>
+        {run.status === "COMPLETE" && (
+          <button
+            onClick={() => {
+              const exportData = {
+                callId: run.hamsaCallId,
+                conversationId: run.conversationId,
+                callDate: run.callDate,
+                callDuration: run.callDuration,
+                callStatus: run.callStatus,
+                callOutcome: run.callOutcome,
+                outcomeResult: run.outcomeResult,
+                overallScore: run.overallScore,
+                evalCost: run.evalCost,
+                goal: computeGoal(run),
+                transcript: transcript.map((t: any) => {
+                  if (t.Agent) return { speaker: "Agent", text: t.Agent };
+                  if (t.User) return { speaker: "User", text: t.User, gender: t.metadata?.gender };
+                  return t;
+                }),
+                criteria: evalResults.map((er: any) => ({
+                  name: er.criterion?.label || er.criterion?.key,
+                  type: er.criterion?.type,
+                  passed: er.passed,
+                  score: er.score,
+                  detail: er.detail,
+                })),
+                agentSummary: run.project?.agentSummary || null,
+              };
+              const blob = new Blob([JSON.stringify(exportData, null, 2)], { type: "application/json" });
+              const url = URL.createObjectURL(blob);
+              const a = document.createElement("a");
+              a.href = url;
+              a.download = `eval-${run.conversationId || run.id}.json`;
+              a.click();
+              URL.revokeObjectURL(url);
+            }}
+            style={{ background: "#374151", color: "#fff", padding: "6px 12px", borderRadius: 4, border: "none", cursor: "pointer", fontSize: 12 }}
+          >
+            Export JSON
+          </button>
+        )}
       </div>
 
       {/* Call recording */}
