@@ -31,15 +31,25 @@ function computeGoal(run: any): { status: GoalStatus; reason: string } | null {
     .filter(Boolean) as string[];
   const failedStr = failedCriteria.length ? ` Issues: ${failedCriteria.join(", ")}.` : "";
 
+  // Check objective_met from outcomeResult — most reliable signal
+  const objectiveMet = (run.outcomeResult?.objective_met || "").toLowerCase();
+
+  // Check negative BEFORE positive — "not_interested" ⊃ "interested"
   const isNegative = outcome.includes("not_interested") || outcome.includes("rejected")
-                  || outcome.includes("refused")        || outcome.includes("declined");
+                  || outcome.includes("refused")        || outcome.includes("declined")
+                  || outcome.includes("hangup")         || outcome.includes("hang_up")
+                  || objectiveMet === "no";
   const isPositive = !isNegative && (
     outcome.includes("interested") || outcome.includes("success")   ||
     outcome.includes("booked")     || outcome.includes("converted") ||
     outcome.includes("completed")  || outcome.includes("agreed")
+    || objectiveMet === "yes"
   );
-  const isFollowup = outcome.includes("followup") || outcome.includes("callback")
-                  || outcome.includes("pending")   || outcome.includes("later");
+  const isFollowup = !isNegative && !isPositive && (
+    outcome.includes("followup") || outcome.includes("callback")
+    || outcome.includes("pending")   || outcome.includes("later")
+    || objectiveMet === "partial"
+  );
 
   if (isNegative) {
     const status: GoalStatus = (score != null && score >= 0.7) ? "PARTIAL" : "FAILED";
@@ -83,7 +93,7 @@ function formatOutcome(outcome: string): string {
 function outcomeStyle(outcome: string): { color: string; bg: string } {
   const lower = outcome.toLowerCase();
   // Negative outcomes must be checked BEFORE positive ones — "not_interested" contains "interested"
-  if (lower.includes("not_interested") || lower.includes("rejected") || lower.includes("declined") || lower.includes("refused"))
+  if (lower.includes("not_interested") || lower.includes("rejected") || lower.includes("declined") || lower.includes("refused") || lower.includes("hangup") || lower.includes("hang_up"))
     return { color: "#ef4444", bg: "#7f1d1d22" };
   if (lower.includes("interested") || lower.includes("success") || lower.includes("converted") || lower.includes("booked"))
     return { color: "#22c55e", bg: "#14532d22" };
