@@ -22,9 +22,20 @@ export default function Compare() {
   if (loading) return <p>Loading...</p>;
   if (!project) return <p>Project not found</p>;
 
+  const isHistory = project.projectType === "HISTORY";
+  const isWebhook = project.projectType === "WEBHOOK";
   const completedRuns = project.runs?.filter((r: any) => r.status === "COMPLETE") || [];
   const runsToCompare = completedRuns.filter((r: any) => selectedRuns.includes(r.id));
   const criteria = project.criteria || [];
+
+  function runLabel(r: any) {
+    if ((isHistory || isWebhook) && r.callDate) {
+      const d = new Date(r.callDate);
+      return d.toLocaleDateString(undefined, { month: "short", day: "numeric" }) +
+        " " + d.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
+    }
+    return r.modelUsed || "Unknown";
+  }
 
   function toggleRun(runId: string) {
     setSelectedRuns((prev) =>
@@ -55,7 +66,7 @@ export default function Compare() {
               fontSize: 13,
             }}
           >
-            {r.modelUsed}
+            {runLabel(r)}
           </button>
         ))}
       </div>
@@ -71,7 +82,7 @@ export default function Compare() {
                 {runsToCompare.map((r: any) => (
                   <th key={r.id} style={{ padding: "8px 12px", textAlign: "center", fontSize: 13 }}>
                     <Link to={`/projects/${id}/runs/${r.id}`} style={{ color: "#60a5fa", textDecoration: "none" }}>
-                      {r.modelUsed}
+                      {runLabel(r)}
                     </Link>
                   </th>
                 ))}

@@ -1,7 +1,23 @@
-import { PrismaClient, CriterionType, Run, Criterion } from "@prisma/client";
+import prisma from "../lib/prisma";
+import { Criterion } from "@prisma/client";
 import { evaluateWithLLMJudge } from "./llmJudge";
+import { extractTranscriptFromConversation, extractTranscriptFromCallLog } from "./hamsaApi";
+// extractTranscriptFromConversation and extractTranscriptFromCallLog are used inside resolveTranscript
 
-const prisma = new PrismaClient();
+/**
+ * Resolve the best available transcript for a run, trying all sources in priority order:
+ * 1. run.transcript (stored during hydration / webhook)
+ * 2. run.webhookData (full conversation object — transcript may be nested inside)
+ * 3. run.callLog (execution logs — transcript may be embedded as conversation events)
+ */
+function resolveTranscript(run: any): Array<Record<string, string>> | null {
+  if (Array.isArray(run.transcript) && run.transcript.length > 0) return run.transcript;
+  const fromWebhook = extractTranscriptFromConversation(run.webhookData);
+  if (fromWebhook && fromWebhook.length > 0) return fromWebhook;
+  const fromCallLog = extractTranscriptFromCallLog(Array.isArray(run.callLog) ? run.callLog : []);
+  if (fromCallLog && fromCallLog.length > 0) return fromCallLog;
+  return null;
+}
 
 // ─── Main dispatcher ───────────────────────────────────────────────
 
@@ -12,7 +28,7 @@ export async function evaluateRun(runId: string) {
   });
 
   if (!run) throw new Error(`Run ${runId} not found`);
-  if (!run.callLog && !run.transcript) {
+  if (!run.callLog && !run.transcript && !run.webhookData) {
     throw new Error(`Run ${runId} has no data to evaluate`);
   }
 
@@ -22,12 +38,16 @@ export async function evaluateRun(runId: string) {
     score: number | null;
     detail: string | null;
     metadata?: Record<string, unknown> | null;
+    costUsd?: number;
   }> = [];
+
+  let totalCostUsd = 0;
 
   for (const criterion of run.project.criteria) {
     try {
       const result = await evaluateCriterion(criterion, run);
       results.push({ criterionId: criterion.id, ...result });
+      if ((result as any).costUsd) totalCostUsd += (result as any).costUsd;
     } catch (err) {
       results.push({
         criterionId: criterion.id,
@@ -81,6 +101,13 @@ export async function evaluateRun(runId: string) {
     data: {
       status: "COMPLETE",
       overallScore,
+      // Accumulate cost across re-evaluations so the total reflects every
+      // LLM call ever made for this run. Use null only when there is truly
+      // no cost at all (first eval with no LLM criteria).
+      evalCost: (() => {
+        const cumulative = (run.evalCost ?? 0) + totalCostUsd;
+        return cumulative > 0 ? cumulative : null;
+      })(),
       completedAt: new Date(),
     },
   });
@@ -114,55 +141,46 @@ async function evaluateCriterion(criterion: Criterion, run: any) {
 // ─── Helpers: extract flow data from call log ──────────────────────
 
 function extractFlowData(callLog: any[]) {
-  // Count node movements
+  // Count node movements (each "Node moved" = one node transition)
+  // Hamsa logs: { category: "node_movement", message: "Node moved", payload: { action: "move_node" } }
+  // NOTE: no node_id in payload — node IDs are not exposed in Hamsa execution logs.
   const nodeMoves = callLog.filter(
     (e: any) => e.category === "node_movement" && e.message === "Node moved"
   );
 
-  // Count unique nodes visited (by node_id or by inferring from conversation prompts)
-  const visitedNodeIds = new Set<string>();
-  const nodeSequence: string[] = [];
+  // Node visits: use "Conversation Node" events (one per node entered).
+  // Each entry has a unique timestamp that serves as an ordered sequence marker.
+  // Since no node IDs are available, we use the index as a label (node-1, node-2, …).
+  const conversationNodeEvents = callLog.filter(
+    (e: any) => e.category === "CONVERSATION" && e.message === "Conversation Node"
+  );
+  const nodeSequence: string[] = conversationNodeEvents.map((_: any, i: number) => `node-${i + 1}`);
+  const visitedNodeIds = new Set<string>(nodeSequence);
 
+  // Extract variables: Hamsa logs "Extracting N variables" with payload.variables = string[]
+  // Also handle legacy format: "Updated variable" / "Extracted variable" with payload.variable
+  const extractedVars: string[] = [];
   for (const e of callLog) {
-    const nid = e.node_id || e.nodeId;
-    if (e.category === "node_movement" && nid) {
-      visitedNodeIds.add(nid);
-      nodeSequence.push(nid);
+    if (e.category !== "VARIABLE_EXTRACTION") continue;
+    if (Array.isArray(e.payload?.variables)) {
+      extractedVars.push(...e.payload.variables);
+    } else if (e.payload?.variable) {
+      extractedVars.push(e.payload.variable);
+    } else if (e.payload?.name) {
+      extractedVars.push(e.payload.name);
     }
   }
 
-  // If node_ids are null, infer from conversation prompts (each unique prompt = different node)
-  if (visitedNodeIds.size === 0) {
-    const prompts = callLog.filter(
-      (e: any) => e.category === "CONVERSATION" && e.message === "Playing message (prompt) [non-blocking]"
-    );
-    for (const p of prompts) {
-      const msg = p.payload?.message?.slice(0, 80) || "unknown";
-      visitedNodeIds.add(msg);
-      nodeSequence.push(msg);
-    }
-  }
-
-  // Extract variable extractions completed
-  const extractedVars = callLog
-    .filter((e: any) =>
-      e.category === "VARIABLE_EXTRACTION" &&
-      (e.message?.includes("Updated variable") || e.message?.includes("Extracted variable"))
-    )
-    .map((e: any) => e.payload?.variable || e.payload?.name)
-    .filter(Boolean);
-
-  // Extract tool executions
+  // External tool executions (HTTP tool calls, not internal flow routing tools like "move__xxx")
+  // Hamsa logs these as "Executing Tool" / "Tool Success" / "Tool Error" / "Tool Failed"
   const toolExecutions = callLog.filter(
     (e: any) => e.category === "TOOLS" && e.message === "Executing Tool"
   );
-
-  // Extract tool successes
   const toolSuccesses = callLog.filter(
     (e: any) => e.category === "TOOLS" && e.message === "Tool Success"
   );
 
-  // Count "Waiting for user input" events (each = a turn where agent asked and waited)
+  // Count "Waiting for user input" events (each = a turn where agent paused for response)
   const waitingEvents = callLog.filter(
     (e: any) => e.category === "CONVERSATION" && e.message === "Waiting for user input"
   );
@@ -172,7 +190,7 @@ function extractFlowData(callLog: any[]) {
     (e: any) => e.category === "FLOW" && e.message === "Starting node chain execution"
   );
 
-  // Total nodes in flow
+  // Total nodes defined in the flow (from init event)
   const initEvent = callLog.find(
     (e: any) => e.category === "FLOW" && e.message === "Initializing flow runtime"
   );
@@ -195,9 +213,9 @@ function extractFlowData(callLog: any[]) {
 
 function evaluateDeterministic(criterion: Criterion, run: any) {
   const expected = criterion.expectedValue as any;
-  const callLog = run.callLog as any[];
+  const callLog = run.callLog;
 
-  if (!callLog) {
+  if (!Array.isArray(callLog)) {
     return { passed: null, score: null, detail: "No call log available" };
   }
 
@@ -208,11 +226,14 @@ function evaluateDeterministic(criterion: Criterion, run: any) {
     );
     const calledTools = toolEvents.map((e: any) => e.payload?.toolName);
 
+    // Count both HTTP-level failures (Tool Success with ok=false) and error events
     const failedToolEvents = callLog.filter(
       (e: any) =>
-        e.category === "TOOLS" &&
-        e.message === "Tool Success" &&
-        e.payload?.response?.ok === false
+        e.category === "TOOLS" && (
+          (e.message === "Tool Success" && e.payload?.response?.ok === false) ||
+          e.message === "Tool Error" ||
+          e.message === "Tool Failed"
+        )
     );
     const failedTools = failedToolEvents.map(
       (e: any) => e.payload?.toolName || "unknown"
@@ -233,14 +254,16 @@ function evaluateDeterministic(criterion: Criterion, run: any) {
   }
 
   // Variable extraction check
+  // Hamsa logs: { category: "VARIABLE_EXTRACTION", message: "Extracting N variables", payload: { variables: string[] } }
+  // Legacy format: message: "Updated variable", payload: { variable: string }
   if (expected.requiredVariables) {
-    const varEvents = callLog.filter(
-      (e: any) =>
-        e.category === "VARIABLE_EXTRACTION" &&
-        e.message?.includes("Updated variable")
-    );
-    const extractedVars = varEvents.map((e: any) => e.payload?.variable);
-
+    const extractedVars: string[] = [];
+    for (const e of callLog) {
+      if (e.category !== "VARIABLE_EXTRACTION") continue;
+      if (Array.isArray(e.payload?.variables)) extractedVars.push(...e.payload.variables);
+      else if (e.payload?.variable) extractedVars.push(e.payload.variable);
+      else if (e.payload?.name) extractedVars.push(e.payload.name);
+    }
     const required: string[] = expected.requiredVariables;
     const missing = required.filter((v) => !extractedVars.includes(v));
     const score = required.length > 0 ? (required.length - missing.length) / required.length : 1;
@@ -248,7 +271,7 @@ function evaluateDeterministic(criterion: Criterion, run: any) {
     return {
       passed: missing.length === 0,
       score,
-      detail: `Extracted: [${extractedVars.join(", ")}] | Missing: [${missing.join(", ")}]`,
+      detail: `Extracted: [${[...new Set(extractedVars)].join(", ")}] | Missing: [${missing.join(", ")}]`,
     };
   }
 
@@ -259,39 +282,28 @@ function evaluateDeterministic(criterion: Criterion, run: any) {
 
 function evaluateStructural(criterion: Criterion, run: any) {
   const expected = criterion.expectedValue as any;
-  const callLog = run.callLog as any[];
+  const callLog = run.callLog;
 
-  if (!callLog) {
+  if (!Array.isArray(callLog)) {
     return { passed: null, score: null, detail: "No call log available" };
   }
 
   if (expected.expectedSequence) {
-    const nodeEvents = callLog.filter(
-      (e: any) => e.category === "node_movement" && e.message === "Node moved"
+    // Hamsa logs don't include node IDs on node_movement events.
+    // Use count of "Conversation Node" events as a proxy for nodes visited.
+    const conversationNodes = callLog.filter(
+      (e: any) => e.category === "CONVERSATION" && e.message === "Conversation Node"
     );
-    const actual = nodeEvents.map((e: any) => e.node_id);
-
-    // Deduplicate consecutive same nodes
-    const deduped: string[] = [];
-    for (const n of actual) {
-      if (deduped[deduped.length - 1] !== n) deduped.push(n);
-    }
-
+    const nodesVisited = conversationNodes.length;
     const expectedSeq: string[] = expected.expectedSequence;
+    const expectedCount = expectedSeq.length;
 
-    // Subsequence match
-    let ei = 0;
-    for (const node of deduped) {
-      if (ei < expectedSeq.length && node === expectedSeq[ei]) ei++;
-    }
-
-    const matchedCount = ei;
-    const score = expectedSeq.length > 0 ? matchedCount / expectedSeq.length : 1;
+    const score = expectedCount > 0 ? Math.min(nodesVisited / expectedCount, 1) : 1;
 
     return {
-      passed: score === 1.0,
+      passed: nodesVisited >= expectedCount,
       score,
-      detail: `Matched ${matchedCount}/${expectedSeq.length} nodes.\nExpected: ${expectedSeq.join(" → ")}\nActual: ${deduped.join(" → ")}`,
+      detail: `Visited ${nodesVisited} nodes, expected ${expectedCount}. (Node IDs not available in Hamsa logs — using node count as proxy.)`,
     };
   }
 
@@ -301,11 +313,13 @@ function evaluateStructural(criterion: Criterion, run: any) {
 // ─── LLM_JUDGE ─────────────────────────────────────────────────────
 
 async function evaluateLLMJudge(criterion: Criterion, run: any) {
-  const transcript = run.transcript as any[];
-  const expected = criterion.expectedValue as any;
-  const criterionKey = (criterion as any).key || "";
+  // Prefer stored transcript; fall back to extracting from the raw conv object (webhookData)
+  const transcript: any[] | null =
+    resolveTranscript(run);
 
-  if (!transcript) {
+  const expected = criterion.expectedValue as any;
+
+  if (!transcript || transcript.length === 0) {
     return { passed: null, score: null, detail: "No transcript available" };
   }
 
@@ -332,28 +346,44 @@ async function evaluateLLMJudge(criterion: Criterion, run: any) {
         .join("\n");
   }
 
+  const agentSummary: string = run.project?.agentSummary ?? "";
+  const contextPrefix = agentSummary
+    ? `AGENT CONTEXT (use this to understand what the agent is designed to do):\n${agentSummary}\n\n`
+    : "";
+
+  const rule: string = expected.rule || expected.prompt || "Evaluate this transcript";
+
+  // Gender detection requires understanding Arabic morphology and speaker roles —
+  // use gpt-4.1 (not mini) to avoid misattributing agent self-reference as errors.
+  const isGenderCriterion = /gender/i.test(rule);
+  const modelOverride = isGenderCriterion ? "gpt-4.1" : undefined;
+
   return evaluateWithLLMJudge(
-    expected.rule || expected.prompt || "Evaluate this transcript",
-    transcriptText + genderContext
+    rule,
+    contextPrefix + transcriptText + genderContext,
+    false,
+    modelOverride
   );
 }
 
 // ─── WORD_ACCURACY ─────────────────────────────────────────────────
 
 function evaluateWordAccuracy(criterion: Criterion, run: any) {
-  const transcript = run.transcript as any[];
+  const transcript: any[] | null =
+    resolveTranscript(run);
+
   const wordLabels = run.wordLabels || [];
   const expected = criterion.expectedValue as any;
   const threshold = expected?.threshold ?? 0.95;
 
-  if (!transcript) {
+  if (!transcript || transcript.length === 0) {
     return { passed: null, score: null, detail: "No transcript available" };
   }
 
-  // Count total words from all agent utterances
+  // Count total words from Agent utterances only — word labels annotate agent speech
   const allWords: string[] = [];
   for (const utterance of transcript) {
-    const text = utterance.Agent || utterance.User || "";
+    const text = utterance.Agent || "";
     const words = text.split(/\s+/).filter(Boolean);
     allWords.push(...words);
   }
@@ -393,35 +423,49 @@ function evaluateWordAccuracy(criterion: Criterion, run: any) {
 // and next node action, plus tool execution times.
 
 function evaluateLatency(criterion: Criterion, run: any) {
-  const callLog = run.callLog as any[];
+  const callLog = run.callLog;
   const expected = criterion.expectedValue as any;
   const maxToolLatencyMs = expected?.maxToolLatencyMs ?? 3000;
-  const maxNodeTransitionMs = expected?.maxNodeTransitionMs ?? 2000;
 
-  if (!callLog) {
+  if (!Array.isArray(callLog)) {
     return { passed: null, score: null, detail: "No call log available" };
   }
 
-  // Measure tool execution times
-  const toolStarts: Record<string, string> = {};
+  // Measure tool execution times.
+  // Key by a composite of node_id + toolName + index to avoid collisions
+  // when the same node runs multiple tools or the same tool runs twice.
+  const toolStarts = new Map<string, { timestamp: string; tool: string }>();
   const toolLatencies: Array<{ tool: string; durationMs: number }> = [];
+  let toolExecIndex = 0;
 
   for (const event of callLog) {
     if (event.category === "TOOLS" && event.message === "Executing Tool") {
-      toolStarts[event.node_id] = event.timestamp;
+      const key = `${event.node_id ?? ""}:${event.payload?.toolName ?? ""}:${toolExecIndex++}`;
+      toolStarts.set(key, {
+        timestamp: event.timestamp,
+        tool: event.payload?.toolName || event.node_id || "unknown",
+      });
     }
     if (
       event.category === "TOOLS" &&
-      event.message === "Tool API call completed" &&
-      toolStarts[event.node_id]
+      event.message === "Tool API call completed"
     ) {
-      const start = new Date(toolStarts[event.node_id]).getTime();
-      const end = new Date(event.timestamp).getTime();
-      toolLatencies.push({
-        tool: event.payload?.request?.url || event.node_id,
-        durationMs: end - start,
-      });
-      delete toolStarts[event.node_id];
+      // Match the most recent unresolved start for this node+tool combo
+      const matchKey = [...toolStarts.keys()]
+        .reverse()
+        .find((k) => k.startsWith(`${event.node_id ?? ""}:${event.payload?.toolName ?? ""}:`));
+      if (matchKey) {
+        const entry = toolStarts.get(matchKey)!;
+        const start = new Date(entry.timestamp).getTime();
+        const end = new Date(event.timestamp).getTime();
+        if (!isNaN(start) && !isNaN(end)) {
+          toolLatencies.push({
+            tool: entry.tool,
+            durationMs: end - start,
+          });
+        }
+        toolStarts.delete(matchKey);
+      }
     }
   }
 
@@ -437,18 +481,29 @@ function evaluateLatency(criterion: Criterion, run: any) {
   for (let i = 1; i < nodeMoves.length; i++) {
     const prev = new Date(nodeMoves[i - 1].timestamp).getTime();
     const curr = new Date(nodeMoves[i].timestamp).getTime();
-    nodeTransitions.push({
-      from: nodeMoves[i - 1].node_id,
-      to: nodeMoves[i].node_id,
-      durationMs: curr - prev,
-    });
+    if (!isNaN(prev) && !isNaN(curr)) {
+      nodeTransitions.push({
+        from: nodeMoves[i - 1].node_id,
+        to: nodeMoves[i].node_id,
+        durationMs: curr - prev,
+      });
+    }
   }
 
-  // Total call duration from webhook data
+  // Total call duration from webhook data — handle both numeric ms and ISO string timestamps
   const webhookData = run.webhookData as any;
-  const totalDurationMs = webhookData?.data?.callEndedAt && webhookData?.data?.callStartedAt
-    ? webhookData.data.callEndedAt - webhookData.data.callStartedAt
-    : null;
+  let totalDurationMs: number | null = null;
+  if (webhookData?.data?.callEndedAt && webhookData?.data?.callStartedAt) {
+    const startRaw = webhookData.data.callStartedAt;
+    const endRaw = webhookData.data.callEndedAt;
+    const startMs = typeof startRaw === "number" ? startRaw : new Date(startRaw).getTime();
+    const endMs = typeof endRaw === "number" ? endRaw : new Date(endRaw).getTime();
+    if (!isNaN(startMs) && !isNaN(endMs)) totalDurationMs = endMs - startMs;
+  }
+  // Fall back to run.callDuration (seconds) if available
+  if (totalDurationMs === null && run.callDuration) {
+    totalDurationMs = run.callDuration * 1000;
+  }
 
   // Score based on tool latency
   const toolsOverLimit = toolLatencies.filter(
@@ -472,9 +527,10 @@ function evaluateLatency(criterion: Criterion, run: any) {
 // The LLM evaluates whether the agent progressed correctly, got stuck,
 // failed to understand user intent, or missed transitions.
 
-async function evaluateFlowProgression(criterion: Criterion, run: any) {
-  const callLog = run.callLog as any[];
-  const transcript = run.transcript as any[];
+async function evaluateFlowProgression(_criterion: Criterion, run: any) {
+  const callLog = Array.isArray(run.callLog) ? run.callLog : null;
+  const transcript: any[] | null =
+    resolveTranscript(run);
   const agentStructure = run.project?.agentStructure;
 
   if (!callLog && !transcript) {
@@ -563,8 +619,9 @@ async function evaluateFlowProgression(criterion: Criterion, run: any) {
 - Flow chain starts: ${flow.chainStarts}
 `;
 
+  const agentSummary: string = run.project?.agentSummary ?? "";
   const prompt = `You are evaluating a voice AI agent's ability to navigate through a multi-node conversation flow.
-
+${agentSummary ? `\nAGENT CONTEXT:\n${agentSummary}\n` : ""}
 ${expectedFlowSection}
 ${statsSection}
 ${callLogSection}
@@ -624,7 +681,7 @@ Respond with JSON only:
   "detail": "2-3 sentence summary: overall flow performance, where it got stuck, key failures, number of transition failures"
 }`;
 
-  const result = await evaluateWithLLMJudge(prompt, "");
+  const result = await evaluateWithLLMJudge(prompt, "", true);
 
   // Enhance with flow stats in metadata
   return {
@@ -641,9 +698,10 @@ Respond with JSON only:
 // logs show it actually did. Identifies mismatches, errors, root causes,
 // and actionable fix suggestions.
 
-async function evaluateActionConsistency(criterion: Criterion, run: any) {
-  const callLog = run.callLog as any[] | null;
-  const transcript = run.transcript as any[] | null;
+async function evaluateActionConsistency(_criterion: Criterion, run: any) {
+  const callLog = Array.isArray(run.callLog) ? run.callLog : null;
+  const transcript: any[] | null =
+    resolveTranscript(run);
   const agentStructure = run.project?.agentStructure;
 
   if (!callLog && !transcript) {
@@ -749,11 +807,15 @@ async function evaluateActionConsistency(criterion: Criterion, run: any) {
   }
 
   // ── Build the prompt ──
+  const agentSummarySection = run.project?.agentSummary
+    ? `AGENT CONTEXT (purpose, expected flow, success criteria):\n${run.project?.agentSummary}\n\n`
+    : "";
+
   const prompt = `You are a QA engineer performing a detailed cross-reference analysis between an AI voice agent's CALL LOG (system events) and its TRANSCRIPT (what was said).
 
 Your task is to verify that what the agent SAID matches what it actually DID, identify every discrepancy, analyze the root cause of each error, and suggest specific fixes.
 
-${agentDefSection}
+${agentSummarySection}${agentDefSection}
 ${callLogSection}
 ${toolResultsSection}
 ${transcriptSection}
@@ -824,7 +886,7 @@ Respond with JSON only:
   "detail": "3-5 sentence executive summary: how well the agent's speech matched its actions, main failure patterns, and what to fix first"
 }`;
 
-  const result = await evaluateWithLLMJudge(prompt, "");
+  const result = await evaluateWithLLMJudge(prompt, "", true);
 
   // Parse the structured response from detail for metadata
   let parsedAnalysis: any = null;

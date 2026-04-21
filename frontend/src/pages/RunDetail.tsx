@@ -1,6 +1,116 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useParams, Link } from "react-router-dom";
 import { getRun, createLabel, deleteLabel, triggerEvaluation, fetchLogs } from "../api/client";
+
+// ─── Goal Achievement ──────────────────────────────────────────────
+
+type GoalStatus = "SUCCESSFUL" | "FAILED" | "PARTIAL";
+
+function computeGoal(run: any): { status: GoalStatus; reason: string } | null {
+  if (run.status !== "COMPLETE") return null;
+
+  const callStatus = (run.callStatus || "").toUpperCase();
+  const outcome = (run.callOutcome || "").toLowerCase();
+  const score: number | null = run.overallScore ?? null;
+  const summary: string = run.outcomeResult?.summary || "";
+  const evalResults: any[] = run.evalResults || [];
+
+  if (["NO_ANSWER", "BUSY", "VOICEMAIL"].includes(callStatus)) {
+    const why = callStatus === "NO_ANSWER" ? "Call was not answered."
+              : callStatus === "BUSY"      ? "Line was busy."
+              : "Reached voicemail — no live conversation.";
+    return { status: "FAILED", reason: why };
+  }
+  if (callStatus === "FAILED") {
+    return { status: "FAILED", reason: "Call failed before completing." };
+  }
+
+  const failedCriteria = evalResults
+    .filter((er: any) => er.score != null && er.score < 0.5)
+    .map((er: any) => er.criterion?.label || er.criterion?.key)
+    .filter(Boolean) as string[];
+  const failedStr = failedCriteria.length ? ` Issues: ${failedCriteria.join(", ")}.` : "";
+
+  const isNegative = outcome.includes("not_interested") || outcome.includes("rejected")
+                  || outcome.includes("refused")        || outcome.includes("declined");
+  const isPositive = !isNegative && (
+    outcome.includes("interested") || outcome.includes("success")   ||
+    outcome.includes("booked")     || outcome.includes("converted") ||
+    outcome.includes("completed")  || outcome.includes("agreed")
+  );
+  const isFollowup = outcome.includes("followup") || outcome.includes("callback")
+                  || outcome.includes("pending")   || outcome.includes("later");
+
+  if (isNegative) {
+    const status: GoalStatus = (score != null && score >= 0.7) ? "PARTIAL" : "FAILED";
+    const reason = summary
+      || (status === "PARTIAL"
+        ? `Customer declined, but the agent performed correctly (${(score! * 100).toFixed(0)}% quality).`
+        : `Customer was not interested.${failedStr}`);
+    return { status, reason };
+  }
+  if (isPositive) {
+    if (score == null || score >= 0.7) {
+      return { status: "SUCCESSFUL", reason: summary || `Call goal achieved.${failedStr}` };
+    }
+    return {
+      status: "PARTIAL",
+      reason: summary || `Positive outcome but agent quality was below target (${(score * 100).toFixed(0)}%).${failedStr}`,
+    };
+  }
+  if (isFollowup) {
+    return { status: "PARTIAL", reason: summary || `Call resulted in a follow-up, no definitive outcome yet.${failedStr}` };
+  }
+
+  if (score == null) return null;
+  if (score >= 0.8) return { status: "SUCCESSFUL", reason: summary || `Agent performed well (${(score * 100).toFixed(0)}% quality score).` };
+  if (score >= 0.5) return { status: "PARTIAL",    reason: summary || `Agent partially met the call goal (${(score * 100).toFixed(0)}% quality).${failedStr}` };
+  return              { status: "FAILED",           reason: summary || `Agent did not meet the call goal (${(score * 100).toFixed(0)}% quality).${failedStr}` };
+}
+
+const GOAL_STYLE: Record<GoalStatus, { color: string; bg: string; border: string }> = {
+  SUCCESSFUL: { color: "#22c55e", bg: "#052e1644", border: "#22c55e55" },
+  PARTIAL:    { color: "#f59e0b", bg: "#451a0344", border: "#f59e0b55" },
+  FAILED:     { color: "#ef4444", bg: "#450a0a44", border: "#ef444455" },
+};
+
+// ─── End Goal Achievement ──────────────────────────────────────────
+
+function formatOutcome(outcome: string): string {
+  return outcome.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
+function outcomeStyle(outcome: string): { color: string; bg: string } {
+  const lower = outcome.toLowerCase();
+  // Negative outcomes must be checked BEFORE positive ones — "not_interested" contains "interested"
+  if (lower.includes("not_interested") || lower.includes("rejected") || lower.includes("declined") || lower.includes("refused"))
+    return { color: "#ef4444", bg: "#7f1d1d22" };
+  if (lower.includes("interested") || lower.includes("success") || lower.includes("converted") || lower.includes("booked"))
+    return { color: "#22c55e", bg: "#14532d22" };
+  if (lower.includes("followup") || lower.includes("callback") || lower.includes("pending") || lower.includes("later"))
+    return { color: "#f59e0b", bg: "#78350f22" };
+  if (lower.includes("no_answer") || lower.includes("busy") || lower.includes("voicemail"))
+    return { color: "#6b7280", bg: "#1a1a1a" };
+  return { color: "#a78bfa", bg: "#2e1065aa" };
+}
+
+function OutcomeBadge({ outcome, size = "small" }: { outcome: string | null | undefined; size?: "small" | "large" }) {
+  if (!outcome) return <span style={{ color: "#444", fontSize: 12 }}>—</span>;
+  const { color, bg } = outcomeStyle(outcome);
+  return (
+    <span style={{
+      fontSize: size === "large" ? 14 : 11,
+      padding: size === "large" ? "4px 12px" : "2px 8px",
+      borderRadius: 10,
+      background: bg, color,
+      border: `1px solid ${color}44`,
+      whiteSpace: "nowrap",
+      fontWeight: size === "large" ? 600 : 400,
+    }}>
+      {formatOutcome(outcome)}
+    </span>
+  );
+}
 
 // Labels for Agent utterances
 const AGENT_LABEL_TYPES = [
@@ -37,6 +147,14 @@ export default function RunDetail() {
   const [run, setRun] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [labelingWord, setLabelingWord] = useState<{ wordIndex: number; utteranceIndex: number; word: string; speaker: string } | null>(null);
+  const [audioError, setAudioError] = useState(false);
+  const [reEvaluating, setReEvaluating] = useState(false);
+  const [labeling, setLabeling] = useState(false);
+  // Tracks which runId the current poll belongs to. When the user navigates
+  // to a different run, this ref changes and any in-flight poll for the old
+  // runId will see a mismatch and stop — preventing stale data from being
+  // applied to the new page.
+  const activeRunIdRef = useRef<string | null>(null);
 
   const load = () => {
     getRun(runId!)
@@ -44,19 +162,46 @@ export default function RunDetail() {
       .finally(() => setLoading(false));
   };
 
-  useEffect(() => { load(); }, [runId]);
+  // Reset per-run state when navigating between runs
+  useEffect(() => {
+    activeRunIdRef.current = runId!; // mark the new run; invalidates all old polls
+    setLoading(true);
+    setAudioError(false);
+    setReEvaluating(false);
+    setLabelingWord(null);
+    load();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [runId]);
 
   if (loading) return <p>Loading...</p>;
   if (!run) return <p>Run not found</p>;
 
   const transcript = (run.transcript || []) as any[];
   const evalResults = (run.evalResults || []) as any[];
+
+  // Resolve recording URL — check all known Hamsa field locations
+  const recordingUrl: string | null = (() => {
+    const w = run.webhookData as any;
+    return (
+      w?.mediaUrl ||                         // history runs: conv.mediaUrl
+      w?.data?.recordingUrl ||               // live webhook: payload.data.recordingUrl
+      w?.data?.recording_url ||
+      w?.caller_info?.recording_url ||
+      w?.recordingUrl ||
+      null
+    );
+  })();
   const wordLabels = (run.wordLabels || []) as any[];
 
-  // Flatten words for labeling
+  // Flatten words for labeling.
+  // uttStartIdx[ui] = first globalWordIndex of utterance ui, so any word at position wi
+  // within utterance ui has globalIndex = uttStartIdx[ui] + wi. This is O(n) and handles
+  // duplicate words in the same utterance correctly (no findIndex needed during render).
   let globalWordIndex = 0;
   const flatWords: Array<{ word: string; utteranceIndex: number; globalIndex: number; speaker: string }> = [];
+  const uttStartIdx: number[] = [];
   transcript.forEach((utt: any, ui: number) => {
+    uttStartIdx[ui] = globalWordIndex;
     const text = utt.Agent || utt.User || "";
     const speaker = utt.Agent ? "Agent" : "User";
     text.split(/\s+/).filter(Boolean).forEach((w: string) => {
@@ -66,21 +211,33 @@ export default function RunDetail() {
   });
 
   async function handleLabel(type: string, correction?: string) {
-    if (!labelingWord) return;
-    await createLabel(runId!, {
-      wordIndex: labelingWord.wordIndex,
-      utteranceIndex: labelingWord.utteranceIndex,
-      originalWord: labelingWord.word,
-      labelType: type,
-      correction: correction || null,
-    });
-    setLabelingWord(null);
-    load();
+    if (!labelingWord || labeling) return;
+    setLabeling(true);
+    try {
+      await createLabel(runId!, {
+        wordIndex: labelingWord.wordIndex,
+        utteranceIndex: labelingWord.utteranceIndex,
+        originalWord: labelingWord.word,
+        labelType: type,
+        correction: correction || null,
+      });
+      setLabelingWord(null);
+      load();
+    } finally {
+      setLabeling(false);
+    }
   }
 
   async function handleRemoveLabel(labelId: string) {
-    await deleteLabel(labelId);
-    load();
+    if (labeling) return;
+    setLabeling(true);
+    try {
+      await deleteLabel(labelId);
+      setLabelingWord(null);
+      load();
+    } finally {
+      setLabeling(false);
+    }
   }
 
   return (
@@ -110,22 +267,118 @@ export default function RunDetail() {
           </button>
         )}
         <button
-          onClick={async () => { await triggerEvaluation(runId!); setTimeout(load, 3000); }}
-          style={{ background: "#2563eb", color: "#fff", padding: "6px 12px", borderRadius: 4, border: "none", cursor: "pointer", fontSize: 12 }}
+          disabled={reEvaluating}
+          onClick={async () => {
+            setReEvaluating(true);
+            const capturedRunId = runId!;
+            try {
+              await triggerEvaluation(capturedRunId);
+            } catch (err) {
+              const msg = (err as Error).message;
+              // 409 = already evaluating — just start polling to track it
+              if (!msg.includes("409")) {
+                setReEvaluating(false);
+                return;
+              }
+            }
+            const poll = () => {
+              if (activeRunIdRef.current !== capturedRunId) return; // navigated away
+              getRun(capturedRunId).then((r) => {
+                if (activeRunIdRef.current !== capturedRunId) return;
+                setRun(r);
+                if (["EVALUATING", "PENDING", "RUNNING"].includes(r.status)) {
+                  setTimeout(poll, 2000);
+                } else {
+                  setReEvaluating(false);
+                }
+              }).catch(() => {
+                if (activeRunIdRef.current === capturedRunId) setReEvaluating(false);
+              });
+            };
+            setTimeout(poll, 1500);
+          }}
+          style={{ background: reEvaluating ? "#1e3a5f" : "#2563eb", color: "#fff", padding: "6px 12px", borderRadius: 4, border: "none", cursor: reEvaluating ? "default" : "pointer", fontSize: 12 }}
         >
-          Re-evaluate
+          {reEvaluating ? "Evaluating…" : "Re-evaluate"}
         </button>
-        {run.status !== "COMPLETE" && (run.callLog || run.transcript) && (
-          <span style={{ fontSize: 12, color: "#888" }}>evaluating...</span>
-        )}
       </div>
 
-      {/* Score summary */}
-      {run.overallScore != null && (
+      {/* Call recording */}
+      {recordingUrl && (
+        <div style={{ marginBottom: 20 }}>
+          {audioError ? (
+            <div style={{ padding: "10px 14px", background: "#1a1a1a", border: "1px solid #333", borderRadius: 6, fontSize: 12, color: "#888", display: "flex", alignItems: "center", gap: 10 }}>
+              <span>Recording unavailable (URL may have expired)</span>
+              <a href={recordingUrl} target="_blank" rel="noopener noreferrer" style={{ color: "#3b82f6", textDecoration: "none" }}>Open directly ↗</a>
+            </div>
+          ) : (
+            <audio
+              controls
+              src={recordingUrl}
+              onError={() => setAudioError(true)}
+              style={{ width: "100%", accentColor: "#3b82f6" }}
+            />
+          )}
+        </div>
+      )}
+
+      {/* Call outcome + score summary */}
+      <div style={{ display: "flex", gap: 32, alignItems: "flex-start", marginBottom: 24, flexWrap: "wrap" }}>
+        {run.overallScore != null && (
+          <div>
+            <div style={{ fontSize: 12, color: "#888", marginBottom: 4 }}>Overall Score</div>
+            <div style={{ fontSize: 36, fontWeight: 700, color: run.overallScore >= 0.8 ? "#22c55e" : run.overallScore >= 0.5 ? "#f59e0b" : "#ef4444" }}>
+              {(run.overallScore * 100).toFixed(0)}%
+            </div>
+          </div>
+        )}
+        {run.evalCost != null && run.evalCost > 0 && (
+          <div>
+            <div style={{ fontSize: 12, color: "#888", marginBottom: 4 }}>Eval Cost</div>
+            <div style={{ fontSize: 20, fontWeight: 600, color: "#a78bfa" }}>
+              ${run.evalCost < 0.01 ? run.evalCost.toFixed(4) : run.evalCost.toFixed(3)}
+            </div>
+          </div>
+        )}
+        {run.callOutcome && (
+          <div>
+            <div style={{ fontSize: 12, color: "#888", marginBottom: 6 }}>Call Outcome</div>
+            <OutcomeBadge outcome={run.callOutcome} size="large" />
+          </div>
+        )}
+        {(() => {
+          const goal = computeGoal(run);
+          if (!goal) return null;
+          const s = GOAL_STYLE[goal.status];
+          return (
+            <div style={{
+              flex: 1, minWidth: 260,
+              background: s.bg, border: `1px solid ${s.border}`,
+              borderRadius: 8, padding: "12px 16px",
+            }}>
+              <div style={{ fontSize: 12, color: "#888", marginBottom: 6 }}>Goal</div>
+              <div style={{ fontSize: 15, fontWeight: 700, color: s.color, marginBottom: 6 }}>
+                {goal.status === "SUCCESSFUL" ? "✓ Successful" : goal.status === "PARTIAL" ? "~ Partial" : "✗ Failed"}
+              </div>
+              <div style={{ fontSize: 13, color: "#ccc", lineHeight: 1.5 }}>{goal.reason}</div>
+            </div>
+          );
+        })()}
+      </div>
+
+      {/* Outcome variables */}
+      {run.outcomeResult && Object.keys(run.outcomeResult).filter(k => !["summary", "call_outcome", "default_params"].includes(k) && run.outcomeResult[k]).length > 0 && (
         <div style={{ marginBottom: 24 }}>
-          <div style={{ fontSize: 14, color: "#888", marginBottom: 8 }}>Overall Score</div>
-          <div style={{ fontSize: 36, fontWeight: 700, color: run.overallScore >= 0.8 ? "#22c55e" : run.overallScore >= 0.5 ? "#f59e0b" : "#ef4444" }}>
-            {(run.overallScore * 100).toFixed(0)}%
+          <div style={{ fontSize: 12, color: "#888", marginBottom: 8 }}>Extracted Variables</div>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            {Object.entries(run.outcomeResult)
+              .filter(([k, v]) => !["summary", "call_outcome", "default_params"].includes(k) && v)
+              .map(([k, v]) => (
+                <span key={k} style={{ background: "#1a1a1a", border: "1px solid #333", borderRadius: 6, padding: "4px 10px", fontSize: 12 }}>
+                  <span style={{ color: "#888" }}>{k}: </span>
+                  <span style={{ color: "#e5e7eb" }}>{String(v)}</span>
+                </span>
+              ))}
           </div>
         </div>
       )}
@@ -134,38 +387,11 @@ export default function RunDetail() {
       {evalResults.length > 0 && (
         <div style={{ marginBottom: 32 }}>
           <h2 style={{ fontSize: 16, marginBottom: 12 }}>Criteria Results</h2>
-          <table style={{ width: "100%", borderCollapse: "collapse" }}>
-            <thead>
-              <tr style={{ borderBottom: "1px solid #333", textAlign: "left" }}>
-                <th style={{ padding: "6px 12px", fontSize: 13 }}>Criterion</th>
-                <th style={{ padding: "6px 12px", fontSize: 13 }}>Type</th>
-                <th style={{ padding: "6px 12px", fontSize: 13 }}>Score</th>
-                <th style={{ padding: "6px 12px", fontSize: 13 }}>Pass</th>
-                <th style={{ padding: "6px 12px", fontSize: 13 }}>Detail</th>
-              </tr>
-            </thead>
-            <tbody>
-              {evalResults.map((er: any) => (
-                <tr key={er.id} style={{ borderBottom: "1px solid #1a1a1a" }}>
-                  <td style={{ padding: "6px 12px" }}>{er.criterion?.label || er.criterion?.key}</td>
-                  <td style={{ padding: "6px 12px", fontSize: 12, color: "#888" }}>{er.criterion?.type}</td>
-                  <td style={{ padding: "6px 12px" }}>
-                    {er.score != null ? `${(er.score * 100).toFixed(0)}%` : "—"}
-                  </td>
-                  <td style={{ padding: "6px 12px" }}>
-                    {er.passed != null ? (
-                      <span style={{ color: er.passed ? "#22c55e" : "#ef4444" }}>
-                        {er.passed ? "PASS" : "FAIL"}
-                      </span>
-                    ) : "—"}
-                  </td>
-                  <td style={{ padding: "6px 12px", fontSize: 12, color: "#aaa", maxWidth: 400 }}>
-                    {er.detail}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+          <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+            {evalResults.map((er: any) => (
+              <CriterionCard key={er.id} er={er} />
+            ))}
+          </div>
         </div>
       )}
 
@@ -477,7 +703,7 @@ export default function RunDetail() {
       })()}
 
       {/* Flow Progression Visual */}
-      {run.project?.agentStructure?.workflow?.nodes && run.callLog && (
+      {run.project?.agentStructure?.workflow?.nodes && Array.isArray(run.callLog) && (
         <FlowProgressionView
           workflowNodes={run.project.agentStructure.workflow.nodes}
           workflowEdges={run.project.agentStructure.workflow.edges || []}
@@ -510,10 +736,9 @@ export default function RunDetail() {
                   </span>
                   <div style={{ direction: "rtl", lineHeight: 2 }}>
                     {words.map((word: string, wi: number) => {
-                      const gIdx = flatWords.findIndex(
-                        (fw) => fw.utteranceIndex === ui && fw.word === word && fw.globalIndex >= (flatWords.find(f => f.utteranceIndex === ui)?.globalIndex ?? 0)
-                      );
-                      const actualGlobalIndex = flatWords[gIdx]?.globalIndex ?? wi;
+                      // Direct index: uttStartIdx[ui] + wi is always correct,
+                      // even for duplicate words within the same utterance.
+                      const actualGlobalIndex = (uttStartIdx[ui] ?? 0) + wi;
                       const label = wordLabels.find((l: any) => l.wordIndex === actualGlobalIndex);
 
                       return (
@@ -565,6 +790,7 @@ export default function RunDetail() {
                 {(labelingWord.speaker === "Agent" ? AGENT_LABEL_TYPES : USER_LABEL_TYPES).map((lt) => (
                   <button
                     key={lt.type}
+                    disabled={labeling}
                     onClick={() => handleLabel(lt.type)}
                     style={{
                       background: `${LABEL_COLORS[lt.type] || "#888"}22`,
@@ -572,9 +798,10 @@ export default function RunDetail() {
                       border: `1px solid ${LABEL_COLORS[lt.type] || "#888"}44`,
                       padding: "8px 14px",
                       borderRadius: 4,
-                      cursor: "pointer",
+                      cursor: labeling ? "default" : "pointer",
                       fontSize: 13,
                       textAlign: "left",
+                      opacity: labeling ? 0.5 : 1,
                     }}
                   >
                     <div style={{ fontWeight: 500 }}>{lt.label}</div>
@@ -622,10 +849,146 @@ export default function RunDetail() {
       )}
 
       {/* Call Log with category counts and filtering */}
-      {run.callLog && <CallLogViewer callLog={run.callLog as any[]} />}
+      {Array.isArray(run.callLog) && run.callLog.length > 0 && <CallLogViewer callLog={run.callLog} />}
     </div>
   );
 }
+
+// ─── Criterion Card Component ──────────────────────────────────────
+
+const CRITERION_TYPE_COLORS: Record<string, string> = {
+  FLOW_PROGRESSION: "#3b82f6",
+  ACTION_CONSISTENCY: "#a855f7",
+  LATENCY: "#f59e0b",
+  DETERMINISTIC: "#22c55e",
+  LLM_JUDGE: "#ec4899",
+  WORD_ACCURACY: "#06b6d4",
+  STRUCTURAL: "#f97316",
+};
+
+function CriterionCard({ er }: { er: any }) {
+  const [expanded, setExpanded] = useState(false);
+  const type: string = er.criterion?.type ?? "";
+  const label: string = er.criterion?.label || er.criterion?.key || type;
+  const score: number | null = er.score;
+  const passed: boolean | null = er.passed;
+
+  // Parse detail for structured types — extract the human-readable narrative field
+  let parsedNarrative: string | null = null;
+  if (er.detail && (type === "FLOW_PROGRESSION" || type === "ACTION_CONSISTENCY")) {
+    try {
+      const p = JSON.parse(er.detail);
+      parsedNarrative = typeof p.detail === "string" ? p.detail : null;
+    } catch {}
+  }
+
+  // Summary: always shown inline (collapsed state)
+  const summary = (() => {
+    // Structured types — show the LLM narrative, or a generic fallback
+    if (type === "FLOW_PROGRESSION" || type === "ACTION_CONSISTENCY") {
+      return parsedNarrative || "See detailed analysis below ↓";
+    }
+    if (!er.detail) return null;
+    if (type === "LATENCY") {
+      // Pull "Total call: Xs" and "N slow tools" from the detail string
+      const timeMatch = er.detail.match(/Total call:\s*([\d.]+s|N\/A)/);
+      const slowMatch = er.detail.match(/(\d+)\s*tool[s]?\s*over/i);
+      const parts = [
+        timeMatch ? `Total: ${timeMatch[1]}` : null,
+        slowMatch ? `${slowMatch[1]} slow tool${slowMatch[1] !== "1" ? "s" : ""}` : null,
+      ].filter(Boolean);
+      return parts.length > 0 ? parts.join(" · ") : er.detail.slice(0, 120);
+    }
+    // Generic: show inline if short, truncate if long
+    return er.detail.length > 160 ? er.detail.slice(0, 160) + "…" : er.detail;
+  })();
+
+  // Whether clicking expand reveals additional content beyond the summary
+  const hasExpandableContent = (() => {
+    if (type === "FLOW_PROGRESSION" || type === "ACTION_CONSISTENCY") return false; // detailed sections already rendered below
+    if (!er.detail) return false;
+    return er.detail.length > 160; // only expandable if content was truncated
+  })();
+
+  const scoreColor = score == null ? "#555" : score >= 0.8 ? "#22c55e" : score >= 0.5 ? "#f59e0b" : "#ef4444";
+  const passColor = passed == null ? "#555" : passed ? "#22c55e" : "#ef4444";
+  const typeColor = CRITERION_TYPE_COLORS[type] || "#888";
+
+  return (
+    <div style={{
+      background: "#111", borderRadius: 8, border: "1px solid #222",
+      overflow: "hidden",
+    }}>
+      {/* Header row */}
+      <div
+        onClick={() => hasExpandableContent && setExpanded(!expanded)}
+        style={{
+          display: "flex", alignItems: "center", gap: 12, padding: "10px 14px",
+          cursor: hasExpandableContent ? "pointer" : "default",
+        }}
+      >
+        {/* Pass/fail dot */}
+        <div style={{
+          width: 10, height: 10, borderRadius: "50%", flexShrink: 0,
+          background: passColor,
+          boxShadow: `0 0 6px ${passColor}66`,
+        }} />
+
+        {/* Label */}
+        <div style={{ flex: 1, fontSize: 13, fontWeight: 500, color: "#e5e7eb" }}>
+          {label}
+        </div>
+
+        {/* Type badge */}
+        <span style={{
+          fontSize: 10, padding: "1px 7px", borderRadius: 4,
+          background: `${typeColor}18`, color: typeColor, border: `1px solid ${typeColor}33`,
+          flexShrink: 0,
+        }}>
+          {type.replace(/_/g, " ")}
+        </span>
+
+        {/* Score */}
+        <div style={{ fontWeight: 700, fontSize: 15, color: scoreColor, minWidth: 40, textAlign: "right", flexShrink: 0 }}>
+          {score != null ? `${(score * 100).toFixed(0)}%` : "—"}
+        </div>
+
+        {/* Expand arrow — only shown when there's more to reveal */}
+        {hasExpandableContent && (
+          <span style={{ color: "#444", fontSize: 10, flexShrink: 0 }}>{expanded ? "▲" : "▼"}</span>
+        )}
+      </div>
+
+      {/* Summary line (always visible) */}
+      {summary && (
+        <div style={{ padding: "0 14px 10px 36px", fontSize: 12, color: "#888", lineHeight: 1.5 }}>
+          {expanded ? er.detail : summary}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── Module-level constants (not recreated per render) ─────────────
+
+const NODE_TYPE_COLORS: Record<string, string> = {
+  start: "#22c55e",
+  conversation: "#3b82f6",
+  tool: "#f59e0b",
+  router: "#a855f7",
+  end: "#ef4444",
+};
+
+const CALL_LOG_CATEGORY_COLORS: Record<string, string> = {
+  node_movement: "#3b82f6",
+  FLOW: "#3b82f6",
+  TOOLS: "#f59e0b",
+  VARIABLE_EXTRACTION: "#a855f7",
+  VARIABLE: "#a855f7",
+  CONVERSATION: "#22c55e",
+  ROUTER: "#ec4899",
+  TRANSITION: "#ec4899",
+};
 
 // ─── Flow Progression Visual Component ─────────────────────────────
 
@@ -744,29 +1107,30 @@ function FlowProgressionView({
     return visitedNodeIds.has(node.id) ? idx : maxIdx;
   }, -1);
 
-  const nodeTypeColors: Record<string, string> = {
-    start: "#22c55e",
-    conversation: "#3b82f6",
-    tool: "#f59e0b",
-    router: "#a855f7",
-    end: "#ef4444",
-  };
 
   return (
     <div style={{ marginBottom: 32 }}>
       <h2 style={{ fontSize: 16, marginBottom: 12 }}>Flow Progression</h2>
 
-      {/* LLM Analysis Summary */}
-      {evalResult?.detail && (
-        <div style={{
-          background: evalResult.passed ? "#22c55e11" : "#ef444411",
-          border: `1px solid ${evalResult.passed ? "#22c55e33" : "#ef444433"}`,
-          borderRadius: 8, padding: 14, marginBottom: 16, fontSize: 13, lineHeight: 1.6,
-          color: "#ccc", whiteSpace: "pre-wrap",
-        }}>
-          {evalResult.detail}
-        </div>
-      )}
+      {/* LLM Analysis Summary — parse JSON detail, show only the human narrative */}
+      {(() => {
+        if (!evalResult?.detail) return null;
+        let narrative = evalResult.detail as string;
+        try {
+          const p = JSON.parse(evalResult.detail);
+          if (typeof p.detail === "string") narrative = p.detail;
+        } catch {}
+        return (
+          <div style={{
+            background: evalResult.passed ? "#22c55e11" : "#ef444411",
+            border: `1px solid ${evalResult.passed ? "#22c55e33" : "#ef444433"}`,
+            borderRadius: 8, padding: 14, marginBottom: 16, fontSize: 13, lineHeight: 1.6,
+            color: "#ccc",
+          }}>
+            {narrative}
+          </div>
+        );
+      })()}
 
       {/* Node Flow Visual */}
       <div style={{ background: "#111", borderRadius: 8, padding: 16, border: "1px solid #222" }}>
@@ -778,7 +1142,7 @@ function FlowProgressionView({
             const nodeVars = node.extractVariables?.variables?.map((v: any) => v.name) || [];
             const extractedHere = extractedVars.filter((v: any) => nodeVars.includes(v.name));
             const toolHere = toolCalls.find((t: any) => t.nodeId === node.id);
-            const typeColor = nodeTypeColors[node.type] || "#888";
+            const typeColor = NODE_TYPE_COLORS[node.type] || "#888";
 
             return (
               <div key={node.id}>
@@ -973,16 +1337,7 @@ function CallLogViewer({ callLog }: { callLog: any[] }) {
   const [filter, setFilter] = useState<string | null>(null);
   const [showDebug, setShowDebug] = useState(false);
 
-  const CATEGORY_COLORS: Record<string, string> = {
-    node_movement: "#3b82f6",
-    FLOW: "#3b82f6",
-    TOOLS: "#f59e0b",
-    VARIABLE_EXTRACTION: "#a855f7",
-    VARIABLE: "#a855f7",
-    CONVERSATION: "#22c55e",
-    ROUTER: "#ec4899",
-    TRANSITION: "#ec4899",
-  };
+  const CATEGORY_COLORS = CALL_LOG_CATEGORY_COLORS;
 
   const categoryCounts: Record<string, { total: number; info: number; debug: number }> = {};
   for (const e of callLog) {

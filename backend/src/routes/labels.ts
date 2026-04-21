@@ -1,9 +1,9 @@
+import prisma from "../lib/prisma";
 import { Router } from "express";
 import { PrismaClient } from "@prisma/client";
 import { runEvaluationCheck } from "../services/evaluationRunner";
 
 const router = Router();
-const prisma = new PrismaClient();
 
 // Get all labels for a run
 router.get("/run/:runId", async (req, res) => {

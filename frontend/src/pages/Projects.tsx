@@ -40,6 +40,7 @@ export default function Projects() {
           <thead>
             <tr style={{ borderBottom: "1px solid #333", textAlign: "left" }}>
               <th style={{ padding: "8px 12px" }}>Name</th>
+              <th style={{ padding: "8px 12px" }}>Type</th>
               <th style={{ padding: "8px 12px" }}>Agent ID</th>
               <th style={{ padding: "8px 12px" }}>Criteria</th>
               <th style={{ padding: "8px 12px" }}>Runs</th>
@@ -55,6 +56,15 @@ export default function Projects() {
                     {p.name}
                   </Link>
                 </td>
+                <td style={{ padding: "8px 12px" }}>
+                  <span style={{
+                    fontSize: 10, padding: "2px 6px", borderRadius: 3,
+                    background: p.projectType === "WEBHOOK" ? "#4c1d95" : p.projectType === "HISTORY" ? "#1e3a5f" : "#14532d",
+                    color: p.projectType === "WEBHOOK" ? "#c084fc" : p.projectType === "HISTORY" ? "#60a5fa" : "#4ade80",
+                  }}>
+                    {p.projectType || "LIVE"}
+                  </span>
+                </td>
                 <td style={{ padding: "8px 12px", fontFamily: "monospace", fontSize: 12, color: "#888" }}>
                   {p.agentId?.slice(0, 12)}...
                 </td>
@@ -62,16 +72,14 @@ export default function Projects() {
                 <td style={{ padding: "8px 12px" }}>{p._count?.runs ?? 0}</td>
                 <td style={{ padding: "8px 12px", fontSize: 12, color: "#888" }}>
                   {p.runs?.[0]
-                    ? `${p.runs[0].modelUsed} — ${new Date(p.runs[0].createdAt).toLocaleDateString()}`
+                    ? `${p.runs[0].modelUsed || p.projectType || "—"} — ${new Date(p.runs[0].createdAt).toLocaleDateString()}`
                     : "—"}
                 </td>
                 <td style={{ padding: "8px 12px" }}>
                   <button
                     onClick={async () => {
-                      if (confirm("Delete this project?")) {
-                        await deleteProject(p.id);
-                        setProjects((prev) => prev.filter((x) => x.id !== p.id));
-                      }
+                      await deleteProject(p.id);
+                      setProjects((prev) => prev.filter((x) => x.id !== p.id));
                     }}
                     style={{
                       background: "none",

@@ -15,10 +15,21 @@ model Project {
   description     String?
   agentStructure  Json?       // Full agent JSON (workflow nodes, edges, tools)
   flowDefinition  Json?       // Extracted expected node sequence + tool calls
+  agentSummary    String?     // LLM-generated plain-text analysis: purpose, scenarios, success criteria
+  projectType     ProjectType @default(LIVE)
+  historyStartDate DateTime?  // For HISTORY projects: start of date range
+  historyEndDate   DateTime?  // For HISTORY projects: end of date range
   criteria        Criterion[]
   runs            Run[]
+  analyses        ProjectAnalysis[]
   createdAt       DateTime    @default(now())
   updatedAt       DateTime    @updatedAt
+}
+
+enum ProjectType {
+  LIVE
+  HISTORY
+  WEBHOOK
 }
 
 model Criterion {
@@ -47,22 +58,42 @@ enum CriterionType {
 }
 
 model Run {
-  id            String      @id @default(cuid())
-  projectId     String
-  project       Project     @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  modelUsed     String      // e.g. "openai/gpt-4o", "groq/llama-3.3-70b-versatile"
-  hamsaCallId   String?     // Returned by Hamsa after call is initiated
-  status        RunStatus   @default(PENDING)
-  callLog       Json?       // Raw Hamsa call log array (nodes, tools, timestamps)
-  transcript    Json?       // Raw webhook transcript payload
-  webhookData   Json?       // Full webhook payload (includes summary, recording URL, etc.)
-  overallScore  Float?      // Computed weighted average of all criteria
-  errorLog      String?
-  startedAt     DateTime?
-  completedAt   DateTime?
-  evalResults   EvalResult[]
-  wordLabels    WordLabel[]
-  createdAt     DateTime    @default(now())
+  id             String      @id @default(cuid())
+  projectId      String
+  project        Project     @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  modelUsed      String?     // e.g. "openai/gpt-4o" — optional for history runs
+  hamsaCallId    String?     // Returned by Hamsa after call is initiated (jobId)
+  conversationId String?     // Hamsa conversation ID (populated for history runs)
+  source         RunSource   @default(LIVE)
+  callDate       DateTime?   // When the call actually happened (history runs)
+  callDuration   Int?        // Call duration in seconds (history runs)
+  callStatus     String?     // Hamsa call outcome: COMPLETED, FAILED, NO_ANSWER, etc.
+  callOutcome    String?     // jobResponse.outcomeResult.call_outcome (e.g. "interested_followup")
+  outcomeResult  Json?       // Full jobResponse.outcomeResult object (summary, variables, language, etc.)
+  status         RunStatus   @default(PENDING)
+  callLog        Json?       // Raw Hamsa call log array (nodes, tools, timestamps)
+  transcript     Json?       // Raw webhook transcript payload
+  webhookData    Json?       // Full webhook payload (includes summary, recording URL, etc.)
+  overallScore   Float?      // Computed weighted average of all criteria
+  evalCost       Float?      // Total OpenAI API cost for this run's evaluations (USD)
+  errorLog       String?
+  startedAt      DateTime?
+  completedAt    DateTime?
+  evalResults    EvalResult[]
+  wordLabels     WordLabel[]
+  createdAt      DateTime    @default(now())
+
+  @@index([projectId])
+  @@index([conversationId])
+  @@index([status])
+  @@index([projectId, source])
+  @@unique([projectId, hamsaCallId])
+}
+
+enum RunSource {
+  LIVE
+  HISTORY
+  WEBHOOK
 }
 
 enum RunStatus {
@@ -101,6 +132,36 @@ model WordLabel {
   createdAt     DateTime  @default(now())
 
   @@unique([runId, wordIndex])
+}
+
+model ProjectAnalysis {
+  id                String    @id @default(cuid())
+  projectId         String
+  project           Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  version           Int
+
+  // Which runs were included
+  runIds            String[]
+  runsIncluded      Int
+
+  // Scope filters that were applied when this version was generated
+  dateFilterType    String?   // "CALL_DATE" | "EVAL_DATE" | null (all)
+  filterFrom        DateTime?
+  filterTo          DateTime?
+
+  // LLM-generated structured analysis
+  analysis          Json
+  healthScore       Float?
+
+  // Comparison against the immediately previous version
+  comparedToVersion Int?
+  comparison        Json?
+
+  analysisCost      Float?
+  createdAt         DateTime  @default(now())
+
+  @@unique([projectId, version])
+  @@index([projectId])
 }
 
 enum LabelType {

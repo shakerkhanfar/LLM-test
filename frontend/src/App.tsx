@@ -4,6 +4,8 @@ import ProjectDetail from "./pages/ProjectDetail";
 import RunDetail from "./pages/RunDetail";
 import Compare from "./pages/Compare";
 import NewProject from "./pages/NewProject";
+import ProjectAnalyses from "./pages/ProjectAnalyses";
+import AnalysisCompare from "./pages/AnalysisCompare";
 
 function App() {
   return (
@@ -44,6 +46,8 @@ function App() {
             <Route path="/projects/:id" element={<ProjectDetail />} />
             <Route path="/projects/:id/runs/:runId" element={<RunDetail />} />
             <Route path="/projects/:id/compare" element={<Compare />} />
+            <Route path="/projects/:id/analyses" element={<ProjectAnalyses />} />
+            <Route path="/projects/:id/analyses/compare" element={<AnalysisCompare />} />
           </Routes>
         </main>
       </div>

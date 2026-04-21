@@ -1,10 +1,10 @@
+import prisma from "../lib/prisma";
 import { Queue, Worker } from "bullmq";
 import IORedis from "ioredis";
 import { PrismaClient } from "@prisma/client";
 import { evaluateRun } from "../services/evaluator";
 import { fetchCallLog } from "../services/hamsaApi";
 
-const prisma = new PrismaClient();
 
 const connection = new IORedis(process.env.REDIS_URL || "redis://localhost:6379", {
   maxRetriesPerRequest: null,

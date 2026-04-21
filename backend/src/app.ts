@@ -10,6 +10,7 @@ import projectsRouter from "./routes/projects";
 import runsRouter from "./routes/runs";
 import labelsRouter from "./routes/labels";
 import webhooksRouter from "./routes/webhooks";
+import historyRouter from "./routes/history";
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -22,6 +23,7 @@ app.use("/api/projects", projectsRouter);
 app.use("/api/runs", runsRouter);
 app.use("/api/labels", labelsRouter);
 app.use("/api/webhooks", webhooksRouter);
+app.use("/api/history", historyRouter);
 
 // Health check
 app.get("/api/health", (_req, res) => {

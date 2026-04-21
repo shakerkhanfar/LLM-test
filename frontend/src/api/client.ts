@@ -1,15 +1,20 @@
 const API_BASE = "/api";
 
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
+  const hasBody = options?.body != null;
   const res = await fetch(`${API_BASE}${path}`, {
-    headers: { "Content-Type": "application/json" },
+    headers: hasBody ? { "Content-Type": "application/json" } : {},
     ...options,
   });
   if (!res.ok) {
     const text = await res.text();
     throw new Error(`API error ${res.status}: ${text}`);
   }
-  return res.json();
+  try {
+    return await res.json();
+  } catch {
+    throw new Error(`API returned non-JSON response from ${path}`);
+  }
 }
 
 // ─── Projects ──────────────────────────────────────────────────────
@@ -29,11 +34,26 @@ export function createProject(data: {
   description?: string;
   agentStructure?: any;
   criteria?: any[];
+  projectType?: "LIVE" | "HISTORY" | "WEBHOOK";
+  historyStartDate?: string;
+  historyEndDate?: string;
 }) {
   return request<any>("/projects", {
     method: "POST",
     body: JSON.stringify(data),
   });
+}
+
+// POST so the API key is not in the URL / server logs
+export function fetchAgentPreview(agentId: string, apiKey?: string) {
+  return request<any>("/projects/agent-preview", {
+    method: "POST",
+    body: JSON.stringify({ agentId, apiKey }),
+  });
+}
+
+export function refreshAgent(projectId: string) {
+  return request<any>(`/projects/${projectId}/refresh-agent`, { method: "POST" });
 }
 
 export function deleteProject(id: string) {
@@ -55,8 +75,8 @@ export function deleteCriterion(projectId: string, criterionId: string) {
 
 // ─── Runs ──────────────────────────────────────────────────────────
 
-export function listRuns(projectId: string) {
-  return request<any[]>(`/runs/project/${projectId}`);
+export function listRuns(projectId: string, skip = 0, take = 100) {
+  return request<any[]>(`/runs/project/${projectId}?skip=${skip}&take=${take}`);
 }
 
 export function getRun(id: string) {
@@ -133,4 +153,58 @@ export function createLabel(runId: string, data: any) {
 
 export function deleteLabel(id: string) {
   return request<any>(`/labels/${id}`, { method: "DELETE" });
+}
+
+// ─── Project Analysis ──────────────────────────────────────────────
+
+export function runProjectAnalysis(
+  projectId: string,
+  filter?: { dateFilterType?: "CALL_DATE" | "EVAL_DATE"; from?: string; to?: string }
+) {
+  return request<any>(`/projects/${projectId}/analyze`, {
+    method: "POST",
+    body: JSON.stringify(filter ?? {}),
+  });
+}
+
+export function listProjectAnalyses(projectId: string) {
+  return request<any[]>(`/projects/${projectId}/analyses`);
+}
+
+export function deleteProjectAnalysis(projectId: string, analysisId: string) {
+  return request<any>(`/projects/${projectId}/analyses/${analysisId}`, { method: "DELETE" });
+}
+
+export function compareProjectAnalyses(projectId: string, analysisIds: string[]) {
+  return request<any>(`/projects/${projectId}/analyses/compare`, {
+    method: "POST",
+    body: JSON.stringify({ analysisIds }),
+  });
+}
+
+// ─── History ───────────────────────────────────────────────────────
+
+export function importHistory(
+  projectId: string,
+  options: {
+    period?: string;
+    startDate?: string;
+    endDate?: string;
+    status?: string;
+    limit?: number;
+  } = {}
+) {
+  // Include the browser's UTC offset so the server can compute correct local-midnight
+  // timestamps. new Date().getTimezoneOffset() returns minutes *behind* UTC (negative
+  // for east-of-UTC timezones, e.g. -180 for UTC+3). We negate it so the server
+  // receives a positive value for zones ahead of UTC.
+  const timezoneOffsetMinutes = -new Date().getTimezoneOffset();
+  return request<any>(`/history/${projectId}/import`, {
+    method: "POST",
+    body: JSON.stringify({ ...options, timezoneOffsetMinutes }),
+  });
+}
+
+export function getHistoryStatus(projectId: string) {
+  return request<any>(`/history/${projectId}/status`);
 }
