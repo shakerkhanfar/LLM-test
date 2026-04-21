@@ -322,6 +322,9 @@ export default function RunDetail() {
                 callDuration: run.callDuration,
                 callStatus: run.callStatus,
                 callOutcome: run.callOutcome,
+                channel: run.webhookData?.caller_info?.call_type || run.webhookData?.channelType || null,
+                modelUsed: run.modelUsed,
+                recordingUrl: recordingUrl,
                 outcomeResult: run.outcomeResult,
                 overallScore: run.overallScore,
                 evalCost: run.evalCost,
@@ -337,6 +340,13 @@ export default function RunDetail() {
                   passed: er.passed,
                   score: er.score,
                   detail: er.detail,
+                })),
+                wordLabels: wordLabels.map((l: any) => ({
+                  wordIndex: l.wordIndex,
+                  utteranceIndex: l.utteranceIndex,
+                  originalWord: l.originalWord,
+                  labelType: l.labelType,
+                  correction: l.correction,
                 })),
                 agentSummary: run.project?.agentSummary || null,
               };

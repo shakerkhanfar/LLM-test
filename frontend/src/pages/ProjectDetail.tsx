@@ -537,6 +537,10 @@ export default function ProjectDetail() {
               const ch = getChannel(r.webhookData);
               if (ch) channels.add(ch);
             }
+            // Reset filter if the selected channel no longer exists in the data
+            if (channelFilter && !channels.has(channelFilter)) {
+              setTimeout(() => setChannelFilter(null), 0);
+            }
             if (channels.size < 2) return null;
             return (
               <div style={{ display: "flex", gap: 0, borderRadius: 4, overflow: "hidden", border: "1px solid #333" }}>
@@ -782,6 +786,35 @@ export default function ProjectDetail() {
           ))}
         </tbody>
       </table>
+      {(searchQuery.trim() || channelFilter) && project.runs?.length > 0 && (() => {
+        const filtered = (project.runs ?? []).filter((run: any) => {
+          if (channelFilter) {
+            const ch = getChannel(run.webhookData);
+            if (!ch || ch.toLowerCase() !== channelFilter.toLowerCase()) return false;
+          }
+          if (!searchQuery.trim()) return true;
+          const q = searchQuery.toLowerCase();
+          return (
+            (run.hamsaCallId || "").toLowerCase().includes(q) ||
+            (run.conversationId || "").toLowerCase().includes(q) ||
+            (run.callOutcome || "").toLowerCase().includes(q) ||
+            (run.callStatus || "").toLowerCase().includes(q) ||
+            (run.modelUsed || "").toLowerCase().includes(q) ||
+            (getChannel(run.webhookData) || "").toLowerCase().includes(q)
+          );
+        });
+        if (filtered.length === 0) {
+          return (
+            <p style={{ color: "#666", fontSize: 13, textAlign: "center", padding: "16px 0" }}>
+              No calls match the current filter.{" "}
+              <button onClick={() => { setSearchQuery(""); setChannelFilter(null); }} style={{ color: "#60a5fa", background: "none", border: "none", cursor: "pointer", fontSize: 13 }}>
+                Clear filters
+              </button>
+            </p>
+          );
+        }
+        return null;
+      })()}
 
       <style>{`
         @keyframes spin { to { transform: rotate(360deg); } }
@@ -968,7 +1001,14 @@ const CALL_STATUS_STYLE: Record<string, { color: string; bg: string; label: stri
 
 function getChannel(webhookData: any): string | null {
   if (!webhookData) return null;
-  return webhookData.caller_info?.call_type || webhookData.data?.channelType || webhookData.channelType || null;
+  return (
+    webhookData.caller_info?.call_type ||  // webhook runs: payload.caller_info.call_type
+    webhookData.data?.channelType ||       // webhook runs: payload.data.channelType
+    webhookData.channelType ||             // history runs: conv.channelType
+    webhookData.channel ||                 // history runs: conv.channel
+    webhookData.callType ||                // history runs: conv.callType
+    null
+  );
 }
 
 function ChannelBadge({ webhookData }: { webhookData: any }) {
