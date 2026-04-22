@@ -28,6 +28,14 @@ function safeTruncate(text: string, maxLen: number): string {
   return lastBreak > maxLen * 0.4 ? truncated.slice(0, lastBreak + 1) : truncated;
 }
 
+/** Safely coerce an LLM response value to a number, with fallback.
+ *  Handles string scores ("8"), null, undefined, NaN. */
+function num(val: unknown, fallback: number): number {
+  if (typeof val === "number" && !isNaN(val)) return val;
+  const n = Number(val);
+  return isNaN(n) ? fallback : n;
+}
+
 // ─── Types ────────────────────────────────────────────────────────
 
 export interface NodeVisit {
@@ -559,13 +567,13 @@ Respond with JSON:
         nodeLabel: visit.nodeLabel,
         nodeType: visit.nodeType,
         instructionAdherence: {
-          score: parsed.instruction_adherence?.score ?? (allSucceeded ? 8 : 3),
+          score: num(parsed.instruction_adherence?.score, allSucceeded ? 8 : 3),
           followed: parsed.instruction_adherence?.followed ?? [],
           violated: parsed.instruction_adherence?.violated ?? (failedTools.length ? [`Tool failed: ${failedTools.map(t=>t.toolName).join(", ")}`] : []),
           evidence: parsed.instruction_adherence?.evidence ?? "",
         },
         transitionCorrectness: {
-          score: parsed.transition_correctness?.score ?? 5,
+          score: num(parsed.transition_correctness?.score, 5),
           correct: parsed.transition_correctness?.correct ?? true,
           reasoning: parsed.transition_correctness?.reasoning ?? "",
         },
@@ -575,7 +583,7 @@ Respond with JSON:
           evidence: parsed.hallucination?.evidence ?? "",
         },
         stuck: { detected: false, unnecessaryTurns: 0, reasoning: "" },
-        overallNodeScore: parsed.overall_node_score ?? (allSucceeded ? 8 : 4),
+        overallNodeScore: num(parsed.overall_node_score, allSucceeded ? 8 : 4),
       },
       costUsd,
     };
@@ -716,13 +724,13 @@ Evaluate this node ONLY. Respond with JSON:
         nodeLabel: visit.nodeLabel,
         nodeType: visit.nodeType,
         instructionAdherence: {
-          score: parsed.instruction_adherence?.score ?? 5,
+          score: num(parsed.instruction_adherence?.score, 5),
           followed: parsed.instruction_adherence?.followed ?? [],
           violated: parsed.instruction_adherence?.violated ?? [],
           evidence: parsed.instruction_adherence?.evidence ?? "",
         },
         transitionCorrectness: {
-          score: parsed.transition_correctness?.score ?? 5,
+          score: num(parsed.transition_correctness?.score, 5),
           correct: parsed.transition_correctness?.correct ?? true,
           reasoning: parsed.transition_correctness?.reasoning ?? "",
         },
@@ -739,7 +747,7 @@ Evaluate this node ONLY. Respond with JSON:
           unnecessaryTurns: parsed.stuck?.unnecessary_turns ?? 0,
           reasoning: parsed.stuck?.reasoning ?? "",
         },
-        overallNodeScore: parsed.overall_node_score ?? 5,
+        overallNodeScore: num(parsed.overall_node_score, 5),
       },
       costUsd,
     };
@@ -821,11 +829,11 @@ Based on these pre-evaluated results, provide a final JSON assessment:
     const parsed = typeof detail === "string" ? JSON.parse(detail) : detail;
     return {
       result: {
-        overallScore: parsed.overall_score ?? 5,
+        overallScore: num(parsed.overall_score, 5),
         objectiveAchieved: parsed.objective_achieved ?? null,
         callerSentiment: parsed.caller_sentiment ?? "unknown",
         efficiency: {
-          score: parsed.efficiency?.score ?? 5,
+          score: num(parsed.efficiency?.score, 5),
           reasoning: parsed.efficiency?.reasoning ?? "",
         },
         criticalIssues: parsed.critical_issues ?? [],
