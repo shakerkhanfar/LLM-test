@@ -889,14 +889,17 @@ function computeGoal(run: any): { status: GoalStatus; reason: string } | null {
   );
 
   if (isNegative) {
-    // Customer said no — goal failed regardless of agent quality.
-    // Partial only if agent itself performed well (score ≥ 0.7) — agent did its job
-    // but couldn't convert.
+    // Distinguish between customer rejection and incomplete calls (hangup)
+    const isHangup = outcome.includes("hangup") || outcome.includes("hang_up");
     const status: GoalStatus = (score != null && score >= 0.7) ? "PARTIAL" : "FAILED";
     const reason = summary
-      || (status === "PARTIAL"
-        ? `Customer declined, but the agent performed correctly (${(score! * 100).toFixed(0)}% quality).`
-        : `Customer was not interested.${failedStr}`);
+      || (isHangup
+        ? (status === "PARTIAL"
+          ? `Call ended before objective was met, but agent performed correctly (${(score! * 100).toFixed(0)}% quality).`
+          : `Call ended before objective was met.${failedStr}`)
+        : (status === "PARTIAL"
+          ? `Customer declined, but the agent performed correctly (${(score! * 100).toFixed(0)}% quality).`
+          : `Customer was not interested.${failedStr}`));
     return { status, reason };
   }
 
