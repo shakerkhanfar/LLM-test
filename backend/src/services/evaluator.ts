@@ -2,6 +2,7 @@ import prisma from "../lib/prisma";
 import { Criterion } from "@prisma/client";
 import { evaluateWithLLMJudge } from "./llmJudge";
 import { extractTranscriptFromConversation, extractTranscriptFromCallLog } from "./hamsaApi";
+import { runLayeredEvaluation } from "./layeredEvaluator";
 // extractTranscriptFromConversation and extractTranscriptFromCallLog are used inside resolveTranscript
 
 /**
@@ -133,6 +134,8 @@ async function evaluateCriterion(criterion: Criterion, run: any) {
       return evaluateFlowProgression(criterion, run);
     case "ACTION_CONSISTENCY":
       return evaluateActionConsistency(criterion, run);
+    case "LAYERED_EVALUATION":
+      return evaluateLayered(criterion, run);
     default:
       return { passed: null, score: null, detail: `Unknown type: ${criterion.type}` };
   }
@@ -907,5 +910,70 @@ Respond with JSON only:
       total_agent_turns: parsedAnalysis?.total_agent_turns || 0,
       turns_with_errors: parsedAnalysis?.turns_with_errors || 0,
     } as any,
+  };
+}
+
+// ─── LAYERED_EVALUATION — Per-Node Micro-Evaluations ──────────────
+
+async function evaluateLayered(_criterion: Criterion, run: any) {
+  const callLog = run.callLog;
+  const transcript = resolveTranscript(run);
+  const agentStructure = run.project?.agentStructure;
+  const agentSummary: string = run.project?.agentSummary ?? "";
+
+  if (!agentStructure?.workflow?.nodes?.length) {
+    return { passed: null, score: null, detail: "No agent workflow nodes available for layered evaluation" };
+  }
+  if (!transcript || transcript.length === 0) {
+    return { passed: null, score: null, detail: "No transcript available for layered evaluation" };
+  }
+  if (!Array.isArray(callLog) || callLog.length === 0) {
+    return { passed: null, score: null, detail: "No call log available — layered evaluation requires execution logs for node mapping" };
+  }
+
+  const result = await runLayeredEvaluation(
+    callLog,
+    transcript,
+    agentStructure,
+    agentSummary,
+    run.callOutcome || null,
+    run.callDuration || null,
+  );
+
+  // Compute overall score: weighted average of layer2 (30%) + layer3 avg (50%) + layer4 (20%)
+  const layer3Avg = result.layer3.length > 0
+    ? result.layer3.reduce((sum, n) => sum + n.overallNodeScore, 0) / result.layer3.length
+    : 5;
+  const compositeScore = (result.layer2.score * 0.3 + layer3Avg * 0.5 + result.layer4.overallScore * 0.2) / 10;
+
+  const passed = compositeScore >= 0.7;
+
+  const detail = JSON.stringify({
+    summary: result.layer4.summary,
+    overallScore: result.layer4.overallScore,
+    objectiveAchieved: result.layer4.objectiveAchieved,
+    callerSentiment: result.layer4.callerSentiment,
+    navigation: {
+      score: result.layer2.score,
+      issues: result.layer2.issues,
+    },
+    perNode: result.layer3,
+    efficiency: result.layer4.efficiency,
+    criticalIssues: result.layer4.criticalIssues,
+    improvements: result.layer4.improvements,
+  });
+
+  return {
+    passed,
+    score: compositeScore,
+    detail,
+    costUsd: result.totalCostUsd,
+    metadata: {
+      layer2Score: result.layer2.score,
+      layer3Avg,
+      layer4Score: result.layer4.overallScore,
+      nodesEvaluated: result.layer3.length,
+      navigationIssues: result.layer2.issues.length,
+    },
   };
 }

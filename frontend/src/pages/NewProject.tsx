@@ -10,6 +10,7 @@ const DEFAULT_CRITERIA = [
   { key: "word_accuracy", label: "Word Accuracy", type: "WORD_ACCURACY", expectedValue: { threshold: 0.95 }, weight: 1 },
   { key: "latency", label: "Latency", type: "LATENCY", expectedValue: { maxToolLatencyMs: 3000 }, weight: 0.5 },
   { key: "flow_progression", label: "Flow Progression", type: "FLOW_PROGRESSION", expectedValue: { minNodesVisited: 3, expectedVariables: ["user_name", "plate_number"], expectedToolCalls: 1 }, weight: 1.5 },
+  { key: "layered_evaluation", label: "Layered Node Evaluation", type: "LAYERED_EVALUATION", expectedValue: {}, weight: 2 },
 ];
 
 const QUICK_PRESETS = [

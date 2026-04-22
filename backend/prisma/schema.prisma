@@ -55,6 +55,7 @@ enum CriterionType {
   LATENCY
   FLOW_PROGRESSION
   ACTION_CONSISTENCY
+  LAYERED_EVALUATION
 }
 
 model Run {
