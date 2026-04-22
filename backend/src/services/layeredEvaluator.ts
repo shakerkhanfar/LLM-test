@@ -142,186 +142,162 @@ export function mapNodeVisits(
     }
   }
 
-  // Step 1: Walk through callLog and identify node boundaries
+  // Step 1: Two-pass approach to handle unordered events within the same timestamp.
+  //
+  // Pass 1: Scan ALL events to build a timeline of node transitions.
+  //   - TRANSITION events contain "next_node" IDs (most reliable)
+  //   - "Playing message" events contain the prompt text
+  //   - node_movement events mark boundaries
+  //
+  // Pass 2: Group events into segments and assign node definitions.
+
   interface NodeSegment {
-    node: any | null;          // Matched node definition
-    entryIdx: number;          // Index in callLog where this node starts
-    exitIdx: number;           // Index in callLog where this node ends
+    node: any | null;
+    entryIdx: number;
+    exitIdx: number;
     entryTimestamp: string;
     exitTimestamp: string;
-    promptMessage: string;     // The "Playing message" text
+    promptMessage: string;
     variablesExtracted: string[];
     toolsCalled: string[];
     toolResults: Array<{ toolName: string; success: boolean; request?: any; response?: any }>;
   }
 
+  // Pass 1: Find all transition targets (TRANSITION.Tool result events with next_node)
+  const transitionTargets: Array<{ timestamp: string; nodeId: string; idx: number }> = [];
+  for (let i = 0; i < callLog.length; i++) {
+    const e = callLog[i];
+    if (e.category === "TRANSITION" && e.payload?.next_node) {
+      transitionTargets.push({ timestamp: e.timestamp, nodeId: e.payload.next_node, idx: i });
+    }
+  }
+
+  // Pass 2: Group events by unique timestamps to form segments
+  // Each unique timestamp group after a node_movement represents one node visit
   const segments: NodeSegment[] = [];
-  let currentSegment: Partial<NodeSegment> | null = null;
-  const assignedNodeIds = new Set<string>(); // Track nodes matched to segments to avoid duplicates
+  let currentSegment: NodeSegment | null = null;
 
   for (let i = 0; i < callLog.length; i++) {
     const event = callLog[i];
 
     if (event.category === "node_movement" && event.message === "Node moved") {
-      // Close previous segment
       if (currentSegment) {
         currentSegment.exitIdx = i - 1;
         currentSegment.exitTimestamp = callLog[i - 1]?.timestamp || event.timestamp;
-        segments.push(currentSegment as NodeSegment);
+        segments.push(currentSegment);
       }
-
-      // Start new segment
       currentSegment = {
-        node: null,
-        entryIdx: i,
-        entryTimestamp: event.timestamp,
-        exitTimestamp: event.timestamp,
-        promptMessage: "",
-        variablesExtracted: [],
-        toolsCalled: [],
-        toolResults: [],
+        node: null, entryIdx: i, exitIdx: i,
+        entryTimestamp: event.timestamp, exitTimestamp: event.timestamp,
+        promptMessage: "", variablesExtracted: [], toolsCalled: [], toolResults: [],
       };
     }
 
     if (!currentSegment) continue;
 
-    // Capture the prompt message to match against node definitions
+    // Collect all data for this segment regardless of event order
     if (event.category === "CONVERSATION" && event.message?.startsWith("Playing message")) {
-      const msg = event.payload?.message || "";
-      currentSegment.promptMessage = msg;
-
-      // Strategy 1: Exact match on normalized full message
-      const key = msg.trim().replace(/\s+/g, " ").toLowerCase();
-      if (nodeByMessage.has(key)) {
-        currentSegment.node = nodeByMessage.get(key);
-        assignedNodeIds.add(currentSegment.node.id);
-      }
-
-      // Strategy 2: Fuzzy match — strip {{variables}} from node templates and compare
-      // Node messages often have templates like "say exactly: welcome {{name}}"
-      // The actual played message has variables filled in: "say exactly: welcome محمد"
-      if (!currentSegment.node) {
-        let bestMatch: any = null;
-        let bestScore = 0;
-        for (const node of nodes) {
-          if (!node.message || assignedNodeIds.has(node.id)) continue;
-          // Strip template variables from node message
-          const template = node.message.replace(/\{\{[^}]+\}\}/g, "").trim().replace(/\s+/g, " ").toLowerCase();
-          if (template.length < 5) continue; // too short to match reliably
-          // Check if the played message starts with the template's static parts
-          const staticParts = template.split(/\s+/).filter((w: string) => w.length > 2);
-          if (staticParts.length === 0) continue;
-          const msgLower = msg.trim().replace(/\s+/g, " ").toLowerCase();
-          const matchCount = staticParts.filter((part: string) => msgLower.includes(part)).length;
-          const matchRatio = matchCount / staticParts.length;
-          if (matchRatio > bestScore && matchRatio >= 0.5) {
-            bestScore = matchRatio;
-            bestMatch = node;
-          }
-        }
-        if (bestMatch) {
-          currentSegment.node = bestMatch;
-          assignedNodeIds.add(bestMatch.id);
-        }
-      }
-
-      // Strategy 3: Graph traversal — if previous segment has a matched node,
-      // check which nodes are reachable from it via edges
-      if (!currentSegment.node && segments.length > 0) {
-        const prevNode = segments[segments.length - 1]?.node;
-        if (prevNode) {
-          const reachable = edges
-            .filter((e: any) => e.source === prevNode.id)
-            .map((e: any) => nodeById.get(e.target))
-            .filter((n: any) => n && !assignedNodeIds.has(n.id) && (n.type === "conversation" || n.type === "start"));
-          if (reachable.length === 1) {
-            currentSegment.node = reachable[0];
-            assignedNodeIds.add(reachable[0].id);
-          }
-        }
-      }
+      currentSegment.promptMessage = event.payload?.message || "";
     }
-
-    // Capture variables extracted at this node
     if (event.category === "VARIABLE_EXTRACTION" && event.payload?.variables) {
-      (currentSegment.variablesExtracted as string[]).push(...event.payload.variables);
+      currentSegment.variablesExtracted.push(...event.payload.variables);
     }
     if (event.category === "VARIABLE_EXTRACTION" && event.message?.includes("Updated variable")) {
       const varName = event.message.replace("Updated variable from LLM tool call: ", "");
-      if (varName) (currentSegment.variablesExtracted as string[]).push(varName);
+      if (varName) currentSegment.variablesExtracted.push(varName);
     }
-
-    // Capture tools called at this node + their results
     if (event.category === "TOOLS" && event.message === "Executing Tool") {
       const toolName = event.payload?.toolName || "unknown";
-      (currentSegment.toolsCalled as string[]).push(toolName);
-      (currentSegment.toolResults as any[]).push({
-        toolName,
-        success: false, // will be updated by Tool Success/Tool Error events
+      currentSegment.toolsCalled.push(toolName);
+      currentSegment.toolResults.push({
+        toolName, success: false,
         request: event.payload?.request || event.payload?.params || event.payload,
       });
     }
     if (event.category === "TOOLS" && (event.message === "Tool Success" || event.message === "Tool API call completed")) {
-      const lastTool = (currentSegment.toolResults as any[])[(currentSegment.toolResults as any[]).length - 1];
-      if (lastTool) {
-        lastTool.success = event.message === "Tool Success" || event.payload?.response?.ok !== false;
-        lastTool.response = event.payload?.response || event.payload;
-      }
+      const last = currentSegment.toolResults[currentSegment.toolResults.length - 1];
+      if (last) { last.success = event.message === "Tool Success" || event.payload?.response?.ok !== false; last.response = event.payload?.response || event.payload; }
     }
     if (event.category === "TOOLS" && (event.message === "Tool Error" || event.message === "Tool Failed")) {
-      const lastTool = (currentSegment.toolResults as any[])[(currentSegment.toolResults as any[]).length - 1];
-      if (lastTool) {
-        lastTool.success = false;
-        lastTool.response = event.payload;
-      }
-    }
-
-    // Match node by type from log events + registered transition tool names
-    // Hamsa registers tools like "move__XXXXXXXX" where XXXXXXXX is a partial edge/node ID
-    if (event.category === "TOOLS" && event.message?.startsWith("Registered") && event.payload?.tools) {
-      if (!currentSegment.node) {
-        // The registered move tools' suffixes can help identify which node we're on,
-        // because they correspond to edges FROM this node
-        const moveTools: string[] = event.payload.tools.filter((t: string) => t.startsWith("move__"));
-        const moveSuffixes = moveTools.map((t: string) => t.replace("move__", ""));
-        // Try to find a node whose outgoing edges match these suffixes
-        for (const n of nodes) {
-          const outEdges = edges.filter((e: any) => e.source === n.id);
-          if (outEdges.length === moveTools.length && outEdges.length > 0) {
-            // Check if edge IDs contain any of the suffixes
-            const edgeIds = outEdges.map((e: any) => e.id || "");
-            const matches = moveSuffixes.filter((s: string) =>
-              edgeIds.some((eid: string) => eid.includes(s)) || outEdges.some((e: any) => e.target?.includes(s))
-            );
-            if (matches.length > 0) {
-              currentSegment.node = n;
-              break;
-            }
-          }
-        }
-      }
-    }
-
-    // Fallback: match by category events (exclude already-assigned nodes)
-    if (event.category === "ROUTER" && !currentSegment.node) {
-      const unmatched = nodes.filter((n: any) => n.type === "router" && !assignedNodeIds.has(n.id));
-      if (unmatched.length === 1) { currentSegment.node = unmatched[0]; assignedNodeIds.add(unmatched[0].id); }
-    }
-    if (event.category === "SET_LOCAL_VARIABLES" && !currentSegment.node) {
-      const unmatched = nodes.filter((n: any) => n.type === "set_local_variables" && !assignedNodeIds.has(n.id));
-      if (unmatched.length === 1) { currentSegment.node = unmatched[0]; assignedNodeIds.add(unmatched[0].id); }
-    }
-    if (event.category === "TOOLS" && event.message === "Executing Tool" && !currentSegment.node) {
-      const unmatched = nodes.filter((n: any) => n.type === "tool" && !assignedNodeIds.has(n.id));
-      if (unmatched.length === 1) { currentSegment.node = unmatched[0]; assignedNodeIds.add(unmatched[0].id); }
+      const last = currentSegment.toolResults[currentSegment.toolResults.length - 1];
+      if (last) { last.success = false; last.response = event.payload; }
     }
   }
-
-  // Close last segment
   if (currentSegment) {
     currentSegment.exitIdx = callLog.length - 1;
     currentSegment.exitTimestamp = callLog[callLog.length - 1]?.timestamp || "";
-    segments.push(currentSegment as NodeSegment);
+    segments.push(currentSegment);
+  }
+
+  // Pass 3: Identify which node each segment belongs to using multiple strategies
+  for (let si = 0; si < segments.length; si++) {
+    const seg = segments[si];
+    if (seg.node) continue; // Already matched
+
+    // Strategy 1: TRANSITION event — a previous segment's transition points to this node
+    // Find the most recent transition that happened before or at this segment's entry
+    for (const tt of transitionTargets) {
+      const ttMs = new Date(tt.timestamp).getTime();
+      const segMs = new Date(seg.entryTimestamp).getTime();
+      if (Math.abs(ttMs - segMs) <= 1000 && tt.idx < seg.entryIdx) {
+        const targetNode = nodeById.get(tt.nodeId);
+        if (targetNode) { seg.node = targetNode; break; }
+      }
+    }
+    if (seg.node) continue;
+
+    // Strategy 2: Exact message match
+    if (seg.promptMessage) {
+      const key = seg.promptMessage.trim().replace(/\s+/g, " ").toLowerCase();
+      if (nodeByMessage.has(key)) { seg.node = nodeByMessage.get(key); continue; }
+    }
+
+    // Strategy 3: Fuzzy match — compare static parts of node templates
+    if (seg.promptMessage && !seg.node) {
+      let bestMatch: any = null;
+      let bestScore = 0;
+      const usedIds = new Set(segments.filter(s => s.node).map(s => s.node.id));
+      const msgLower = seg.promptMessage.trim().replace(/\s+/g, " ").toLowerCase();
+
+      for (const node of nodes) {
+        if (!node.message || usedIds.has(node.id)) continue;
+        const template = node.message.replace(/\{\{[^}]+\}\}/g, "").trim().replace(/\s+/g, " ").toLowerCase();
+        if (template.length < 10) continue;
+        // Use first 200 chars of static parts for comparison
+        const staticWords = template.slice(0, 200).split(/\s+/).filter((w: string) => w.length > 2);
+        if (staticWords.length < 3) continue;
+        const matchCount = staticWords.filter((w: string) => msgLower.includes(w)).length;
+        const ratio = matchCount / staticWords.length;
+        if (ratio > bestScore && ratio >= 0.4) { bestScore = ratio; bestMatch = node; }
+      }
+      if (bestMatch) { seg.node = bestMatch; continue; }
+    }
+
+    // Strategy 4: Start node is always the first conversation segment
+    if (si === 0 && seg.promptMessage) {
+      const startNode = nodes.find((n: any) => n.type === "start");
+      if (startNode) { seg.node = startNode; continue; }
+    }
+
+    // Strategy 5: Graph traversal from previous matched node
+    if (si > 0) {
+      const prevNode = segments[si - 1]?.node;
+      if (prevNode) {
+        const usedIds = new Set(segments.filter(s => s.node).map(s => s.node.id));
+        const reachable = edges
+          .filter((e: any) => e.source === prevNode.id)
+          .map((e: any) => nodeById.get(e.target))
+          .filter((n: any) => n && !usedIds.has(n.id));
+        // If exactly one reachable, use it. If multiple, try to match by type.
+        if (reachable.length === 1) { seg.node = reachable[0]; }
+        else if (reachable.length > 1) {
+          const byType = seg.toolsCalled.length > 0 ? reachable.find((n: any) => n.type === "tool")
+            : seg.promptMessage ? reachable.find((n: any) => n.type === "conversation" || n.type === "start")
+            : reachable[0];
+          if (byType) seg.node = byType;
+        }
+      }
+    }
   }
 
   // Step 2: Map transcript turns to segments by timestamp ordering
