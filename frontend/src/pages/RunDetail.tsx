@@ -52,13 +52,15 @@ function computeGoal(run: any): { status: GoalStatus; reason: string } | null {
   );
 
   if (isNegative) {
-    const isHangup = outcome.includes("hangup") || outcome.includes("hang_up");
+    const isIncomplete = outcome.includes("hangup") || outcome.includes("hang_up")
+                      || outcome.includes("stuck") || outcome.includes("timeout")
+                      || outcome.includes("confused") || outcome.includes("dropped");
     const status: GoalStatus = (score != null && score >= 0.7) ? "PARTIAL" : "FAILED";
     const reason = summary
-      || (isHangup
+      || (isIncomplete
         ? (status === "PARTIAL"
           ? `Call ended before objective was met, but agent performed correctly (${(score! * 100).toFixed(0)}% quality).`
-          : `Call ended before objective was met.${failedStr}`)
+          : `Call did not complete — ${outcome.replace(/_/g, " ")}.${failedStr}`)
         : (status === "PARTIAL"
           ? `Customer declined, but the agent performed correctly (${(score! * 100).toFixed(0)}% quality).`
           : `Customer was not interested.${failedStr}`));
@@ -317,7 +319,7 @@ export default function RunDetail() {
         >
           {reEvaluating ? "Evaluating…" : "Re-evaluate"}
         </button>
-        {run.status === "COMPLETE" && (
+        {run.status === "COMPLETE" && (<>
           <button
             onClick={() => {
               const exportData = {
@@ -367,7 +369,32 @@ export default function RunDetail() {
           >
             Export JSON
           </button>
-        )}
+          <button
+            onClick={() => {
+              const fullExport = {
+                ...run,
+                // Remove circular/large fields, keep everything useful
+                project: {
+                  id: run.project?.id,
+                  name: run.project?.name,
+                  agentId: run.project?.agentId,
+                  agentSummary: run.project?.agentSummary,
+                  agentStructure: run.project?.agentStructure,
+                },
+              };
+              const blob = new Blob([JSON.stringify(fullExport, null, 2)], { type: "application/json" });
+              const url = URL.createObjectURL(blob);
+              const a = document.createElement("a");
+              a.href = url;
+              a.download = `full-export-${run.conversationId || run.id}.json`;
+              a.click();
+              URL.revokeObjectURL(url);
+            }}
+            style={{ background: "#1f2937", color: "#9ca3af", padding: "6px 12px", borderRadius: 4, border: "1px solid #374151", cursor: "pointer", fontSize: 12 }}
+          >
+            Full Export
+          </button>
+        </>)}
       </div>
 
       {/* Call recording */}

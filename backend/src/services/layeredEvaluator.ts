@@ -190,11 +190,55 @@ export function mapNodeVisits(
       const msg = event.payload?.message || "";
       currentSegment.promptMessage = msg;
 
-      // Match to node definition by message text
+      // Strategy 1: Exact match on normalized full message
       const key = msg.trim().replace(/\s+/g, " ").toLowerCase();
       if (nodeByMessage.has(key)) {
         currentSegment.node = nodeByMessage.get(key);
         assignedNodeIds.add(currentSegment.node.id);
+      }
+
+      // Strategy 2: Fuzzy match — strip {{variables}} from node templates and compare
+      // Node messages often have templates like "say exactly: welcome {{name}}"
+      // The actual played message has variables filled in: "say exactly: welcome محمد"
+      if (!currentSegment.node) {
+        let bestMatch: any = null;
+        let bestScore = 0;
+        for (const node of nodes) {
+          if (!node.message || assignedNodeIds.has(node.id)) continue;
+          // Strip template variables from node message
+          const template = node.message.replace(/\{\{[^}]+\}\}/g, "").trim().replace(/\s+/g, " ").toLowerCase();
+          if (template.length < 5) continue; // too short to match reliably
+          // Check if the played message starts with the template's static parts
+          const staticParts = template.split(/\s+/).filter((w: string) => w.length > 2);
+          if (staticParts.length === 0) continue;
+          const msgLower = msg.trim().replace(/\s+/g, " ").toLowerCase();
+          const matchCount = staticParts.filter((part: string) => msgLower.includes(part)).length;
+          const matchRatio = matchCount / staticParts.length;
+          if (matchRatio > bestScore && matchRatio >= 0.5) {
+            bestScore = matchRatio;
+            bestMatch = node;
+          }
+        }
+        if (bestMatch) {
+          currentSegment.node = bestMatch;
+          assignedNodeIds.add(bestMatch.id);
+        }
+      }
+
+      // Strategy 3: Graph traversal — if previous segment has a matched node,
+      // check which nodes are reachable from it via edges
+      if (!currentSegment.node && segments.length > 0) {
+        const prevNode = segments[segments.length - 1]?.node;
+        if (prevNode) {
+          const reachable = edges
+            .filter((e: any) => e.source === prevNode.id)
+            .map((e: any) => nodeById.get(e.target))
+            .filter((n: any) => n && !assignedNodeIds.has(n.id) && (n.type === "conversation" || n.type === "start"));
+          if (reachable.length === 1) {
+            currentSegment.node = reachable[0];
+            assignedNodeIds.add(reachable[0].id);
+          }
+        }
       }
     }
 

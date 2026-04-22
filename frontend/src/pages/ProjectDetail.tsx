@@ -889,14 +889,16 @@ function computeGoal(run: any): { status: GoalStatus; reason: string } | null {
   );
 
   if (isNegative) {
-    // Distinguish between customer rejection and incomplete calls (hangup)
-    const isHangup = outcome.includes("hangup") || outcome.includes("hang_up");
+    // Distinguish between: hangup, stuck, and active rejection
+    const isIncomplete = outcome.includes("hangup") || outcome.includes("hang_up")
+                      || outcome.includes("stuck") || outcome.includes("timeout")
+                      || outcome.includes("confused") || outcome.includes("dropped");
     const status: GoalStatus = (score != null && score >= 0.7) ? "PARTIAL" : "FAILED";
     const reason = summary
-      || (isHangup
+      || (isIncomplete
         ? (status === "PARTIAL"
           ? `Call ended before objective was met, but agent performed correctly (${(score! * 100).toFixed(0)}% quality).`
-          : `Call ended before objective was met.${failedStr}`)
+          : `Call did not complete — ${outcome.replace(/_/g, " ")}.${failedStr}`)
         : (status === "PARTIAL"
           ? `Customer declined, but the agent performed correctly (${(score! * 100).toFixed(0)}% quality).`
           : `Customer was not interested.${failedStr}`));
