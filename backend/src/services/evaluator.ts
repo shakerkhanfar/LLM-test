@@ -931,14 +931,19 @@ async function evaluateLayered(_criterion: Criterion, run: any) {
     return { passed: null, score: null, detail: "No call log available — layered evaluation requires execution logs for node mapping" };
   }
 
-  const result = await runLayeredEvaluation(
-    callLog,
-    transcript,
-    agentStructure,
-    agentSummary,
-    run.callOutcome || null,
-    run.callDuration || null,
-  );
+  let result;
+  try {
+    result = await runLayeredEvaluation(
+      callLog,
+      transcript,
+      agentStructure,
+      agentSummary,
+      run.callOutcome || null,
+      run.callDuration || null,
+    );
+  } catch (err) {
+    return { passed: null, score: null, detail: `Layered evaluation failed: ${(err as Error).message}` };
+  }
 
   // Compute overall score: weighted average of layer2 (30%) + layer3 avg (50%) + layer4 (20%)
   const layer3Avg = result.layer3.length > 0

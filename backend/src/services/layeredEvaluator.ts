@@ -20,6 +20,14 @@
 
 import { evaluateWithLLMJudge } from "./llmJudge";
 
+/** Truncate text at the last sentence boundary or newline within the limit */
+function safeTruncate(text: string, maxLen: number): string {
+  if (text.length <= maxLen) return text;
+  const truncated = text.slice(0, maxLen);
+  const lastBreak = Math.max(truncated.lastIndexOf("\n"), truncated.lastIndexOf(". "));
+  return lastBreak > maxLen * 0.4 ? truncated.slice(0, lastBreak + 1) : truncated;
+}
+
 // ─── Types ────────────────────────────────────────────────────────
 
 export interface NodeVisit {
@@ -120,8 +128,8 @@ export function mapNodeVisits(
   for (const node of nodes) {
     nodeById.set(node.id, node);
     if (node.message) {
-      // Normalize: trim, collapse whitespace, take first 100 chars as key
-      const key = node.message.trim().replace(/\s+/g, " ").slice(0, 100).toLowerCase();
+      // Normalize: trim, collapse whitespace, use full message as key
+      const key = node.message.trim().replace(/\s+/g, " ").toLowerCase();
       nodeByMessage.set(key, node);
     }
   }
@@ -141,6 +149,7 @@ export function mapNodeVisits(
 
   const segments: NodeSegment[] = [];
   let currentSegment: Partial<NodeSegment> | null = null;
+  const assignedNodeIds = new Set<string>(); // Track nodes matched to segments to avoid duplicates
 
   for (let i = 0; i < callLog.length; i++) {
     const event = callLog[i];
@@ -174,9 +183,10 @@ export function mapNodeVisits(
       currentSegment.promptMessage = msg;
 
       // Match to node definition by message text
-      const key = msg.trim().replace(/\s+/g, " ").slice(0, 100).toLowerCase();
+      const key = msg.trim().replace(/\s+/g, " ").toLowerCase();
       if (nodeByMessage.has(key)) {
         currentSegment.node = nodeByMessage.get(key);
+        assignedNodeIds.add(currentSegment.node.id);
       }
     }
 
@@ -240,18 +250,18 @@ export function mapNodeVisits(
       }
     }
 
-    // Fallback: match by category events
+    // Fallback: match by category events (exclude already-assigned nodes)
     if (event.category === "ROUTER" && !currentSegment.node) {
-      const unmatched = nodes.filter((n: any) => n.type === "router");
-      if (unmatched.length === 1) currentSegment.node = unmatched[0];
+      const unmatched = nodes.filter((n: any) => n.type === "router" && !assignedNodeIds.has(n.id));
+      if (unmatched.length === 1) { currentSegment.node = unmatched[0]; assignedNodeIds.add(unmatched[0].id); }
     }
     if (event.category === "SET_LOCAL_VARIABLES" && !currentSegment.node) {
-      const unmatched = nodes.filter((n: any) => n.type === "set_local_variables");
-      if (unmatched.length === 1) currentSegment.node = unmatched[0];
+      const unmatched = nodes.filter((n: any) => n.type === "set_local_variables" && !assignedNodeIds.has(n.id));
+      if (unmatched.length === 1) { currentSegment.node = unmatched[0]; assignedNodeIds.add(unmatched[0].id); }
     }
     if (event.category === "TOOLS" && event.message === "Executing Tool" && !currentSegment.node) {
-      const unmatched = nodes.filter((n: any) => n.type === "tool");
-      if (unmatched.length === 1) currentSegment.node = unmatched[0];
+      const unmatched = nodes.filter((n: any) => n.type === "tool" && !assignedNodeIds.has(n.id));
+      if (unmatched.length === 1) { currentSegment.node = unmatched[0]; assignedNodeIds.add(unmatched[0].id); }
     }
   }
 
@@ -312,6 +322,23 @@ export function mapNodeVisits(
         segmentTurns[si].push({
           speaker: "Agent",
           text: tt.turn.Agent || "",
+        });
+        currentTurnIdx++;
+      }
+    }
+  }
+
+  // Assign any remaining turns to the last conversation segment
+  if (currentTurnIdx < turnTimestamps.length) {
+    const lastConvIdx = segmentTurns.map((_, i) => i).reverse()
+      .find(i => segments[i] && (segments[i].node?.type === "conversation" || segments[i].node?.type === "start" || segments[i].promptMessage));
+    if (lastConvIdx !== undefined) {
+      while (currentTurnIdx < turnTimestamps.length) {
+        const tt = turnTimestamps[currentTurnIdx];
+        segmentTurns[lastConvIdx].push({
+          speaker: tt.turn.Agent ? "Agent" : "User",
+          text: tt.turn.Agent || tt.turn.User || "",
+          gender: tt.turn.metadata?.gender,
         });
         currentTurnIdx++;
       }
@@ -418,9 +445,11 @@ export function evaluateNavigation(visits: NodeVisit[], totalNodesInGraph: numbe
   }
 
   // Check 3: Backward jumps — visiting a node that was already visited earlier
+  // Skip nodes already flagged as loops to avoid double-penalizing
+  const loopNodes = new Set(issues.filter(i => i.type === "loop").map(i => i.nodeLabel));
   const visitedOrder = new Map<string, number>();
   for (const v of visits) {
-    if (visitedOrder.has(v.nodeLabel) && v.nodeType !== "router") {
+    if (visitedOrder.has(v.nodeLabel) && v.nodeType !== "router" && !loopNodes.has(v.nodeLabel)) {
       issues.push({
         type: "backward_jump",
         nodeLabel: v.nodeLabel,
@@ -447,7 +476,9 @@ export function evaluateNavigation(visits: NodeVisit[], totalNodesInGraph: numbe
   // Compute score
   const criticalCount = issues.filter(i => i.severity === "critical").length;
   const warningCount = issues.filter(i => i.severity === "warning").length;
-  const score = Math.max(0, 10 - criticalCount * 3 - warningCount * 1);
+  let score = Math.max(0, 10 - criticalCount * 3 - warningCount * 1);
+  // No node visits at all = navigation failed completely
+  if (visits.length === 0) score = 0;
 
   const conversationVisits = visits.filter(v => v.nodeType === "conversation" || v.nodeType === "start");
   const summary = `Visited ${conversationVisits.length} conversation nodes out of ${totalNodesInGraph} total. ` +
@@ -628,7 +659,7 @@ export async function evaluateNodeBehavior(
   const prompt = `You are evaluating ONE specific node of a voice AI agent call. You see ONLY this node's data — do NOT speculate about other parts of the call.
 
 AGENT CONTEXT:
-${agentSummary ? agentSummary.slice(0, 500) : "No agent summary available."}
+${agentSummary ? safeTruncate(agentSummary, 500) : "No agent summary available."}
 
 NODE BEING EVALUATED: "${visit.nodeLabel}" (type: ${visit.nodeType})
 
@@ -752,13 +783,13 @@ export async function evaluateOverall(
       if (n.offTopic.detected) problems.push(`off-topic: ${n.offTopic.turns.join(", ")}`);
       if (n.hallucination.detected) problems.push(`hallucination: ${n.hallucination.evidence}`);
       if (n.stuck.detected) problems.push(`stuck: ${n.stuck.unnecessaryTurns} unnecessary turns`);
-      return `  "${n.nodeLabel}": ${n.overallNodeScore}/10${problems.length ? " — " + problems.join("; ") : ""}`;
-    }).join("\n");
+      return `  "${n.nodeLabel}": ${n.overallNodeScore}/10${problems.length ? " — " + problems.join("; ").slice(0, 200) : ""}`;
+    }).join("\n").slice(0, 2000);
 
   const prompt = `You are producing the final evaluation summary for a voice AI agent call. You receive pre-evaluated summaries from structural and per-node analyses — do NOT re-evaluate the raw data.
 
 AGENT CONTEXT:
-${agentSummary ? agentSummary.slice(0, 400) : "No agent summary."}
+${agentSummary ? safeTruncate(agentSummary, 400) : "No agent summary."}
 
 CALL METADATA:
 - Call outcome: ${callOutcome || "unknown"}
