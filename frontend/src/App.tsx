@@ -6,6 +6,7 @@ import Compare from "./pages/Compare";
 import NewProject from "./pages/NewProject";
 import ProjectAnalyses from "./pages/ProjectAnalyses";
 import AnalysisCompare from "./pages/AnalysisCompare";
+import Preview from "./pages/Preview";
 
 function App() {
   return (
@@ -48,6 +49,7 @@ function App() {
             <Route path="/projects/:id/compare" element={<Compare />} />
             <Route path="/projects/:id/analyses" element={<ProjectAnalyses />} />
             <Route path="/projects/:id/analyses/compare" element={<AnalysisCompare />} />
+            <Route path="/preview" element={<Preview />} />
           </Routes>
         </main>
       </div>
