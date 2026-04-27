@@ -1,4 +1,5 @@
 import { useMemo, useCallback, useState } from "react";
+import T from "../theme";
 import {
   ReactFlow,
   Background,
@@ -45,8 +46,8 @@ function AgentNode({ data }: NodeProps) {
   return (
     <div
       style={{
-        background: stuck ? "#1c0808" : visited ? "#081c0a" : "#141414",
-        border: `1.5px solid ${stuck ? "#ef4444" : visited ? "#22c55e88" : "#333"}`,
+        background: stuck ? T.errorBg : visited ? T.successBg : T.card,
+        border: `1.5px solid ${stuck ? "#ef4444" : visited ? "#22c55e" : T.border}`,
         borderRadius: 8,
         padding: "8px 12px",
         minWidth: 160,
@@ -59,7 +60,7 @@ function AgentNode({ data }: NodeProps) {
         transition: "all 0.2s ease",
       }}
     >
-      <Handle type="target" position={Position.Top} style={{ background: "#444", border: "none", width: 6, height: 6 }} />
+      <Handle type="target" position={Position.Top} style={{ background: T.border, border: "none", width: 6, height: 6 }} />
 
       <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 4 }}>
         {/* Status dot */}
@@ -77,7 +78,7 @@ function AgentNode({ data }: NodeProps) {
           style={{
             fontSize: 11,
             fontWeight: 600,
-            color: stuck ? "#fca5a5" : visited ? "#e5e7eb" : "#9ca3af",
+            color: stuck ? "#ef4444" : visited ? T.text : T.textSecondary,
             overflow: "hidden",
             textOverflow: "ellipsis",
             whiteSpace: "nowrap",
@@ -124,7 +125,7 @@ function AgentNode({ data }: NodeProps) {
         )}
       </div>
 
-      <Handle type="source" position={Position.Bottom} style={{ background: "#333", border: "none", width: 6, height: 6 }} />
+      <Handle type="source" position={Position.Bottom} style={{ background: T.border, border: "none", width: 6, height: 6 }} />
     </div>
   );
 }
@@ -175,7 +176,7 @@ function WorkflowCanvasInner({
         sourceHandle: e.sourceHandle,
         targetHandle: e.targetHandle,
         style: {
-          stroke: isActiveEdge ? "#22c55e66" : "#333",
+          stroke: isActiveEdge ? "#22c55e" : "#d1d5db",
           strokeWidth: isActiveEdge ? 2 : 1,
         },
         animated: isActiveEdge,
@@ -205,13 +206,13 @@ function WorkflowCanvasInner({
   }, [selectedNode, toolCalls]);
 
   return (
-    <div style={{ position: "relative", width: "100%", height: 500, borderRadius: 8, overflow: "hidden", border: "1px solid #222" }} className="dark-flow">
+    <div style={{ position: "relative", width: "100%", height: 500, borderRadius: 8, overflow: "hidden", border: `1px solid ${T.border}` }} className="light-flow">
       <style>{`
-        .dark-flow .react-flow__controls { background: #111; border: 1px solid #222; border-radius: 6px; }
-        .dark-flow .react-flow__controls button { background: #111; border-bottom: 1px solid #222; color: #888; fill: #888; }
-        .dark-flow .react-flow__controls button:hover { background: #1a1a1a; }
-        .dark-flow .react-flow__minimap { background: #111; border: 1px solid #222; border-radius: 6px; }
-        .dark-flow .react-flow__edge-path { transition: stroke 0.2s ease; }
+        .light-flow .react-flow__controls { background: ${T.card}; border: 1px solid ${T.border}; border-radius: 6px; }
+        .light-flow .react-flow__controls button { background: ${T.card}; border-bottom: 1px solid ${T.border}; color: ${T.textSecondary}; fill: ${T.textSecondary}; }
+        .light-flow .react-flow__controls button:hover { background: ${T.hover}; }
+        .light-flow .react-flow__minimap { background: ${T.card}; border: 1px solid ${T.border}; border-radius: 6px; }
+        .light-flow .react-flow__edge-path { transition: stroke 0.2s ease; }
       `}</style>
       <ReactFlow
         nodes={rfNodes}
@@ -225,21 +226,21 @@ function WorkflowCanvasInner({
         maxZoom={1.5}
         defaultEdgeOptions={{ type: "smoothstep" }}
         proOptions={{ hideAttribution: true }}
-        style={{ background: "#0a0a0a" }}
+        style={{ background: T.bg }}
       >
-        <Background color="#1a1a1a" gap={50} />
+        <Background color="#e5e7eb" gap={50} />
         <Controls
           showInteractive={false}
-          style={{ background: "#111", border: "1px solid #222", borderRadius: 6 }}
+          style={{ background: T.card, border: `1px solid ${T.border}`, borderRadius: 6 }}
         />
         <MiniMap
           nodeColor={(node) => {
             if (node.data?.stuck) return "#ef4444";
             if (node.data?.visited) return "#22c55e";
-            return "#555";
+            return "#d1d5db";
           }}
-          maskColor="#0a0a0a99"
-          style={{ background: "#111", border: "1px solid #222", borderRadius: 6 }}
+          maskColor="#f8f9fa99"
+          style={{ background: T.card, border: `1px solid ${T.border}`, borderRadius: 6 }}
         />
       </ReactFlow>
 
@@ -253,21 +254,21 @@ function WorkflowCanvasInner({
             width: 320,
             maxHeight: 460,
             overflow: "auto",
-            background: "#111",
-            border: "1px solid #222",
+            background: T.card,
+            border: `1px solid ${T.border}`,
             borderRadius: 8,
             padding: 14,
             zIndex: 10,
-            boxShadow: "0 4px 20px #00000066",
+            boxShadow: T.shadowLg,
           }}
         >
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
-            <div style={{ fontSize: 14, fontWeight: 600, color: "#e5e7eb" }}>
+            <div style={{ fontSize: 14, fontWeight: 600, color: T.text }}>
               {selectedNode.label || selectedNode.type}
             </div>
             <button
               onClick={() => setSelectedNode(null)}
-              style={{ background: "none", border: "none", color: "#555", cursor: "pointer", fontSize: 16 }}
+              style={{ background: "none", border: "none", color: T.textMuted, cursor: "pointer", fontSize: 16 }}
             >
               x
             </button>
@@ -298,7 +299,7 @@ function WorkflowCanvasInner({
           {/* Extracted vars */}
           {selectedNodeVars.length > 0 && (
             <div style={{ marginBottom: 10 }}>
-              <div style={{ fontSize: 11, color: "#888", marginBottom: 4 }}>Extracted Variables</div>
+              <div style={{ fontSize: 11, color: T.textSecondary, marginBottom: 4 }}>Extracted Variables</div>
               {selectedNodeVars.map((v, i) => (
                 <div key={i} style={{ fontSize: 11, color: "#22c55e", marginBottom: 2 }}>
                   {v.name} = <span style={{ color: "#aaa" }}>"{v.value}"</span>
@@ -310,7 +311,7 @@ function WorkflowCanvasInner({
           {/* Tool calls */}
           {selectedNodeTools.length > 0 && (
             <div style={{ marginBottom: 10 }}>
-              <div style={{ fontSize: 11, color: "#888", marginBottom: 4 }}>Tool Calls</div>
+              <div style={{ fontSize: 11, color: T.textSecondary, marginBottom: 4 }}>Tool Calls</div>
               {selectedNodeTools.map((t, i) => (
                 <div key={i} style={{ fontSize: 11, color: "#f59e0b" }}>{t.name}</div>
               ))}
@@ -320,7 +321,7 @@ function WorkflowCanvasInner({
           {/* Transitions */}
           {selectedNode.transitions?.length > 0 && (
             <div style={{ marginBottom: 10 }}>
-              <div style={{ fontSize: 11, color: "#888", marginBottom: 4 }}>
+              <div style={{ fontSize: 11, color: T.textSecondary, marginBottom: 4 }}>
                 Transitions ({selectedNode.transitions.length})
               </div>
               {selectedNode.transitions.map((t: any, i: number) => (
@@ -334,11 +335,11 @@ function WorkflowCanvasInner({
           {/* Message preview */}
           {selectedNode.message && (
             <div>
-              <div style={{ fontSize: 11, color: "#888", marginBottom: 4 }}>Prompt (preview)</div>
+              <div style={{ fontSize: 11, color: T.textSecondary, marginBottom: 4 }}>Prompt (preview)</div>
               <div style={{
                 fontSize: 10, color: "#666", lineHeight: 1.5,
                 maxHeight: 150, overflow: "auto",
-                background: "#0a0a0a", padding: 8, borderRadius: 4, border: "1px solid #1a1a1a",
+                background: T.cardAlt, padding: 8, borderRadius: 4, border: `1px solid ${T.border}`,
                 whiteSpace: "pre-wrap", wordBreak: "break-word",
               }}>
                 {(selectedNode.message as string).slice(0, 500)}

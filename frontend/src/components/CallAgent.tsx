@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 import { HamsaVoiceAgent } from "@hamsa-ai/voice-agents-sdk";
 import { updateRun, fetchLogs, triggerEvaluation, getRun } from "../api/client";
+import T from "../theme";
 
 interface CallAgentProps {
   runId: string;
@@ -248,7 +249,7 @@ export default function CallAgent({ runId, agentId, apiKey, webhookUrl, onCallEn
   const formatTime = (s: number) => `${Math.floor(s / 60)}:${(s % 60).toString().padStart(2, "0")}`;
 
   const stateColors: Record<string, string> = {
-    idle: "#888",
+    idle: T.textSecondary,
     initializing: "#f59e0b",
     listening: "#22c55e",
     thinking: "#3b82f6",
@@ -277,32 +278,32 @@ export default function CallAgent({ runId, agentId, apiKey, webhookUrl, onCallEn
   return (
     <div style={{
       position: "fixed", top: 0, left: 0, right: 0, bottom: 0,
-      background: "rgba(0,0,0,0.85)", zIndex: 1000,
+      background: "rgba(0,0,0,0.3)", zIndex: 1000,
       display: "flex", alignItems: "center", justifyContent: "center",
     }}>
       <div style={{
-        background: "#111", border: "1px solid #333", borderRadius: 12,
+        background: T.card, border: `1px solid ${T.border}`, borderRadius: 12,
         width: 600, maxHeight: "90vh", display: "flex", flexDirection: "column",
       }}>
         {/* Header */}
         <div style={{
-          padding: "16px 20px", borderBottom: "1px solid #222",
+          padding: "16px 20px", borderBottom: `1px solid ${T.border}`,
           display: "flex", justifyContent: "space-between", alignItems: "center",
         }}>
           <div>
             <h2 style={{ margin: 0, fontSize: 16 }}>Voice Call</h2>
-            <span style={{ fontSize: 12, color: phaseLabels[phase] === "Error" ? "#ef4444" : "#888" }}>
+            <span style={{ fontSize: 12, color: phaseLabels[phase] === "Error" ? "#ef4444" : T.textSecondary }}>
               {phaseLabels[phase]}
             </span>
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
             {phase === "in_call" && (
-              <span style={{ fontFamily: "monospace", color: "#888", fontSize: 16 }}>
+              <span style={{ fontFamily: "monospace", color: T.textSecondary, fontSize: 16 }}>
                 {formatTime(duration)}
               </span>
             )}
             <button onClick={handleClose} style={{
-              background: "none", border: "none", color: "#666",
+              background: "none", border: "none", color: T.textMuted,
               cursor: "pointer", fontSize: 20, padding: 4,
             }}>
               &times;
@@ -312,17 +313,17 @@ export default function CallAgent({ runId, agentId, apiKey, webhookUrl, onCallEn
 
         {/* Webhook URL bar */}
         <div style={{
-          padding: "8px 20px", background: "#0a0a0a", borderBottom: "1px solid #1a1a1a",
+          padding: "8px 20px", background: T.cardAlt, borderBottom: `1px solid ${T.border}`,
           display: "flex", alignItems: "center", gap: 8, fontSize: 11,
         }}>
-          <span style={{ color: "#666" }}>Webhook:</span>
-          <code style={{ color: "#888", flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+          <span style={{ color: T.textMuted }}>Webhook:</span>
+          <code style={{ color: T.textSecondary, flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
             {webhookUrl}
           </code>
           <button onClick={copyWebhook} style={{
-            background: webhookCopied ? "#22c55e22" : "#1a1a1a",
-            border: `1px solid ${webhookCopied ? "#22c55e44" : "#333"}`,
-            color: webhookCopied ? "#22c55e" : "#888",
+            background: webhookCopied ? T.successBg : T.card,
+            border: `1px solid ${webhookCopied ? "#22c55e44" : T.border}`,
+            color: webhookCopied ? "#22c55e" : T.textSecondary,
             padding: "2px 8px", borderRadius: 3, cursor: "pointer", fontSize: 11,
           }}>
             {webhookCopied ? "Copied!" : "Copy"}
@@ -333,12 +334,12 @@ export default function CallAgent({ runId, agentId, apiKey, webhookUrl, onCallEn
         {phase === "in_call" && (
           <div style={{
             padding: "12px 20px", display: "flex", alignItems: "center", gap: 12,
-            borderBottom: "1px solid #1a1a1a",
+            borderBottom: `1px solid ${T.border}`,
           }}>
             <div style={{
               width: 36, height: 36, borderRadius: "50%",
-              background: `${stateColors[agentState] || "#888"}22`,
-              border: `2px solid ${stateColors[agentState] || "#888"}`,
+              background: `${stateColors[agentState] || T.textSecondary}22`,
+              border: `2px solid ${stateColors[agentState] || T.textSecondary}`,
               display: "flex", alignItems: "center", justifyContent: "center",
               fontSize: 16,
               animation: agentState === "speaking" ? "pulse 1.5s infinite" : "none",
@@ -346,10 +347,10 @@ export default function CallAgent({ runId, agentId, apiKey, webhookUrl, onCallEn
               {stateIcons[agentState] || "📞"}
             </div>
             <div>
-              <div style={{ color: stateColors[agentState] || "#888", fontSize: 13, fontWeight: 600 }}>
+              <div style={{ color: stateColors[agentState] || T.textSecondary, fontSize: 13, fontWeight: 600 }}>
                 {agentState.charAt(0).toUpperCase() + agentState.slice(1)}
               </div>
-              <div style={{ fontSize: 11, color: "#555" }}>
+              <div style={{ fontSize: 11, color: T.textMuted }}>
                 {agentState === "listening" ? "Your turn to speak..." : agentState === "speaking" ? "Agent is responding..." : agentState === "thinking" ? "Processing..." : ""}
               </div>
             </div>
@@ -364,7 +365,7 @@ export default function CallAgent({ runId, agentId, apiKey, webhookUrl, onCallEn
 
         {/* Post-call progress */}
         {(phase === "call_ended" || phase === "fetching_data" || phase === "evaluating") && (
-          <div style={{ padding: "16px 20px", borderBottom: "1px solid #1a1a1a" }}>
+          <div style={{ padding: "16px 20px", borderBottom: `1px solid ${T.border}` }}>
             <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
               {[
                 { label: "Call Ended", done: true },
@@ -375,17 +376,17 @@ export default function CallAgent({ runId, agentId, apiKey, webhookUrl, onCallEn
                   <div style={{
                     width: 20, height: 20, borderRadius: "50%", fontSize: 10,
                     display: "flex", alignItems: "center", justifyContent: "center",
-                    background: step.done ? "#22c55e22" : "#222",
-                    border: `1px solid ${step.active ? "#f59e0b" : step.done ? "#22c55e44" : "#333"}`,
-                    color: step.done ? "#22c55e" : "#666",
+                    background: step.done ? T.successBg : T.border,
+                    border: `1px solid ${step.active ? "#f59e0b" : step.done ? "#22c55e44" : T.border}`,
+                    color: step.done ? "#22c55e" : T.textMuted,
                     animation: step.active ? "pulse 1.5s infinite" : "none",
                   }}>
                     {step.done && !step.active ? "✓" : step.active ? "⏳" : i + 1}
                   </div>
-                  <span style={{ fontSize: 11, color: step.active ? "#f59e0b" : step.done ? "#22c55e" : "#666" }}>
+                  <span style={{ fontSize: 11, color: step.active ? "#f59e0b" : step.done ? "#22c55e" : T.textMuted }}>
                     {step.label}
                   </span>
-                  {i < 2 && <span style={{ color: "#333", margin: "0 4px" }}>→</span>}
+                  {i < 2 && <span style={{ color: T.border, margin: "0 4px" }}>→</span>}
                 </div>
               ))}
             </div>
@@ -395,13 +396,13 @@ export default function CallAgent({ runId, agentId, apiKey, webhookUrl, onCallEn
         {/* Evaluation complete banner */}
         {phase === "complete" && (
           <div style={{
-            padding: "16px 20px", borderBottom: "1px solid #1a1a1a",
-            background: evalScore != null ? (evalScore >= 0.8 ? "#22c55e11" : evalScore >= 0.5 ? "#f59e0b11" : "#ef444411") : "#1a1a1a",
+            padding: "16px 20px", borderBottom: `1px solid ${T.border}`,
+            background: evalScore != null ? (evalScore >= 0.8 ? T.successBg : evalScore >= 0.5 ? T.warningBg : T.errorBg) : T.card,
           }}>
             <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
               <div>
-                <div style={{ fontSize: 13, fontWeight: 600, color: "#fff" }}>Evaluation Complete</div>
-                <div style={{ fontSize: 11, color: "#888" }}>
+                <div style={{ fontSize: 13, fontWeight: 600, color: T.text }}>Evaluation Complete</div>
+                <div style={{ fontSize: 11, color: T.textSecondary }}>
                   {callId && `Call ID: ${callId}`}
                 </div>
               </div>
@@ -425,10 +426,10 @@ export default function CallAgent({ runId, agentId, apiKey, webhookUrl, onCallEn
           {phase === "idle" && (
             <div style={{ textAlign: "center", padding: "40px 0" }}>
               <div style={{ fontSize: 40, marginBottom: 12 }}>🎙</div>
-              <div style={{ color: "#888", fontSize: 14, marginBottom: 8 }}>
+              <div style={{ color: T.textSecondary, fontSize: 14, marginBottom: 8 }}>
                 Ready to call agent
               </div>
-              <div style={{ color: "#555", fontSize: 12 }}>
+              <div style={{ color: T.textMuted, fontSize: 12 }}>
                 Make sure your microphone is available and the webhook URL is configured in the Hamsa dashboard.
               </div>
             </div>
@@ -464,7 +465,7 @@ export default function CallAgent({ runId, agentId, apiKey, webhookUrl, onCallEn
                     <div style={{ fontSize: 10, color: msg.speaker === "Agent" ? "#3b82f6" : "#22c55e", marginBottom: 4 }}>
                       {msg.speaker === "Agent" ? "Agent" : "You"}
                     </div>
-                    <div style={{ fontSize: 13, color: "#e0e0e0", lineHeight: 1.5 }}>
+                    <div style={{ fontSize: 13, color: T.text, lineHeight: 1.5 }}>
                       {msg.text}
                     </div>
                   </div>
@@ -476,7 +477,7 @@ export default function CallAgent({ runId, agentId, apiKey, webhookUrl, onCallEn
 
           {error && (
             <div style={{
-              background: "#ef444418", border: "1px solid #ef444433", borderRadius: 8,
+              background: T.errorBg, border: "1px solid #ef444433", borderRadius: 8,
               padding: 12, fontSize: 13, color: "#ef4444", marginTop: 8,
             }}>
               {error}
@@ -486,7 +487,7 @@ export default function CallAgent({ runId, agentId, apiKey, webhookUrl, onCallEn
 
         {/* Actions footer */}
         <div style={{
-          padding: "12px 20px", borderTop: "1px solid #222",
+          padding: "12px 20px", borderTop: `1px solid ${T.border}`,
           display: "flex", gap: 8, justifyContent: "center",
         }}>
           {phase === "idle" && (
@@ -509,21 +510,21 @@ export default function CallAgent({ runId, agentId, apiKey, webhookUrl, onCallEn
           )}
           {phase === "connecting" && (
             <button disabled style={{
-              background: "#374151", color: "#888", padding: "10px 32px",
+              background: "#374151", color: T.textSecondary, padding: "10px 32px",
               borderRadius: 8, border: "none", fontSize: 14,
             }}>
               Connecting...
             </button>
           )}
           {(phase === "call_ended" || phase === "fetching_data" || phase === "evaluating") && (
-            <div style={{ display: "flex", alignItems: "center", gap: 8, color: "#888", fontSize: 13 }}>
-              <div style={{ width: 14, height: 14, border: "2px solid #888", borderTopColor: "transparent", borderRadius: "50%", animation: "spin 1s linear infinite" }} />
+            <div style={{ display: "flex", alignItems: "center", gap: 8, color: T.textSecondary, fontSize: 13 }}>
+              <div style={{ width: 14, height: 14, border: `2px solid ${T.textSecondary}`, borderTopColor: "transparent", borderRadius: "50%", animation: "spin 1s linear infinite" }} />
               Processing...
             </div>
           )}
           {phase === "complete" && (
             <button onClick={handleClose} style={{
-              background: "#2563eb", color: "#fff", padding: "10px 32px",
+              background: T.primary, color: "#fff", padding: "10px 32px",
               borderRadius: 8, border: "none", cursor: "pointer", fontSize: 14, fontWeight: 600,
             }}>
               View Results
@@ -538,8 +539,8 @@ export default function CallAgent({ runId, agentId, apiKey, webhookUrl, onCallEn
                 Retry
               </button>
               <button onClick={handleClose} style={{
-                background: "none", color: "#888", padding: "10px 24px",
-                borderRadius: 8, border: "1px solid #333", cursor: "pointer", fontSize: 14,
+                background: "none", color: T.textSecondary, padding: "10px 24px",
+                borderRadius: 8, border: `1px solid ${T.border}`, cursor: "pointer", fontSize: 14,
               }}>
                 Close
               </button>

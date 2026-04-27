@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { listProjects, deleteProject } from "../api/client";
+import T from "../theme";
 
 export default function Projects() {
   const [projects, setProjects] = useState<any[]>([]);
@@ -21,8 +22,8 @@ export default function Projects() {
         <Link
           to="/projects/new"
           style={{
-            background: "#2563eb",
-            color: "#fff",
+            background: T.primary,
+            color: T.primaryText,
             padding: "8px 16px",
             borderRadius: 6,
             textDecoration: "none",
@@ -34,11 +35,11 @@ export default function Projects() {
       </div>
 
       {projects.length === 0 ? (
-        <p style={{ color: "#666" }}>No projects yet. Create one to get started.</p>
+        <p style={{ color: T.textMuted }}>No projects yet. Create one to get started.</p>
       ) : (
         <table style={{ width: "100%", borderCollapse: "collapse" }}>
           <thead>
-            <tr style={{ borderBottom: "1px solid #333", textAlign: "left" }}>
+            <tr style={{ borderBottom: `1px solid ${T.border}`, textAlign: "left" }}>
               <th style={{ padding: "8px 12px" }}>Name</th>
               <th style={{ padding: "8px 12px" }}>Type</th>
               <th style={{ padding: "8px 12px" }}>Agent ID</th>
@@ -50,27 +51,27 @@ export default function Projects() {
           </thead>
           <tbody>
             {projects.map((p) => (
-              <tr key={p.id} style={{ borderBottom: "1px solid #1a1a1a" }}>
+              <tr key={p.id} style={{ borderBottom: `1px solid ${T.borderLight}` }}>
                 <td style={{ padding: "8px 12px" }}>
-                  <Link to={`/projects/${p.id}`} style={{ color: "#60a5fa", textDecoration: "none" }}>
+                  <Link to={`/projects/${p.id}`} style={{ color: T.link, textDecoration: "none" }}>
                     {p.name}
                   </Link>
                 </td>
                 <td style={{ padding: "8px 12px" }}>
                   <span style={{
                     fontSize: 10, padding: "2px 6px", borderRadius: 3,
-                    background: p.projectType === "WEBHOOK" ? "#4c1d95" : p.projectType === "HISTORY" ? "#1e3a5f" : "#14532d",
-                    color: p.projectType === "WEBHOOK" ? "#c084fc" : p.projectType === "HISTORY" ? "#60a5fa" : "#4ade80",
+                    background: p.projectType === "WEBHOOK" ? "#f3e8ff" : p.projectType === "HISTORY" ? T.infoBg : T.successBg,
+                    color: p.projectType === "WEBHOOK" ? "#a855f7" : p.projectType === "HISTORY" ? "#3b82f6" : "#22c55e",
                   }}>
                     {p.projectType || "LIVE"}
                   </span>
                 </td>
-                <td style={{ padding: "8px 12px", fontFamily: "monospace", fontSize: 12, color: "#888" }}>
+                <td style={{ padding: "8px 12px", fontFamily: "monospace", fontSize: 12, color: T.textSecondary }}>
                   {p.agentId?.slice(0, 12)}...
                 </td>
                 <td style={{ padding: "8px 12px" }}>{p._count?.criteria ?? 0}</td>
                 <td style={{ padding: "8px 12px" }}>{p._count?.runs ?? 0}</td>
-                <td style={{ padding: "8px 12px", fontSize: 12, color: "#888" }}>
+                <td style={{ padding: "8px 12px", fontSize: 12, color: T.textSecondary }}>
                   {p.runs?.[0]
                     ? `${p.runs[0].modelUsed || p.projectType || "—"} — ${new Date(p.runs[0].createdAt).toLocaleDateString()}`
                     : "—"}
@@ -84,7 +85,7 @@ export default function Projects() {
                     style={{
                       background: "none",
                       border: "none",
-                      color: "#666",
+                      color: T.textMuted,
                       cursor: "pointer",
                       fontSize: 12,
                     }}

@@ -1,5 +1,6 @@
 import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import { useParams, Link } from "react-router-dom";
+import T from "../theme";
 import { getRun, createLabel, deleteLabel, triggerEvaluation, fetchLogs } from "../api/client";
 
 const WorkflowCanvas = lazy(() => import("../components/WorkflowCanvas"));
@@ -88,9 +89,9 @@ function computeGoal(run: any): { status: GoalStatus; reason: string } | null {
 }
 
 const GOAL_STYLE: Record<GoalStatus, { color: string; bg: string; border: string }> = {
-  SUCCESSFUL: { color: "#22c55e", bg: "#052e1644", border: "#22c55e55" },
-  PARTIAL:    { color: "#f59e0b", bg: "#451a0344", border: "#f59e0b55" },
-  FAILED:     { color: "#ef4444", bg: "#450a0a44", border: "#ef444455" },
+  SUCCESSFUL: { color: "#22c55e", bg: T.successBg, border: "#22c55e55" },
+  PARTIAL:    { color: "#f59e0b", bg: T.warningBg, border: "#f59e0b55" },
+  FAILED:     { color: "#ef4444", bg: T.errorBg, border: "#ef444455" },
 };
 
 // ─── End Goal Achievement ──────────────────────────────────────────
@@ -103,18 +104,18 @@ function outcomeStyle(outcome: string): { color: string; bg: string } {
   const lower = outcome.toLowerCase();
   // Negative outcomes must be checked BEFORE positive ones — "not_interested" contains "interested"
   if (lower.includes("not_interested") || lower.includes("rejected") || lower.includes("declined") || lower.includes("refused") || lower.includes("hangup") || lower.includes("hang_up"))
-    return { color: "#ef4444", bg: "#7f1d1d22" };
+    return { color: "#ef4444", bg: T.errorBg };
   if (lower.includes("interested") || lower.includes("success") || lower.includes("converted") || lower.includes("booked"))
-    return { color: "#22c55e", bg: "#14532d22" };
+    return { color: "#22c55e", bg: T.successBg };
   if (lower.includes("followup") || lower.includes("callback") || lower.includes("pending") || lower.includes("later"))
-    return { color: "#f59e0b", bg: "#78350f22" };
+    return { color: "#f59e0b", bg: T.warningBg };
   if (lower.includes("no_answer") || lower.includes("busy") || lower.includes("voicemail"))
-    return { color: "#6b7280", bg: "#1a1a1a" };
-  return { color: "#a78bfa", bg: "#2e1065aa" };
+    return { color: "#6b7280", bg: T.cardAlt };
+  return { color: "#a78bfa", bg: "#f3e8ff" };
 }
 
 function OutcomeBadge({ outcome, size = "small" }: { outcome: string | null | undefined; size?: "small" | "large" }) {
-  if (!outcome) return <span style={{ color: "#444", fontSize: 12 }}>—</span>;
+  if (!outcome) return <span style={{ color: T.textFaint, fontSize: 12 }}>—</span>;
   const { color, bg } = outcomeStyle(outcome);
   return (
     <span style={{
@@ -262,7 +263,7 @@ export default function RunDetail() {
 
   return (
     <div>
-      <Link to={`/projects/${id}`} style={{ color: "#888", textDecoration: "none", fontSize: 14 }}>
+      <Link to={`/projects/${id}`} style={{ color: T.textSecondary, textDecoration: "none", fontSize: 14 }}>
         &larr; Back to project
       </Link>
 
@@ -317,7 +318,7 @@ export default function RunDetail() {
             };
             setTimeout(poll, 1500);
           }}
-          style={{ background: reEvaluating ? "#1e3a5f" : "#2563eb", color: "#fff", padding: "6px 12px", borderRadius: 4, border: "none", cursor: reEvaluating ? "default" : "pointer", fontSize: 12 }}
+          style={{ background: reEvaluating ? "#b8e6cc" : T.primary, color: "#fff", padding: "6px 12px", borderRadius: 4, border: "none", cursor: reEvaluating ? "default" : "pointer", fontSize: 12 }}
         >
           {reEvaluating ? "Evaluating…" : "Re-evaluate"}
         </button>
@@ -367,7 +368,7 @@ export default function RunDetail() {
               a.click();
               URL.revokeObjectURL(url);
             }}
-            style={{ background: "#374151", color: "#fff", padding: "6px 12px", borderRadius: 4, border: "none", cursor: "pointer", fontSize: 12 }}
+            style={{ background: T.cardAlt, color: T.text, padding: "6px 12px", borderRadius: 4, border: "none", cursor: "pointer", fontSize: 12 }}
           >
             Export JSON
           </button>
@@ -392,7 +393,7 @@ export default function RunDetail() {
               a.click();
               URL.revokeObjectURL(url);
             }}
-            style={{ background: "#1f2937", color: "#9ca3af", padding: "6px 12px", borderRadius: 4, border: "1px solid #374151", cursor: "pointer", fontSize: 12 }}
+            style={{ background: T.card, color: T.textMuted, padding: "6px 12px", borderRadius: 4, border: `1px solid ${T.border}`, cursor: "pointer", fontSize: 12 }}
           >
             Full Export
           </button>
@@ -403,16 +404,16 @@ export default function RunDetail() {
       {recordingUrl && (
         <div style={{ marginBottom: 20 }}>
           {audioError ? (
-            <div style={{ padding: "10px 14px", background: "#1a1a1a", border: "1px solid #333", borderRadius: 6, fontSize: 12, color: "#888", display: "flex", alignItems: "center", gap: 10 }}>
+            <div style={{ padding: "10px 14px", background: T.card, border: `1px solid ${T.border}`, borderRadius: 6, fontSize: 12, color: T.textSecondary, display: "flex", alignItems: "center", gap: 10 }}>
               <span>Recording unavailable (URL may have expired)</span>
-              <a href={recordingUrl} target="_blank" rel="noopener noreferrer" style={{ color: "#3b82f6", textDecoration: "none" }}>Open directly ↗</a>
+              <a href={recordingUrl} target="_blank" rel="noopener noreferrer" style={{ color: T.link, textDecoration: "none" }}>Open directly ↗</a>
             </div>
           ) : (
             <audio
               controls
               src={recordingUrl}
               onError={() => setAudioError(true)}
-              style={{ width: "100%", accentColor: "#3b82f6" }}
+              style={{ width: "100%", accentColor: T.primary }}
             />
           )}
         </div>
@@ -422,7 +423,7 @@ export default function RunDetail() {
       <div style={{ display: "flex", gap: 32, alignItems: "flex-start", marginBottom: 24, flexWrap: "wrap" }}>
         {run.overallScore != null && (
           <div>
-            <div style={{ fontSize: 12, color: "#888", marginBottom: 4 }}>Overall Score</div>
+            <div style={{ fontSize: 12, color: T.textSecondary, marginBottom: 4 }}>Overall Score</div>
             <div style={{ fontSize: 36, fontWeight: 700, color: run.overallScore >= 0.8 ? "#22c55e" : run.overallScore >= 0.5 ? "#f59e0b" : "#ef4444" }}>
               {(run.overallScore * 100).toFixed(0)}%
             </div>
@@ -430,7 +431,7 @@ export default function RunDetail() {
         )}
         {run.evalCost != null && run.evalCost > 0 && (
           <div>
-            <div style={{ fontSize: 12, color: "#888", marginBottom: 4 }}>Eval Cost</div>
+            <div style={{ fontSize: 12, color: T.textSecondary, marginBottom: 4 }}>Eval Cost</div>
             <div style={{ fontSize: 20, fontWeight: 600, color: "#a78bfa" }}>
               ${run.evalCost < 0.01 ? run.evalCost.toFixed(4) : run.evalCost.toFixed(3)}
             </div>
@@ -438,7 +439,7 @@ export default function RunDetail() {
         )}
         {run.callOutcome && (
           <div>
-            <div style={{ fontSize: 12, color: "#888", marginBottom: 6 }}>Call Outcome</div>
+            <div style={{ fontSize: 12, color: T.textSecondary, marginBottom: 6 }}>Call Outcome</div>
             <OutcomeBadge outcome={run.callOutcome} size="large" />
           </div>
         )}
@@ -452,11 +453,11 @@ export default function RunDetail() {
               background: s.bg, border: `1px solid ${s.border}`,
               borderRadius: 8, padding: "12px 16px",
             }}>
-              <div style={{ fontSize: 12, color: "#888", marginBottom: 6 }}>Goal</div>
+              <div style={{ fontSize: 12, color: T.textSecondary, marginBottom: 6 }}>Goal</div>
               <div style={{ fontSize: 15, fontWeight: 700, color: s.color, marginBottom: 6 }}>
                 {goal.status === "SUCCESSFUL" ? "✓ Successful" : goal.status === "PARTIAL" ? "~ Partial" : "✗ Failed"}
               </div>
-              <div style={{ fontSize: 13, color: "#ccc", lineHeight: 1.5 }}>{goal.reason}</div>
+              <div style={{ fontSize: 13, color: T.text, lineHeight: 1.5 }}>{goal.reason}</div>
             </div>
           );
         })()}
@@ -465,14 +466,14 @@ export default function RunDetail() {
       {/* Outcome variables */}
       {run.outcomeResult && Object.keys(run.outcomeResult).filter(k => !["summary", "call_outcome", "default_params"].includes(k) && run.outcomeResult[k]).length > 0 && (
         <div style={{ marginBottom: 24 }}>
-          <div style={{ fontSize: 12, color: "#888", marginBottom: 8 }}>Extracted Variables</div>
+          <div style={{ fontSize: 12, color: T.textSecondary, marginBottom: 8 }}>Extracted Variables</div>
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
             {Object.entries(run.outcomeResult)
               .filter(([k, v]) => !["summary", "call_outcome", "default_params"].includes(k) && v)
               .map(([k, v]) => (
-                <span key={k} style={{ background: "#1a1a1a", border: "1px solid #333", borderRadius: 6, padding: "4px 10px", fontSize: 12 }}>
-                  <span style={{ color: "#888" }}>{k}: </span>
-                  <span style={{ color: "#e5e7eb" }}>{String(v)}</span>
+                <span key={k} style={{ background: T.card, border: `1px solid ${T.border}`, borderRadius: 6, padding: "4px 10px", fontSize: 12 }}>
+                  <span style={{ color: T.textSecondary }}>{k}: </span>
+                  <span style={{ color: T.text }}>{String(v)}</span>
                 </span>
               ))}
           </div>
@@ -525,24 +526,24 @@ export default function RunDetail() {
             {/* Summary info */}
             <div style={{ display: "flex", gap: 12, marginBottom: 16, flexWrap: "wrap" }}>
               {wordCount != null && (
-                <div style={{ background: "#1a1a1a", padding: "8px 14px", borderRadius: 6, border: "1px solid #222", fontSize: 13 }}>
-                  <span style={{ color: "#888" }}>Words: </span><strong>{wordCount}</strong>
+                <div style={{ background: T.card, padding: "8px 14px", borderRadius: 6, border: `1px solid ${T.border}`, fontSize: 13 }}>
+                  <span style={{ color: T.textSecondary }}>Words: </span><strong>{wordCount}</strong>
                 </div>
               )}
               {dialect && (
-                <div style={{ background: "#1a1a1a", padding: "8px 14px", borderRadius: 6, border: "1px solid #222", fontSize: 13 }}>
-                  <span style={{ color: "#888" }}>Dialect: </span><strong>{dialect}</strong>
+                <div style={{ background: T.card, padding: "8px 14px", borderRadius: 6, border: `1px solid ${T.border}`, fontSize: 13 }}>
+                  <span style={{ color: T.textSecondary }}>Dialect: </span><strong>{dialect}</strong>
                 </div>
               )}
               {parsedData?.nodes_completed != null && (
-                <div style={{ background: "#1a1a1a", padding: "8px 14px", borderRadius: 6, border: "1px solid #222", fontSize: 13 }}>
-                  <span style={{ color: "#888" }}>Nodes: </span><strong>{parsedData.nodes_completed}/{parsedData.nodes_expected}</strong>
+                <div style={{ background: T.card, padding: "8px 14px", borderRadius: 6, border: `1px solid ${T.border}`, fontSize: 13 }}>
+                  <span style={{ color: T.textSecondary }}>Nodes: </span><strong>{parsedData.nodes_completed}/{parsedData.nodes_expected}</strong>
                 </div>
               )}
               {parsedData?.stuck_on_node && (
-                <div style={{ background: "#ef444418", padding: "8px 14px", borderRadius: 6, border: "1px solid #ef444433", fontSize: 13 }}>
+                <div style={{ background: T.errorBg, padding: "8px 14px", borderRadius: 6, border: `1px solid ${T.border}`, fontSize: 13 }}>
                   <span style={{ color: "#ef4444" }}>Stuck on: </span><strong style={{ color: "#ef4444" }}>{parsedData.stuck_on_node}</strong>
-                  {parsedData.stuck_turns > 0 && <span style={{ color: "#888" }}> ({parsedData.stuck_turns} turns)</span>}
+                  {parsedData.stuck_turns > 0 && <span style={{ color: T.textSecondary }}> ({parsedData.stuck_turns} turns)</span>}
                 </div>
               )}
             </div>
@@ -555,7 +556,7 @@ export default function RunDetail() {
                   const errors = cat.errors || 0;
                   const success = total > 0 ? total - errors : 0;
                   const pct = total > 0 ? Math.round((success / total) * 100) : null;
-                  const color = pct === null ? "#555" : pct >= 80 ? "#22c55e" : pct >= 50 ? "#f59e0b" : "#ef4444";
+                  const color = pct === null ? T.textMuted : pct >= 80 ? "#22c55e" : pct >= 50 ? "#f59e0b" : "#ef4444";
 
                   return (
                     <MetricRow key={cat.key} label={cat.label} total={total} errors={errors} pct={pct} color={color} comment={cat.comment} />
@@ -568,18 +569,18 @@ export default function RunDetail() {
             {failedTransitions.length > 0 && (
               <CollapsibleSection title={`Failed Transitions (${failedTransitions.length})`}>
                 {failedTransitions.map((ft: any, i: number) => (
-                  <div key={i} style={{ background: "#0a0a0a", padding: 12, borderRadius: 6, marginBottom: 8, border: "1px solid #1a1a1a" }}>
+                  <div key={i} style={{ background: T.cardAlt, padding: 12, borderRadius: 6, marginBottom: 8, border: `1px solid ${T.border}` }}>
                     <div style={{ fontSize: 12, marginBottom: 4 }}>
-                      <span style={{ color: "#22c55e" }}>User said:</span> <span style={{ color: "#ccc" }}>{ft.user_said}</span>
+                      <span style={{ color: "#22c55e" }}>User said:</span> <span style={{ color: T.text }}>{ft.user_said}</span>
                     </div>
                     <div style={{ fontSize: 12, marginBottom: 4 }}>
-                      <span style={{ color: "#3b82f6" }}>Expected:</span> <span style={{ color: "#ccc" }}>{ft.expected_action}</span>
+                      <span style={{ color: "#3b82f6" }}>Expected:</span> <span style={{ color: T.text }}>{ft.expected_action}</span>
                     </div>
                     <div style={{ fontSize: 12, marginBottom: 4 }}>
-                      <span style={{ color: "#ef4444" }}>Actual:</span> <span style={{ color: "#ccc" }}>{ft.actual_action}</span>
+                      <span style={{ color: "#ef4444" }}>Actual:</span> <span style={{ color: T.text }}>{ft.actual_action}</span>
                     </div>
                     {ft.comment && (
-                      <div style={{ fontSize: 11, color: "#888", fontStyle: "italic" }}>{ft.comment}</div>
+                      <div style={{ fontSize: 11, color: T.textSecondary, fontStyle: "italic" }}>{ft.comment}</div>
                     )}
                   </div>
                 ))}
@@ -591,7 +592,7 @@ export default function RunDetail() {
               <div style={{ display: "flex", gap: 16, marginTop: 12, fontSize: 12 }}>
                 {parsedData.variables_extracted?.length > 0 && (
                   <div>
-                    <span style={{ color: "#888" }}>Extracted: </span>
+                    <span style={{ color: T.textSecondary }}>Extracted: </span>
                     {parsedData.variables_extracted.map((v: string, i: number) => (
                       <span key={i} style={{ color: "#22c55e", marginRight: 6 }}>{v}</span>
                     ))}
@@ -599,7 +600,7 @@ export default function RunDetail() {
                 )}
                 {parsedData.variables_missed?.length > 0 && (
                   <div>
-                    <span style={{ color: "#888" }}>Missed: </span>
+                    <span style={{ color: T.textSecondary }}>Missed: </span>
                     {parsedData.variables_missed.map((v: string, i: number) => (
                       <span key={i} style={{ color: "#ef4444", marginRight: 6 }}>{v}</span>
                     ))}
@@ -648,31 +649,31 @@ export default function RunDetail() {
 
             {/* Summary bar */}
             <div style={{ display: "flex", gap: 12, marginBottom: 16, flexWrap: "wrap" }}>
-              <div style={{ background: "#1a1a1a", padding: "8px 14px", borderRadius: 6, border: "1px solid #222", fontSize: 13 }}>
-                <span style={{ color: "#888" }}>Score: </span>
-                <strong style={{ color: acResult.score == null ? "#888" : acResult.score >= 0.8 ? "#22c55e" : acResult.score >= 0.5 ? "#f59e0b" : "#ef4444" }}>
+              <div style={{ background: T.card, padding: "8px 14px", borderRadius: 6, border: `1px solid ${T.border}`, fontSize: 13 }}>
+                <span style={{ color: T.textSecondary }}>Score: </span>
+                <strong style={{ color: acResult.score == null ? T.textSecondary : acResult.score >= 0.8 ? "#22c55e" : acResult.score >= 0.5 ? "#f59e0b" : "#ef4444" }}>
                   {acResult.score != null ? `${(acResult.score * 100).toFixed(0)}%` : "—"}
                 </strong>
               </div>
-              <div style={{ background: "#1a1a1a", padding: "8px 14px", borderRadius: 6, border: "1px solid #222", fontSize: 13 }}>
-                <span style={{ color: "#888" }}>Turns: </span>
+              <div style={{ background: T.card, padding: "8px 14px", borderRadius: 6, border: `1px solid ${T.border}`, fontSize: 13 }}>
+                <span style={{ color: T.textSecondary }}>Turns: </span>
                 <strong>{turnsWithErrors > 0 ? <span style={{ color: "#ef4444" }}>{turnsWithErrors} errors</span> : <span style={{ color: "#22c55e" }}>clean</span>} / {totalTurns}</strong>
               </div>
               {errors.length > 0 && errSummary?.by_severity && (
                 <>
                   {errSummary.by_severity.critical > 0 && (
-                    <div style={{ background: "#ef444418", padding: "8px 14px", borderRadius: 6, border: "1px solid #ef444433", fontSize: 13 }}>
+                    <div style={{ background: T.errorBg, padding: "8px 14px", borderRadius: 6, border: `1px solid ${T.border}`, fontSize: 13 }}>
                       <span style={{ color: "#ef4444" }}>{errSummary.by_severity.critical} critical</span>
                     </div>
                   )}
                   {errSummary.by_severity.major > 0 && (
-                    <div style={{ background: "#f59e0b18", padding: "8px 14px", borderRadius: 6, border: "1px solid #f59e0b33", fontSize: 13 }}>
+                    <div style={{ background: T.warningBg, padding: "8px 14px", borderRadius: 6, border: `1px solid ${T.border}`, fontSize: 13 }}>
                       <span style={{ color: "#f59e0b" }}>{errSummary.by_severity.major} major</span>
                     </div>
                   )}
                   {errSummary.by_severity.minor > 0 && (
-                    <div style={{ background: "#1a1a1a", padding: "8px 14px", borderRadius: 6, border: "1px solid #222", fontSize: 13 }}>
-                      <span style={{ color: "#888" }}>{errSummary.by_severity.minor} minor</span>
+                    <div style={{ background: T.card, padding: "8px 14px", borderRadius: 6, border: `1px solid ${T.border}`, fontSize: 13 }}>
+                      <span style={{ color: T.textSecondary }}>{errSummary.by_severity.minor} minor</span>
                     </div>
                   )}
                 </>
@@ -682,15 +683,15 @@ export default function RunDetail() {
             {/* Root cause breakdown */}
             {errSummary?.by_root_cause && (
               <div style={{ marginBottom: 16 }}>
-                <div style={{ fontSize: 13, color: "#888", marginBottom: 8 }}>Errors by Root Cause</div>
+                <div style={{ fontSize: 13, color: T.textSecondary, marginBottom: 8 }}>Errors by Root Cause</div>
                 <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
                   {Object.entries(errSummary.by_root_cause as Record<string, number>)
                     .filter(([, count]) => count > 0)
                     .sort(([, a], [, b]) => b - a)
                     .map(([cause, count]) => (
                       <span key={cause} style={{
-                        background: "#0a0a0a", padding: "4px 10px", borderRadius: 4,
-                        border: "1px solid #222", fontSize: 11, color: "#ccc",
+                        background: T.cardAlt, padding: "4px 10px", borderRadius: 4,
+                        border: `1px solid ${T.border}`, fontSize: 11, color: T.text,
                       }}>
                         {rootCauseLabels[cause] || cause}: <strong>{count}</strong>
                       </span>
@@ -704,48 +705,48 @@ export default function RunDetail() {
               <CollapsibleSection title={`Errors Found (${errors.length})`} defaultOpen={true}>
                 {errors.map((err: any, i: number) => (
                   <div key={i} style={{
-                    background: "#0a0a0a", padding: 14, borderRadius: 6, marginBottom: 8,
-                    border: `1px solid ${severityColors[err.severity] || "#222"}33`,
-                    borderLeft: `3px solid ${severityColors[err.severity] || "#888"}`,
+                    background: T.cardAlt, padding: 14, borderRadius: 6, marginBottom: 8,
+                    border: `1px solid ${severityColors[err.severity] || T.border}33`,
+                    borderLeft: `3px solid ${severityColors[err.severity] || T.textSecondary}`,
                   }}>
                     <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
                       <span style={{ fontSize: 11, color: severityColors[err.severity], textTransform: "uppercase", fontWeight: 600 }}>
                         {err.severity} — {err.category?.replace(/_/g, " ")}
                       </span>
-                      {err.timestamp && <span style={{ fontSize: 10, color: "#555" }}>{err.timestamp}</span>}
+                      {err.timestamp && <span style={{ fontSize: 10, color: T.textMuted }}>{err.timestamp}</span>}
                     </div>
                     {err.what_agent_said && (
                       <div style={{ fontSize: 12, marginBottom: 4 }}>
                         <span style={{ color: "#3b82f6" }}>Agent said:</span>{" "}
-                        <span style={{ color: "#ccc" }}>"{err.what_agent_said}"</span>
+                        <span style={{ color: T.text }}>"{err.what_agent_said}"</span>
                       </div>
                     )}
                     {err.what_log_shows && (
                       <div style={{ fontSize: 12, marginBottom: 4 }}>
                         <span style={{ color: "#f59e0b" }}>Log shows:</span>{" "}
-                        <span style={{ color: "#ccc" }}>{err.what_log_shows}</span>
+                        <span style={{ color: T.text }}>{err.what_log_shows}</span>
                       </div>
                     )}
                     {err.expected_behavior && (
                       <div style={{ fontSize: 12, marginBottom: 4 }}>
                         <span style={{ color: "#22c55e" }}>Expected:</span>{" "}
-                        <span style={{ color: "#ccc" }}>{err.expected_behavior}</span>
+                        <span style={{ color: T.text }}>{err.expected_behavior}</span>
                       </div>
                     )}
                     <div style={{ display: "flex", gap: 12, marginTop: 8, flexWrap: "wrap" }}>
                       {err.root_cause && (
-                        <span style={{ fontSize: 11, padding: "2px 8px", borderRadius: 3, background: "#1a1a1a", border: "1px solid #333", color: "#ccc" }}>
+                        <span style={{ fontSize: 11, padding: "2px 8px", borderRadius: 3, background: T.card, border: `1px solid ${T.border}`, color: T.text }}>
                           Cause: {rootCauseLabels[err.root_cause] || err.root_cause}
                         </span>
                       )}
                       {err.impact && (
-                        <span style={{ fontSize: 11, color: "#888" }}>
+                        <span style={{ fontSize: 11, color: T.textSecondary }}>
                           Impact: {err.impact}
                         </span>
                       )}
                     </div>
                     {err.suggested_fix && (
-                      <div style={{ fontSize: 12, marginTop: 8, padding: "6px 10px", background: "#22c55e0a", border: "1px solid #22c55e22", borderRadius: 4, color: "#22c55e" }}>
+                      <div style={{ fontSize: 12, marginTop: 8, padding: "6px 10px", background: T.successBg, border: `1px solid ${T.border}`, borderRadius: 4, color: "#22c55e" }}>
                         Fix: {err.suggested_fix}
                       </div>
                     )}
@@ -758,7 +759,7 @@ export default function RunDetail() {
             {correctActions.length > 0 && (
               <CollapsibleSection title={`Correct Actions (${correctActions.length})`} defaultOpen={false}>
                 {correctActions.map((a: any, i: number) => (
-                  <div key={i} style={{ fontSize: 12, padding: "6px 10px", marginBottom: 4, color: "#aaa" }}>
+                  <div key={i} style={{ fontSize: 12, padding: "6px 10px", marginBottom: 4, color: T.textSecondary }}>
                     <span style={{ color: "#22c55e", marginRight: 8 }}>{a.category?.replace(/_/g, " ")}</span>
                     {a.description}
                   </div>
@@ -769,16 +770,16 @@ export default function RunDetail() {
             {/* Recommendations */}
             {recommendations.length > 0 && (
               <div style={{ marginTop: 16 }}>
-                <div style={{ fontSize: 13, color: "#888", marginBottom: 8 }}>Top Recommendations</div>
+                <div style={{ fontSize: 13, color: T.textSecondary, marginBottom: 8 }}>Top Recommendations</div>
                 <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
                   {recommendations.map((rec: string, i: number) => (
                     <div key={i} style={{
                       display: "flex", gap: 10, alignItems: "flex-start",
-                      fontSize: 13, padding: "8px 12px", background: "#0a0a0a",
-                      borderRadius: 6, border: "1px solid #1a1a1a",
+                      fontSize: 13, padding: "8px 12px", background: T.cardAlt,
+                      borderRadius: 6, border: `1px solid ${T.border}`,
                     }}>
-                      <span style={{ color: "#2563eb", fontWeight: 700, minWidth: 20 }}>#{i + 1}</span>
-                      <span style={{ color: "#ccc" }}>{rec}</span>
+                      <span style={{ color: T.primary, fontWeight: 700, minWidth: 20 }}>#{i + 1}</span>
+                      <span style={{ color: T.text }}>{rec}</span>
                     </div>
                   ))}
                 </div>
@@ -788,8 +789,8 @@ export default function RunDetail() {
             {/* Executive summary */}
             {parsed?.detail && (
               <div style={{
-                marginTop: 16, padding: 14, background: "#111", borderRadius: 8,
-                border: "1px solid #222", fontSize: 13, color: "#aaa", lineHeight: 1.6,
+                marginTop: 16, padding: 14, background: T.card, borderRadius: 8,
+                border: `1px solid ${T.border}`, fontSize: 13, color: T.textSecondary, lineHeight: 1.6, boxShadow: T.shadow,
               }}>
                 {parsed.detail}
               </div>
@@ -828,9 +829,9 @@ export default function RunDetail() {
             {/* Summary narrative */}
             {parsed.summary && (
               <div style={{
-                background: leResult.passed ? "#22c55e0a" : "#ef44440a",
+                background: leResult.passed ? T.successBg : T.errorBg,
                 border: `1px solid ${leResult.passed ? "#22c55e33" : "#ef444433"}`,
-                borderRadius: 8, padding: 14, marginBottom: 16, fontSize: 13, lineHeight: 1.6, color: "#ccc",
+                borderRadius: 8, padding: 14, marginBottom: 16, fontSize: 13, lineHeight: 1.6, color: T.text,
               }}>
                 {parsed.summary}
               </div>
@@ -844,17 +845,17 @@ export default function RunDetail() {
                 { label: "Overall Quality (Layer 4)", score: layer4Score, weight: "20%" },
               ].map((layer) => {
                 const pct = layer.score != null ? Math.round((layer.score / 10) * 100) : null;
-                const color = pct == null ? "#555" : pct >= 80 ? "#22c55e" : pct >= 50 ? "#f59e0b" : "#ef4444";
+                const color = pct == null ? T.textMuted : pct >= 80 ? "#22c55e" : pct >= 50 ? "#f59e0b" : "#ef4444";
                 return (
                   <div key={layer.label} style={{
                     display: "flex", alignItems: "center", gap: 12, padding: "10px 14px",
-                    background: "#111", borderRadius: 6, border: "1px solid #222",
+                    background: T.card, borderRadius: 6, border: `1px solid ${T.border}`,
                   }}>
                     <div style={{ width: 200, fontSize: 13, fontWeight: 500 }}>
                       {layer.label}
-                      <span style={{ fontSize: 10, color: "#555", marginLeft: 6 }}>{layer.weight}</span>
+                      <span style={{ fontSize: 10, color: T.textMuted, marginLeft: 6 }}>{layer.weight}</span>
                     </div>
-                    <div style={{ flex: 1, height: 8, background: "#222", borderRadius: 4, overflow: "hidden" }}>
+                    <div style={{ flex: 1, height: 8, background: "#e5e7eb", borderRadius: 4, overflow: "hidden" }}>
                       {pct != null && (
                         <div style={{ width: `${pct}%`, height: "100%", background: color, borderRadius: 4, transition: "width 0.3s" }} />
                       )}
@@ -871,34 +872,34 @@ export default function RunDetail() {
             <div style={{ display: "flex", gap: 12, marginBottom: 16, flexWrap: "wrap" }}>
               {parsed.objectiveAchieved != null && (
                 <div style={{
-                  background: parsed.objectiveAchieved ? "#22c55e12" : "#ef444412",
+                  background: parsed.objectiveAchieved ? T.successBg : T.errorBg,
                   padding: "8px 14px", borderRadius: 6,
                   border: `1px solid ${parsed.objectiveAchieved ? "#22c55e33" : "#ef444433"}`,
                   fontSize: 13,
                 }}>
-                  <span style={{ color: "#888" }}>Objective: </span>
+                  <span style={{ color: T.textSecondary }}>Objective: </span>
                   <strong style={{ color: parsed.objectiveAchieved ? "#22c55e" : "#ef4444" }}>
                     {parsed.objectiveAchieved ? "Achieved" : "Not Achieved"}
                   </strong>
                 </div>
               )}
               {parsed.callerSentiment && (
-                <div style={{ background: "#1a1a1a", padding: "8px 14px", borderRadius: 6, border: "1px solid #222", fontSize: 13 }}>
-                  <span style={{ color: "#888" }}>Sentiment: </span>
-                  <strong style={{ color: "#e5e7eb" }}>{parsed.callerSentiment}</strong>
+                <div style={{ background: T.card, padding: "8px 14px", borderRadius: 6, border: `1px solid ${T.border}`, fontSize: 13 }}>
+                  <span style={{ color: T.textSecondary }}>Sentiment: </span>
+                  <strong style={{ color: T.text }}>{parsed.callerSentiment}</strong>
                 </div>
               )}
               {parsed.efficiency && (
-                <div style={{ background: "#1a1a1a", padding: "8px 14px", borderRadius: 6, border: "1px solid #222", fontSize: 13 }}>
-                  <span style={{ color: "#888" }}>Efficiency: </span>
+                <div style={{ background: T.card, padding: "8px 14px", borderRadius: 6, border: `1px solid ${T.border}`, fontSize: 13 }}>
+                  <span style={{ color: T.textSecondary }}>Efficiency: </span>
                   <strong style={{ color: parsed.efficiency.score >= 7 ? "#22c55e" : parsed.efficiency.score >= 5 ? "#f59e0b" : "#ef4444" }}>
                     {parsed.efficiency.score}/10
                   </strong>
                 </div>
               )}
               {meta.nodesEvaluated != null && (
-                <div style={{ background: "#1a1a1a", padding: "8px 14px", borderRadius: 6, border: "1px solid #222", fontSize: 13 }}>
-                  <span style={{ color: "#888" }}>Nodes Evaluated: </span>
+                <div style={{ background: T.card, padding: "8px 14px", borderRadius: 6, border: `1px solid ${T.border}`, fontSize: 13 }}>
+                  <span style={{ color: T.textSecondary }}>Nodes Evaluated: </span>
                   <strong>{meta.nodesEvaluated}</strong>
                 </div>
               )}
@@ -907,8 +908,8 @@ export default function RunDetail() {
             {/* Efficiency reasoning */}
             {parsed.efficiency?.reasoning && (
               <div style={{
-                padding: "10px 14px", background: "#0a0a0a", borderRadius: 6,
-                border: "1px solid #1a1a1a", fontSize: 12, color: "#aaa", marginBottom: 16, lineHeight: 1.5,
+                padding: "10px 14px", background: T.cardAlt, borderRadius: 6,
+                border: `1px solid ${T.border}`, fontSize: 12, color: T.textSecondary, marginBottom: 16, lineHeight: 1.5,
               }}>
                 {parsed.efficiency.reasoning}
               </div>
@@ -921,9 +922,9 @@ export default function RunDetail() {
                 <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
                   {criticalIssues.map((issue: string, i: number) => (
                     <div key={i} style={{
-                      padding: "8px 12px", background: "#ef44440a", borderRadius: 6,
-                      border: "1px solid #ef444422", borderLeft: "3px solid #ef4444",
-                      fontSize: 13, color: "#ccc", lineHeight: 1.5,
+                      padding: "8px 12px", background: T.errorBg, borderRadius: 6,
+                      border: `1px solid ${T.border}`, borderLeft: "3px solid #ef4444",
+                      fontSize: 13, color: T.text, lineHeight: 1.5,
                     }}>
                       {issue}
                     </div>
@@ -937,9 +938,9 @@ export default function RunDetail() {
               <CollapsibleSection title={`Navigation Issues (${navIssues.length})`} defaultOpen={true}>
                 {navIssues.map((issue: any, i: number) => (
                   <div key={i} style={{
-                    background: "#0a0a0a", padding: 12, borderRadius: 6, marginBottom: 8,
-                    border: `1px solid ${severityColors[issue.severity] || "#222"}33`,
-                    borderLeft: `3px solid ${severityColors[issue.severity] || "#888"}`,
+                    background: T.cardAlt, padding: 12, borderRadius: 6, marginBottom: 8,
+                    border: `1px solid ${severityColors[issue.severity] || T.border}33`,
+                    borderLeft: `3px solid ${severityColors[issue.severity] || T.textSecondary}`,
                   }}>
                     <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
                       <span style={{
@@ -951,16 +952,16 @@ export default function RunDetail() {
                         {issue.severity}
                       </span>
                       <span style={{
-                        fontSize: 11, color: "#888", padding: "1px 6px", borderRadius: 3,
-                        background: "#1a1a1a", border: "1px solid #333",
+                        fontSize: 11, color: T.textSecondary, padding: "1px 6px", borderRadius: 3,
+                        background: T.card, border: `1px solid ${T.border}`,
                       }}>
                         {issueTypeLabels[issue.type] || issue.type}
                       </span>
-                      <span style={{ fontSize: 13, fontWeight: 500, color: "#e5e7eb" }}>
+                      <span style={{ fontSize: 13, fontWeight: 500, color: T.text }}>
                         {issue.nodeLabel}
                       </span>
                     </div>
-                    <div style={{ fontSize: 12, color: "#aaa", lineHeight: 1.5 }}>
+                    <div style={{ fontSize: 12, color: T.textSecondary, lineHeight: 1.5 }}>
                       {issue.detail}
                     </div>
                   </div>
@@ -980,8 +981,8 @@ export default function RunDetail() {
 
                   return (
                     <div key={i} style={{
-                      background: "#0a0a0a", borderRadius: 6, marginBottom: 8, overflow: "hidden",
-                      border: `1px solid ${hasIssues ? "#f59e0b33" : "#1a1a1a"}`,
+                      background: T.cardAlt, borderRadius: 6, marginBottom: 8, overflow: "hidden",
+                      border: `1px solid ${hasIssues ? "#f59e0b33" : T.border}`,
                     }}>
                       {/* Node header */}
                       <div style={{
@@ -997,7 +998,7 @@ export default function RunDetail() {
                           {nodeScore}
                         </div>
                         <div style={{ flex: 1 }}>
-                          <div style={{ fontSize: 13, fontWeight: 600, color: "#e5e7eb" }}>
+                          <div style={{ fontSize: 13, fontWeight: 600, color: T.text }}>
                             {node.nodeLabel}
                             <span style={{
                               fontSize: 10, marginLeft: 8, padding: "1px 6px", borderRadius: 3,
@@ -1020,7 +1021,7 @@ export default function RunDetail() {
                         {node.instructionAdherence && (
                           <div style={{ fontSize: 12 }}>
                             <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 4 }}>
-                              <span style={{ color: "#888" }}>Instructions ({node.instructionAdherence.score}/10):</span>
+                              <span style={{ color: T.textSecondary }}>Instructions ({node.instructionAdherence.score}/10):</span>
                               {node.instructionAdherence.followed?.length > 0 && (
                                 <span style={{ color: "#22c55e" }}>
                                   {node.instructionAdherence.followed.length} followed
@@ -1042,7 +1043,7 @@ export default function RunDetail() {
                               </div>
                             )}
                             {node.instructionAdherence.evidence && (
-                              <div style={{ color: "#666", fontSize: 11, marginTop: 2, fontStyle: "italic" }}>
+                              <div style={{ color: T.textMuted, fontSize: 11, marginTop: 2, fontStyle: "italic" }}>
                                 {node.instructionAdherence.evidence}
                               </div>
                             )}
@@ -1052,13 +1053,13 @@ export default function RunDetail() {
                         {/* Transition correctness */}
                         {node.transitionCorrectness && (
                           <div style={{ fontSize: 12 }}>
-                            <span style={{ color: "#888" }}>Transition: </span>
+                            <span style={{ color: T.textSecondary }}>Transition: </span>
                             <span style={{ color: node.transitionCorrectness.correct ? "#22c55e" : "#ef4444" }}>
                               {node.transitionCorrectness.correct ? "Correct" : "Incorrect"}
                             </span>
-                            <span style={{ color: "#555", marginLeft: 6 }}>({node.transitionCorrectness.score}/10)</span>
+                            <span style={{ color: T.textMuted, marginLeft: 6 }}>({node.transitionCorrectness.score}/10)</span>
                             {node.transitionCorrectness.reasoning && !node.transitionCorrectness.correct && (
-                              <div style={{ color: "#aaa", fontSize: 11, marginTop: 2, marginLeft: 12 }}>
+                              <div style={{ color: T.textSecondary, fontSize: 11, marginTop: 2, marginLeft: 12 }}>
                                 {node.transitionCorrectness.reasoning}
                               </div>
                             )}
@@ -1070,7 +1071,7 @@ export default function RunDetail() {
                           {node.hallucination?.detected && (
                             <span style={{
                               fontSize: 11, padding: "2px 8px", borderRadius: 4,
-                              background: "#ec489922", color: "#ec4899", border: "1px solid #ec489944",
+                              background: "#fdf2f8", color: "#ec4899", border: "1px solid #ec489944",
                             }}>
                               Hallucination detected
                             </span>
@@ -1078,7 +1079,7 @@ export default function RunDetail() {
                           {node.offTopic?.detected && (
                             <span style={{
                               fontSize: 11, padding: "2px 8px", borderRadius: 4,
-                              background: "#f59e0b22", color: "#f59e0b", border: "1px solid #f59e0b44",
+                              background: T.warningBg, color: "#f59e0b", border: "1px solid #f59e0b44",
                             }}>
                               Off-topic ({node.offTopic.turns?.length || 0} turns)
                             </span>
@@ -1086,7 +1087,7 @@ export default function RunDetail() {
                           {node.stuck?.detected && (
                             <span style={{
                               fontSize: 11, padding: "2px 8px", borderRadius: 4,
-                              background: "#ef444422", color: "#ef4444", border: "1px solid #ef444444",
+                              background: T.errorBg, color: "#ef4444", border: "1px solid #ef444444",
                             }}>
                               Stuck ({node.stuck.unnecessaryTurns} unnecessary turns)
                             </span>
@@ -1094,7 +1095,7 @@ export default function RunDetail() {
                           {!node.hallucination?.detected && !node.offTopic?.detected && !node.stuck?.detected && node.transitionCorrectness?.correct && (
                             <span style={{
                               fontSize: 11, padding: "2px 8px", borderRadius: 4,
-                              background: "#22c55e12", color: "#22c55e", border: "1px solid #22c55e33",
+                              background: T.successBg, color: "#22c55e", border: "1px solid #22c55e33",
                             }}>
                               Clean
                             </span>
@@ -1108,7 +1109,7 @@ export default function RunDetail() {
                           </div>
                         )}
                         {node.stuck?.detected && node.stuck.reasoning && (
-                          <div style={{ fontSize: 11, color: "#aaa", marginLeft: 12, lineHeight: 1.5 }}>
+                          <div style={{ fontSize: 11, color: T.textSecondary, marginLeft: 12, lineHeight: 1.5 }}>
                             {node.stuck.reasoning}
                           </div>
                         )}
@@ -1122,16 +1123,16 @@ export default function RunDetail() {
             {/* Improvements */}
             {improvements.length > 0 && (
               <div style={{ marginTop: 12 }}>
-                <div style={{ fontSize: 13, color: "#888", marginBottom: 8 }}>Recommendations</div>
+                <div style={{ fontSize: 13, color: T.textSecondary, marginBottom: 8 }}>Recommendations</div>
                 <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
                   {improvements.map((rec: string, i: number) => (
                     <div key={i} style={{
                       display: "flex", gap: 10, alignItems: "flex-start",
-                      fontSize: 13, padding: "8px 12px", background: "#0a0a0a",
-                      borderRadius: 6, border: "1px solid #1a1a1a",
+                      fontSize: 13, padding: "8px 12px", background: T.cardAlt,
+                      borderRadius: 6, border: `1px solid ${T.border}`,
                     }}>
-                      <span style={{ color: "#2563eb", fontWeight: 700, minWidth: 20 }}>#{i + 1}</span>
-                      <span style={{ color: "#ccc" }}>{rec}</span>
+                      <span style={{ color: T.primary, fontWeight: 700, minWidth: 20 }}>#{i + 1}</span>
+                      <span style={{ color: T.text }}>{rec}</span>
                     </div>
                   ))}
                 </div>
@@ -1156,11 +1157,11 @@ export default function RunDetail() {
         <div style={{ marginBottom: 32 }}>
           <h2 style={{ fontSize: 16, marginBottom: 12 }}>
             Transcript
-            <span style={{ fontSize: 12, color: "#888", marginLeft: 8 }}>
+            <span style={{ fontSize: 12, color: T.textSecondary, marginLeft: 8 }}>
               (click words to label)
             </span>
           </h2>
-          <div style={{ background: "#111", borderRadius: 8, padding: 16, border: "1px solid #222", maxHeight: 500, overflow: "auto" }}>
+          <div style={{ background: T.card, borderRadius: 8, padding: 16, border: `1px solid ${T.border}`, maxHeight: 500, overflow: "auto", boxShadow: T.shadow }}>
             {transcript.map((utt: any, ui: number) => {
               const isAgent = !!utt.Agent;
               const text = utt.Agent || utt.User || "";
@@ -1210,19 +1211,19 @@ export default function RunDetail() {
           {labelingWord && (
             <div
               onClick={() => setLabelingWord(null)}
-              style={{ position: "fixed", top: 0, left: 0, right: 0, bottom: 0, background: "rgba(0,0,0,0.5)", zIndex: 999 }}
+              style={{ position: "fixed", top: 0, left: 0, right: 0, bottom: 0, background: "rgba(0,0,0,0.3)", zIndex: 999 }}
             />
           )}
           {labelingWord && (
             <div style={{
               position: "fixed", top: "50%", left: "50%", transform: "translate(-50%, -50%)",
-              background: "#1a1a1a", border: "1px solid #333", borderRadius: 8, padding: 20,
-              zIndex: 1001, minWidth: 280,
+              background: T.card, border: `1px solid ${T.border}`, borderRadius: 8, padding: 20,
+              zIndex: 1001, minWidth: 280, boxShadow: T.shadowLg,
             }}>
               <div style={{ fontSize: 14, marginBottom: 4 }}>
-                Label word: <strong style={{ color: "#fff" }}>{labelingWord.word}</strong>
+                Label word: <strong style={{ color: T.text }}>{labelingWord.word}</strong>
               </div>
-              <div style={{ fontSize: 11, color: "#888", marginBottom: 12 }}>
+              <div style={{ fontSize: 11, color: T.textSecondary, marginBottom: 12 }}>
                 Speaker: <span style={{ color: labelingWord.speaker === "Agent" ? "#3b82f6" : "#22c55e" }}>{labelingWord.speaker}</span>
               </div>
               <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
@@ -1254,14 +1255,14 @@ export default function RunDetail() {
                       const existing = wordLabels.find((l: any) => l.wordIndex === labelingWord.wordIndex);
                       if (existing) handleRemoveLabel(existing.id);
                     }}
-                    style={{ background: "none", color: "#666", border: "1px solid #333", padding: "6px 12px", borderRadius: 4, cursor: "pointer", fontSize: 13 }}
+                    style={{ background: "none", color: T.textMuted, border: `1px solid ${T.border}`, padding: "6px 12px", borderRadius: 4, cursor: "pointer", fontSize: 13 }}
                   >
                     Remove Label
                   </button>
                 )}
                 <button
                   onClick={() => setLabelingWord(null)}
-                  style={{ background: "none", color: "#888", border: "none", cursor: "pointer", fontSize: 12, marginTop: 4 }}
+                  style={{ background: "none", color: T.textSecondary, border: "none", cursor: "pointer", fontSize: 12, marginTop: 4 }}
                 >
                   Cancel
                 </button>
@@ -1270,8 +1271,8 @@ export default function RunDetail() {
           )}
           {/* Word accuracy stats */}
           {wordLabels.length > 0 && (
-            <div style={{ marginTop: 16, padding: 12, background: "#111", borderRadius: 6, border: "1px solid #222" }}>
-              <span style={{ fontSize: 13, color: "#888" }}>
+            <div style={{ marginTop: 16, padding: 12, background: T.card, borderRadius: 6, border: `1px solid ${T.border}` }}>
+              <span style={{ fontSize: 13, color: T.textSecondary }}>
                 Labels: {wordLabels.length} / {flatWords.length} words |{" "}
                 {LABEL_TYPES.map((t) => {
                   const count = wordLabels.filter((l: any) => l.labelType === t).length;
@@ -1356,14 +1357,14 @@ function CriterionCard({ er }: { er: any }) {
     return er.detail.length > 160; // only expandable if content was truncated
   })();
 
-  const scoreColor = score == null ? "#555" : score >= 0.8 ? "#22c55e" : score >= 0.5 ? "#f59e0b" : "#ef4444";
-  const passColor = passed == null ? "#555" : passed ? "#22c55e" : "#ef4444";
+  const scoreColor = score == null ? T.textMuted : score >= 0.8 ? "#22c55e" : score >= 0.5 ? "#f59e0b" : "#ef4444";
+  const passColor = passed == null ? T.textMuted : passed ? "#22c55e" : "#ef4444";
   const typeColor = CRITERION_TYPE_COLORS[type] || "#888";
 
   return (
     <div style={{
-      background: "#111", borderRadius: 8, border: "1px solid #222",
-      overflow: "hidden",
+      background: T.card, borderRadius: 8, border: `1px solid ${T.border}`,
+      overflow: "hidden", boxShadow: T.shadow,
     }}>
       {/* Header row */}
       <div
@@ -1381,7 +1382,7 @@ function CriterionCard({ er }: { er: any }) {
         }} />
 
         {/* Label */}
-        <div style={{ flex: 1, fontSize: 13, fontWeight: 500, color: "#e5e7eb" }}>
+        <div style={{ flex: 1, fontSize: 13, fontWeight: 500, color: T.text }}>
           {label}
         </div>
 
@@ -1401,13 +1402,13 @@ function CriterionCard({ er }: { er: any }) {
 
         {/* Expand arrow — only shown when there's more to reveal */}
         {hasExpandableContent && (
-          <span style={{ color: "#444", fontSize: 10, flexShrink: 0 }}>{expanded ? "▲" : "▼"}</span>
+          <span style={{ color: T.textFaint, fontSize: 10, flexShrink: 0 }}>{expanded ? "▲" : "▼"}</span>
         )}
       </div>
 
       {/* Summary line (always visible) */}
       {summary && (
-        <div style={{ padding: "0 14px 10px 36px", fontSize: 12, color: "#888", lineHeight: 1.5 }}>
+        <div style={{ padding: "0 14px 10px 36px", fontSize: 12, color: T.textSecondary, lineHeight: 1.5 }}>
           {expanded ? er.detail : summary}
         </div>
       )}
@@ -1569,13 +1570,13 @@ function FlowProgressionView({
       >
         <span
           onClick={() => setFlowExpanded(!flowExpanded)}
-          style={{ color: "#888", fontSize: 12, transition: "transform 0.15s", transform: flowExpanded ? "rotate(90deg)" : "rotate(0deg)", cursor: "pointer" }}
+          style={{ color: T.textSecondary, fontSize: 12, transition: "transform 0.15s", transform: flowExpanded ? "rotate(90deg)" : "rotate(0deg)", cursor: "pointer" }}
         >&#9654;</span>
         <h2 onClick={() => setFlowExpanded(!flowExpanded)} style={{ fontSize: 16, margin: 0, cursor: "pointer" }}>Flow Progression</h2>
         {evalResult && (
           <span style={{
             fontSize: 11, padding: "2px 8px", borderRadius: 10,
-            background: evalResult.passed ? "#14532d22" : "#7f1d1d22",
+            background: evalResult.passed ? T.successBg : T.errorBg,
             color: evalResult.passed ? "#22c55e" : "#ef4444",
           }}>
             {evalResult.passed ? "PASS" : "FAIL"} {evalResult.score != null ? `${(evalResult.score * 100).toFixed(0)}%` : ""}
@@ -1587,18 +1588,18 @@ function FlowProgressionView({
               onClick={() => setViewMode("graph")}
               style={{
                 fontSize: 11, padding: "3px 10px", borderRadius: 4, cursor: "pointer",
-                background: viewMode === "graph" ? "#222" : "transparent",
-                color: viewMode === "graph" ? "#fff" : "#555",
-                border: `1px solid ${viewMode === "graph" ? "#444" : "#222"}`,
+                background: viewMode === "graph" ? T.cardAlt : "transparent",
+                color: viewMode === "graph" ? T.text : T.textMuted,
+                border: `1px solid ${viewMode === "graph" ? T.borderDark : T.border}`,
               }}
             >Graph</button>
             <button
               onClick={() => setViewMode("list")}
               style={{
                 fontSize: 11, padding: "3px 10px", borderRadius: 4, cursor: "pointer",
-                background: viewMode === "list" ? "#222" : "transparent",
-                color: viewMode === "list" ? "#fff" : "#555",
-                border: `1px solid ${viewMode === "list" ? "#444" : "#222"}`,
+                background: viewMode === "list" ? T.cardAlt : "transparent",
+                color: viewMode === "list" ? T.text : T.textMuted,
+                border: `1px solid ${viewMode === "list" ? T.borderDark : T.border}`,
               }}
             >List</button>
           </div>
@@ -1616,10 +1617,10 @@ function FlowProgressionView({
         } catch {}
         return (
           <div style={{
-            background: evalResult.passed ? "#22c55e11" : "#ef444411",
+            background: evalResult.passed ? T.successBg : T.errorBg,
             border: `1px solid ${evalResult.passed ? "#22c55e33" : "#ef444433"}`,
             borderRadius: 8, padding: 14, marginBottom: 16, fontSize: 13, lineHeight: 1.6,
-            color: "#ccc",
+            color: T.text,
           }}>
             {narrative}
           </div>
@@ -1628,7 +1629,7 @@ function FlowProgressionView({
 
       {/* Graph View — React Flow Canvas */}
       {viewMode === "graph" && (
-        <Suspense fallback={<div style={{ height: 500, background: "#0a0a0a", borderRadius: 8, display: "flex", alignItems: "center", justifyContent: "center", color: "#555" }}>Loading flow diagram...</div>}>
+        <Suspense fallback={<div style={{ height: 500, background: T.cardAlt, borderRadius: 8, display: "flex", alignItems: "center", justifyContent: "center", color: T.textMuted }}>Loading flow diagram...</div>}>
           <WorkflowCanvas
             workflowNodes={workflowNodes}
             workflowEdges={workflowEdges}
@@ -1642,7 +1643,7 @@ function FlowProgressionView({
 
       {/* List View — original vertical list */}
       {viewMode === "list" && (
-      <div style={{ background: "#111", borderRadius: 8, padding: 16, border: "1px solid #222" }}>
+      <div style={{ background: T.card, borderRadius: 8, padding: 16, border: `1px solid ${T.border}`, boxShadow: T.shadow }}>
         <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
           {orderedNodes.map((node: any, idx: number) => {
             const wasVisited = visitedNodeIds.has(node.id);
@@ -1657,8 +1658,8 @@ function FlowProgressionView({
               <div key={node.id}>
                 <div style={{
                   display: "flex", alignItems: "center", gap: 12, padding: "10px 14px",
-                  background: isStuckHere ? "#ef444418" : wasVisited ? "#22c55e0a" : "#0a0a0a",
-                  border: `1px solid ${isStuckHere ? "#ef444444" : wasVisited ? "#22c55e33" : "#1a1a1a"}`,
+                  background: isStuckHere ? T.errorBg : wasVisited ? T.successBg : T.cardAlt,
+                  border: `1px solid ${isStuckHere ? "#ef444444" : wasVisited ? "#22c55e33" : T.border}`,
                   borderRadius: 6, opacity: isPastReach ? 0.4 : 1,
                 }}>
                   {/* Status indicator */}
@@ -1668,10 +1669,10 @@ function FlowProgressionView({
                     fontSize: 12,
                     background: wasVisited
                       ? (isStuckHere ? "#ef444433" : "#22c55e33")
-                      : "#222",
+                      : T.border,
                     color: wasVisited
                       ? (isStuckHere ? "#ef4444" : "#22c55e")
-                      : "#555",
+                      : T.textMuted,
                   }}>
                     {wasVisited ? (isStuckHere ? "!" : "\u2713") : idx + 1}
                   </div>
@@ -1689,7 +1690,7 @@ function FlowProgressionView({
                       {isStuckHere && (
                         <span style={{
                           fontSize: 10, padding: "1px 6px", borderRadius: 3,
-                          background: "#ef444422", color: "#ef4444", border: "1px solid #ef444444",
+                          background: T.errorBg, color: "#ef4444", border: "1px solid #ef444444",
                         }}>
                           STUCK HERE
                         </span>
@@ -1719,7 +1720,7 @@ function FlowProgressionView({
 
                     {/* Transitions */}
                     {node.transitions?.length > 0 && (
-                      <div style={{ fontSize: 10, color: "#666", marginTop: 2 }}>
+                      <div style={{ fontSize: 10, color: T.textMuted, marginTop: 2 }}>
                         Transitions: {node.transitions.map((t: any) => t.condition?.description || t.condition?.prompt).join(" | ")}
                       </div>
                     )}
@@ -1731,7 +1732,7 @@ function FlowProgressionView({
                   <div style={{ display: "flex", justifyContent: "flex-start", paddingLeft: 22 }}>
                     <div style={{
                       width: 2, height: 12,
-                      background: wasVisited && !isStuckHere ? "#22c55e44" : "#222",
+                      background: wasVisited && !isStuckHere ? "#22c55e44" : T.border,
                     }} />
                   </div>
                 )}
@@ -1744,13 +1745,13 @@ function FlowProgressionView({
 
       {/* Summary bar */}
       <div style={{
-        marginTop: 12, padding: "8px 12px", background: "#0a0a0a",
-        borderRadius: 6, fontSize: 12, color: "#888",
+        marginTop: 12, padding: "8px 12px", background: T.cardAlt,
+        borderRadius: 6, fontSize: 12, color: T.textSecondary,
         display: "flex", gap: 16, flexWrap: "wrap",
       }}>
-        <span>Nodes reached: <strong style={{ color: "#fff" }}>{visitedNodeIds.size}/{orderedNodes.length}</strong></span>
-        <span>Variables: <strong style={{ color: "#fff" }}>{extractedVars.length}</strong></span>
-        <span>Tools: <strong style={{ color: "#fff" }}>{toolCalls.length}</strong></span>
+        <span>Nodes reached: <strong style={{ color: T.text }}>{visitedNodeIds.size}/{orderedNodes.length}</strong></span>
+        <span>Variables: <strong style={{ color: T.text }}>{extractedVars.length}</strong></span>
+        <span>Tools: <strong style={{ color: T.text }}>{toolCalls.length}</strong></span>
         {lastReachedIdx >= 0 && lastReachedIdx < orderedNodes.length - 1 && (
           <span style={{ color: "#ef4444" }}>
             Stopped at node {lastReachedIdx + 1}/{orderedNodes.length}
@@ -1775,14 +1776,14 @@ function MetricRow({ label, total, errors, pct, color, comment }: {
         onClick={() => setExpanded(!expanded)}
         style={{
           display: "flex", alignItems: "center", gap: 12, padding: "10px 14px",
-          background: "#111", borderRadius: 6, border: "1px solid #222", cursor: "pointer",
+          background: T.card, borderRadius: 6, border: `1px solid ${T.border}`, cursor: "pointer",
         }}
       >
         {/* Label */}
         <div style={{ width: 140, fontSize: 13, fontWeight: 500 }}>{label}</div>
 
         {/* Bar */}
-        <div style={{ flex: 1, height: 8, background: "#222", borderRadius: 4, overflow: "hidden" }}>
+        <div style={{ flex: 1, height: 8, background: "#e5e7eb", borderRadius: 4, overflow: "hidden" }}>
           {pct != null && (
             <div style={{ width: `${pct}%`, height: "100%", background: color, borderRadius: 4, transition: "width 0.3s" }} />
           )}
@@ -1795,20 +1796,20 @@ function MetricRow({ label, total, errors, pct, color, comment }: {
 
         {/* Error badge */}
         {errors > 0 && (
-          <div style={{ fontSize: 11, padding: "2px 6px", borderRadius: 3, background: "#ef444422", color: "#ef4444", border: "1px solid #ef444433" }}>
+          <div style={{ fontSize: 11, padding: "2px 6px", borderRadius: 3, background: T.errorBg, color: "#ef4444", border: `1px solid ${T.border}` }}>
             {errors} error{errors > 1 ? "s" : ""}
           </div>
         )}
 
         {/* Expand arrow */}
-        <span style={{ color: "#555", fontSize: 10 }}>{expanded ? "\u25B2" : "\u25BC"}</span>
+        <span style={{ color: T.textMuted, fontSize: 10 }}>{expanded ? "\u25B2" : "\u25BC"}</span>
       </div>
 
       {/* Expanded details */}
       {expanded && (
-        <div style={{ padding: "8px 14px 8px 26px", fontSize: 12, color: "#888", background: "#0a0a0a", borderRadius: "0 0 6px 6px", borderTop: "none" }}>
+        <div style={{ padding: "8px 14px 8px 26px", fontSize: 12, color: T.textSecondary, background: T.cardAlt, borderRadius: "0 0 6px 6px", borderTop: "none" }}>
           <span>Total: {total} | Errors: {errors} | Success: {total - errors}</span>
-          {comment && <div style={{ marginTop: 4, color: "#aaa", fontStyle: "italic" }}>{comment}</div>}
+          {comment && <div style={{ marginTop: 4, color: T.textSecondary, fontStyle: "italic" }}>{comment}</div>}
         </div>
       )}
     </div>
@@ -1825,13 +1826,13 @@ function CollapsibleSection({ title, children, defaultOpen = false }: { title: s
       <button
         onClick={() => setOpen(!open)}
         style={{
-          background: "#1a1a1a", border: "1px solid #333", borderRadius: 6,
-          padding: "8px 14px", color: "#ccc", cursor: "pointer", fontSize: 13,
+          background: T.cardAlt, border: `1px solid ${T.border}`, borderRadius: 6,
+          padding: "8px 14px", color: T.text, cursor: "pointer", fontSize: 13,
           width: "100%", textAlign: "left", display: "flex", justifyContent: "space-between",
         }}
       >
         <span>{title}</span>
-        <span style={{ color: "#555" }}>{open ? "\u25B2" : "\u25BC"}</span>
+        <span style={{ color: T.textMuted }}>{open ? "\u25B2" : "\u25BC"}</span>
       </button>
       {open && (
         <div style={{ padding: "12px 0" }}>
@@ -1872,57 +1873,57 @@ function CallLogViewer({ callLog }: { callLog: any[] }) {
       <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 12 }}>
         <button onClick={() => setFilter(null)} style={{
           padding: "4px 10px", borderRadius: 4, fontSize: 11, cursor: "pointer",
-          border: `1px solid ${!filter ? "#fff" : "#333"}`,
-          background: !filter ? "#222" : "#111", color: !filter ? "#fff" : "#888",
+          border: `1px solid ${!filter ? T.borderDark : T.border}`,
+          background: !filter ? T.cardAlt : T.card, color: !filter ? T.text : T.textSecondary,
         }}>
           All ({callLog.length})
         </button>
         {Object.entries(categoryCounts).sort((a, b) => b[1].total - a[1].total).map(([cat, counts]) => (
           <button key={cat} onClick={() => setFilter(filter === cat ? null : cat)} style={{
             padding: "4px 10px", borderRadius: 4, fontSize: 11, cursor: "pointer",
-            border: `1px solid ${filter === cat ? (CATEGORY_COLORS[cat] || "#888") : "#333"}`,
-            background: filter === cat ? `${CATEGORY_COLORS[cat] || "#888"}22` : "#111",
+            border: `1px solid ${filter === cat ? (CATEGORY_COLORS[cat] || T.textSecondary) : T.border}`,
+            background: filter === cat ? `${CATEGORY_COLORS[cat] || T.textSecondary}22` : T.card,
             color: CATEGORY_COLORS[cat] || "#888",
           }}>
             {cat} ({counts.total})
           </button>
         ))}
-        <label style={{ fontSize: 11, color: "#666", display: "flex", alignItems: "center", gap: 4, marginLeft: 8 }}>
+        <label style={{ fontSize: 11, color: T.textMuted, display: "flex", alignItems: "center", gap: 4, marginLeft: 8 }}>
           <input type="checkbox" checked={showDebug} onChange={(e) => setShowDebug(e.target.checked)} />
           Show DEBUG
         </label>
       </div>
 
-      <div style={{ background: "#111", borderRadius: 8, padding: 16, border: "1px solid #222", maxHeight: 500, overflow: "auto" }}>
+      <div style={{ background: T.card, borderRadius: 8, padding: 16, border: `1px solid ${T.border}`, maxHeight: 500, overflow: "auto", boxShadow: T.shadow }}>
         {filtered.map((event: any, i: number) => (
           <div key={i} style={{
             display: "flex", gap: 8, marginBottom: 4, fontSize: 11, lineHeight: 1.6,
             opacity: event.type === "DEBUG" ? 0.6 : 1, padding: "2px 0",
-            borderBottom: event.category === "node_movement" ? "1px solid #222" : "none",
+            borderBottom: event.category === "node_movement" ? `1px solid ${T.border}` : "none",
           }}>
-            <span style={{ color: "#555", fontFamily: "monospace", whiteSpace: "nowrap", width: 85, flexShrink: 0 }}>
+            <span style={{ color: T.textMuted, fontFamily: "monospace", whiteSpace: "nowrap", width: 85, flexShrink: 0 }}>
               {event.timestamp?.split("T")[1]?.slice(0, 12)}
             </span>
-            <span style={{ color: event.type === "DEBUG" ? "#555" : "#888", width: 40, flexShrink: 0, fontSize: 10 }}>
+            <span style={{ color: event.type === "DEBUG" ? T.textMuted : T.textSecondary, width: 40, flexShrink: 0, fontSize: 10 }}>
               {event.type}
             </span>
             <span style={{ color: CATEGORY_COLORS[event.category] || "#888", width: 130, flexShrink: 0 }}>
               {event.category}
             </span>
-            <span style={{ color: "#ccc", flex: 1 }}>
+            <span style={{ color: T.text, flex: 1 }}>
               {event.message}
               {event.payload?.variable && <span style={{ color: "#a855f7" }}> {event.payload.variable}={event.payload.new_value || event.payload.value}</span>}
               {event.payload?.toolName && <span style={{ color: "#f59e0b" }}> [{event.payload.toolName}]</span>}
-              {event.payload?.total_nodes && <span style={{ color: "#666" }}> ({event.payload.total_nodes} nodes)</span>}
+              {event.payload?.total_nodes && <span style={{ color: T.textMuted }}> ({event.payload.total_nodes} nodes)</span>}
               {event.payload?.action && <span style={{ color: "#3b82f6" }}> ({event.payload.action})</span>}
               {event.payload?.success === false && <span style={{ color: "#ef4444" }}> FAILED</span>}
-              {event.payload?.tools && <span style={{ color: "#666" }}> [{event.payload.tools.join(", ")}]</span>}
+              {event.payload?.tools && <span style={{ color: T.textMuted }}> [{event.payload.tools.join(", ")}]</span>}
               {event.payload?.next_node && <span style={{ color: "#3b82f6" }}> → {event.payload.next_node}</span>}
             </span>
-            {event.node_id && <span style={{ color: "#444", fontFamily: "monospace", fontSize: 10, flexShrink: 0 }}>{event.node_id.slice(0, 8)}</span>}
+            {event.node_id && <span style={{ color: T.textFaint, fontFamily: "monospace", fontSize: 10, flexShrink: 0 }}>{event.node_id.slice(0, 8)}</span>}
           </div>
         ))}
-        {filtered.length === 0 && <div style={{ color: "#555", fontSize: 12, padding: 8 }}>No events match the current filter.</div>}
+        {filtered.length === 0 && <div style={{ color: T.textMuted, fontSize: 12, padding: 8 }}>No events match the current filter.</div>}
       </div>
     </div>
   );

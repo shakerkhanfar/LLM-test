@@ -1,5 +1,6 @@
 import { lazy, Suspense, useState } from "react";
 import { REAL_WORKFLOW_NODES, REAL_WORKFLOW_EDGES } from "./previewData";
+import T from "../theme";
 
 const WorkflowCanvas = lazy(() => import("../components/WorkflowCanvas"));
 
@@ -153,13 +154,13 @@ function CollapsibleSection({ title, children, defaultOpen = false }: { title: s
       <button
         onClick={() => setOpen(!open)}
         style={{
-          background: "#1a1a1a", border: "1px solid #333", borderRadius: 6,
-          padding: "8px 14px", color: "#ccc", cursor: "pointer", fontSize: 13,
+          background: T.card, border: `1px solid ${T.border}`, borderRadius: 6,
+          padding: "8px 14px", color: T.text, cursor: "pointer", fontSize: 13,
           width: "100%", textAlign: "left", display: "flex", justifyContent: "space-between",
         }}
       >
         <span>{title}</span>
-        <span style={{ color: "#555" }}>{open ? "\u25B2" : "\u25BC"}</span>
+        <span style={{ color: T.textMuted }}>{open ? "\u25B2" : "\u25BC"}</span>
       </button>
       {open && <div style={{ padding: "12px 0" }}>{children}</div>}
     </div>
@@ -187,14 +188,14 @@ export default function Preview() {
   const layer3Avg = meta.layer3Avg;
   const layer4Score = meta.layer4Score;
 
-  const severityColors: Record<string, string> = { critical: "#ef4444", warning: "#f59e0b", info: "#888" };
+  const severityColors: Record<string, string> = { critical: "#ef4444", warning: "#f59e0b", info: T.textSecondary };
   const issueTypeLabels: Record<string, string> = {
     stuck: "Stuck", loop: "Loop", wrong_transition: "Wrong Transition",
     skipped_node: "Skipped Node", backward_jump: "Backward Jump", dead_end: "Dead End",
   };
 
   return (
-    <div style={{ maxWidth: 900, margin: "0 auto", padding: "32px 20px", color: "#e5e7eb" }}>
+    <div style={{ maxWidth: 900, margin: "0 auto", padding: "32px 20px", color: T.text }}>
       <h1 style={{ marginBottom: 24 }}>UI Preview — Layered Evaluation + Flow Graph</h1>
 
       {/* ═══ SECTION 1: Layered Node Evaluation ═══ */}
@@ -203,9 +204,9 @@ export default function Preview() {
 
         {/* Summary narrative */}
         <div style={{
-          background: "#ef44440a",
+          background: T.errorBg,
           border: "1px solid #ef444433",
-          borderRadius: 8, padding: 14, marginBottom: 16, fontSize: 13, lineHeight: 1.6, color: "#ccc",
+          borderRadius: 8, padding: 14, marginBottom: 16, fontSize: 13, lineHeight: 1.6, color: T.text,
         }}>
           {parsed.summary}
         </div>
@@ -218,17 +219,17 @@ export default function Preview() {
             { label: "Overall Quality (Layer 4)", score: layer4Score, weight: "20%" },
           ].map((layer) => {
             const pct = layer.score != null ? Math.round((layer.score / 10) * 100) : null;
-            const color = pct == null ? "#555" : pct >= 80 ? "#22c55e" : pct >= 50 ? "#f59e0b" : "#ef4444";
+            const color = pct == null ? T.textMuted : pct >= 80 ? "#22c55e" : pct >= 50 ? "#f59e0b" : "#ef4444";
             return (
               <div key={layer.label} style={{
                 display: "flex", alignItems: "center", gap: 12, padding: "10px 14px",
-                background: "#111", borderRadius: 6, border: "1px solid #222",
+                background: T.card, borderRadius: 6, border: `1px solid ${T.border}`,
               }}>
                 <div style={{ width: 200, fontSize: 13, fontWeight: 500 }}>
                   {layer.label}
-                  <span style={{ fontSize: 10, color: "#555", marginLeft: 6 }}>{layer.weight}</span>
+                  <span style={{ fontSize: 10, color: T.textMuted, marginLeft: 6 }}>{layer.weight}</span>
                 </div>
-                <div style={{ flex: 1, height: 8, background: "#222", borderRadius: 4, overflow: "hidden" }}>
+                <div style={{ flex: 1, height: 8, background: T.border, borderRadius: 4, overflow: "hidden" }}>
                   {pct != null && (
                     <div style={{ width: `${pct}%`, height: "100%", background: color, borderRadius: 4, transition: "width 0.3s" }} />
                   )}
@@ -244,31 +245,31 @@ export default function Preview() {
         {/* Quick stats */}
         <div style={{ display: "flex", gap: 12, marginBottom: 16, flexWrap: "wrap" }}>
           <div style={{
-            background: "#ef444412",
+            background: T.errorBg,
             padding: "8px 14px", borderRadius: 6,
             border: "1px solid #ef444433", fontSize: 13,
           }}>
-            <span style={{ color: "#888" }}>Objective: </span>
+            <span style={{ color: T.textSecondary }}>Objective: </span>
             <strong style={{ color: "#ef4444" }}>Not Achieved</strong>
           </div>
-          <div style={{ background: "#1a1a1a", padding: "8px 14px", borderRadius: 6, border: "1px solid #222", fontSize: 13 }}>
-            <span style={{ color: "#888" }}>Sentiment: </span>
-            <strong style={{ color: "#e5e7eb" }}>{parsed.callerSentiment}</strong>
+          <div style={{ background: T.card, padding: "8px 14px", borderRadius: 6, border: `1px solid ${T.border}`, fontSize: 13 }}>
+            <span style={{ color: T.textSecondary }}>Sentiment: </span>
+            <strong style={{ color: T.text }}>{parsed.callerSentiment}</strong>
           </div>
-          <div style={{ background: "#1a1a1a", padding: "8px 14px", borderRadius: 6, border: "1px solid #222", fontSize: 13 }}>
-            <span style={{ color: "#888" }}>Efficiency: </span>
+          <div style={{ background: T.card, padding: "8px 14px", borderRadius: 6, border: `1px solid ${T.border}`, fontSize: 13 }}>
+            <span style={{ color: T.textSecondary }}>Efficiency: </span>
             <strong style={{ color: "#ef4444" }}>{parsed.efficiency.score}/10</strong>
           </div>
-          <div style={{ background: "#1a1a1a", padding: "8px 14px", borderRadius: 6, border: "1px solid #222", fontSize: 13 }}>
-            <span style={{ color: "#888" }}>Nodes Evaluated: </span>
+          <div style={{ background: T.card, padding: "8px 14px", borderRadius: 6, border: `1px solid ${T.border}`, fontSize: 13 }}>
+            <span style={{ color: T.textSecondary }}>Nodes Evaluated: </span>
             <strong>{meta.nodesEvaluated}</strong>
           </div>
         </div>
 
         {/* Efficiency reasoning */}
         <div style={{
-          padding: "10px 14px", background: "#0a0a0a", borderRadius: 6,
-          border: "1px solid #1a1a1a", fontSize: 12, color: "#aaa", marginBottom: 16, lineHeight: 1.5,
+          padding: "10px 14px", background: T.cardAlt, borderRadius: 6,
+          border: `1px solid ${T.border}`, fontSize: 12, color: T.textSecondary, marginBottom: 16, lineHeight: 1.5,
         }}>
           {parsed.efficiency.reasoning}
         </div>
@@ -279,9 +280,9 @@ export default function Preview() {
           <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
             {criticalIssues.map((issue, i) => (
               <div key={i} style={{
-                padding: "8px 12px", background: "#ef44440a", borderRadius: 6,
-                border: "1px solid #ef444422", borderLeft: "3px solid #ef4444",
-                fontSize: 13, color: "#ccc", lineHeight: 1.5,
+                padding: "8px 12px", background: T.errorBg, borderRadius: 6,
+                border: `1px solid ${T.errorBg}`, borderLeft: "3px solid #ef4444",
+                fontSize: 13, color: T.text, lineHeight: 1.5,
               }}>
                 {issue}
               </div>
@@ -293,30 +294,30 @@ export default function Preview() {
         <CollapsibleSection title={`Navigation Issues (${navIssues.length})`} defaultOpen={true}>
           {navIssues.map((issue: any, i: number) => (
             <div key={i} style={{
-              background: "#0a0a0a", padding: 12, borderRadius: 6, marginBottom: 8,
-              border: `1px solid ${severityColors[issue.severity] || "#222"}33`,
-              borderLeft: `3px solid ${severityColors[issue.severity] || "#888"}`,
+              background: T.cardAlt, padding: 12, borderRadius: 6, marginBottom: 8,
+              border: `1px solid ${severityColors[issue.severity] || T.border}33`,
+              borderLeft: `3px solid ${severityColors[issue.severity] || T.textSecondary}`,
             }}>
               <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
                 <span style={{
                   fontSize: 10, textTransform: "uppercase", fontWeight: 600,
                   color: severityColors[issue.severity],
                   padding: "1px 6px", borderRadius: 3,
-                  background: `${severityColors[issue.severity]}18`,
+                  background: `${severityColors[issue.severity]}15`,
                 }}>
                   {issue.severity}
                 </span>
                 <span style={{
-                  fontSize: 11, color: "#888", padding: "1px 6px", borderRadius: 3,
-                  background: "#1a1a1a", border: "1px solid #333",
+                  fontSize: 11, color: T.textSecondary, padding: "1px 6px", borderRadius: 3,
+                  background: T.card, border: `1px solid ${T.border}`,
                 }}>
                   {issueTypeLabels[issue.type] || issue.type}
                 </span>
-                <span style={{ fontSize: 13, fontWeight: 500, color: "#e5e7eb" }}>
+                <span style={{ fontSize: 13, fontWeight: 500, color: T.text }}>
                   {issue.nodeLabel}
                 </span>
               </div>
-              <div style={{ fontSize: 12, color: "#aaa", lineHeight: 1.5 }}>
+              <div style={{ fontSize: 12, color: T.textSecondary, lineHeight: 1.5 }}>
                 {issue.detail}
               </div>
             </div>
@@ -334,8 +335,8 @@ export default function Preview() {
 
             return (
               <div key={i} style={{
-                background: "#0a0a0a", borderRadius: 6, marginBottom: 8, overflow: "hidden",
-                border: `1px solid ${hasIssues ? "#f59e0b33" : "#1a1a1a"}`,
+                background: T.cardAlt, borderRadius: 6, marginBottom: 8, overflow: "hidden",
+                border: `1px solid ${hasIssues ? "#f59e0b33" : T.border}`,
               }}>
                 {/* Node header */}
                 <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "10px 14px" }}>
@@ -349,13 +350,13 @@ export default function Preview() {
                     {nodeScore}
                   </div>
                   <div style={{ flex: 1 }}>
-                    <div style={{ fontSize: 13, fontWeight: 600, color: "#e5e7eb" }}>
+                    <div style={{ fontSize: 13, fontWeight: 600, color: T.text }}>
                       {node.nodeLabel}
                       <span style={{
                         fontSize: 10, marginLeft: 8, padding: "1px 6px", borderRadius: 3,
-                        background: `${NODE_TYPE_COLORS[node.nodeType] || "#888"}22`,
-                        color: NODE_TYPE_COLORS[node.nodeType] || "#888",
-                        border: `1px solid ${NODE_TYPE_COLORS[node.nodeType] || "#888"}44`,
+                        background: `${NODE_TYPE_COLORS[node.nodeType] || T.textSecondary}22`,
+                        color: NODE_TYPE_COLORS[node.nodeType] || T.textSecondary,
+                        border: `1px solid ${NODE_TYPE_COLORS[node.nodeType] || T.textSecondary}44`,
                       }}>
                         {node.nodeType}
                       </span>
@@ -372,7 +373,7 @@ export default function Preview() {
                   {node.instructionAdherence && (
                     <div style={{ fontSize: 12 }}>
                       <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 4 }}>
-                        <span style={{ color: "#888" }}>Instructions ({node.instructionAdherence.score}/10):</span>
+                        <span style={{ color: T.textSecondary }}>Instructions ({node.instructionAdherence.score}/10):</span>
                         {node.instructionAdherence.followed?.length > 0 && (
                           <span style={{ color: "#22c55e" }}>{node.instructionAdherence.followed.length} followed</span>
                         )}
@@ -388,7 +389,7 @@ export default function Preview() {
                         </div>
                       )}
                       {node.instructionAdherence.evidence && (
-                        <div style={{ color: "#666", fontSize: 11, marginTop: 2, fontStyle: "italic" }}>{node.instructionAdherence.evidence}</div>
+                        <div style={{ color: T.textMuted, fontSize: 11, marginTop: 2, fontStyle: "italic" }}>{node.instructionAdherence.evidence}</div>
                       )}
                     </div>
                   )}
@@ -396,13 +397,13 @@ export default function Preview() {
                   {/* Transition correctness */}
                   {node.transitionCorrectness && (
                     <div style={{ fontSize: 12 }}>
-                      <span style={{ color: "#888" }}>Transition: </span>
+                      <span style={{ color: T.textSecondary }}>Transition: </span>
                       <span style={{ color: node.transitionCorrectness.correct ? "#22c55e" : "#ef4444" }}>
                         {node.transitionCorrectness.correct ? "Correct" : "Incorrect"}
                       </span>
-                      <span style={{ color: "#555", marginLeft: 6 }}>({node.transitionCorrectness.score}/10)</span>
+                      <span style={{ color: T.textMuted, marginLeft: 6 }}>({node.transitionCorrectness.score}/10)</span>
                       {node.transitionCorrectness.reasoning && !node.transitionCorrectness.correct && (
-                        <div style={{ color: "#aaa", fontSize: 11, marginTop: 2, marginLeft: 12 }}>{node.transitionCorrectness.reasoning}</div>
+                        <div style={{ color: T.textSecondary, fontSize: 11, marginTop: 2, marginLeft: 12 }}>{node.transitionCorrectness.reasoning}</div>
                       )}
                     </div>
                   )}
@@ -410,22 +411,22 @@ export default function Preview() {
                   {/* Detection flags */}
                   <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
                     {node.hallucination?.detected && (
-                      <span style={{ fontSize: 11, padding: "2px 8px", borderRadius: 4, background: "#ec489922", color: "#ec4899", border: "1px solid #ec489944" }}>
+                      <span style={{ fontSize: 11, padding: "2px 8px", borderRadius: 4, background: "#fdf2f8", color: "#ec4899", border: "1px solid #ec489944" }}>
                         Hallucination detected
                       </span>
                     )}
                     {node.offTopic?.detected && (
-                      <span style={{ fontSize: 11, padding: "2px 8px", borderRadius: 4, background: "#f59e0b22", color: "#f59e0b", border: "1px solid #f59e0b44" }}>
+                      <span style={{ fontSize: 11, padding: "2px 8px", borderRadius: 4, background: T.warningBg, color: "#f59e0b", border: "1px solid #f59e0b44" }}>
                         Off-topic ({node.offTopic.turns?.length || 0} turns)
                       </span>
                     )}
                     {node.stuck?.detected && (
-                      <span style={{ fontSize: 11, padding: "2px 8px", borderRadius: 4, background: "#ef444422", color: "#ef4444", border: "1px solid #ef444444" }}>
+                      <span style={{ fontSize: 11, padding: "2px 8px", borderRadius: 4, background: T.errorBg, color: "#ef4444", border: "1px solid #ef444444" }}>
                         Stuck ({node.stuck.unnecessaryTurns} unnecessary turns)
                       </span>
                     )}
                     {!node.hallucination?.detected && !node.offTopic?.detected && !node.stuck?.detected && node.transitionCorrectness?.correct && (
-                      <span style={{ fontSize: 11, padding: "2px 8px", borderRadius: 4, background: "#22c55e12", color: "#22c55e", border: "1px solid #22c55e33" }}>
+                      <span style={{ fontSize: 11, padding: "2px 8px", borderRadius: 4, background: T.successBg, color: "#22c55e", border: "1px solid #22c55e33" }}>
                         Clean
                       </span>
                     )}
@@ -435,7 +436,7 @@ export default function Preview() {
                     <div style={{ fontSize: 11, color: "#ec4899", marginLeft: 12, lineHeight: 1.5 }}>{node.hallucination.evidence}</div>
                   )}
                   {node.stuck?.detected && node.stuck.reasoning && (
-                    <div style={{ fontSize: 11, color: "#aaa", marginLeft: 12, lineHeight: 1.5 }}>{node.stuck.reasoning}</div>
+                    <div style={{ fontSize: 11, color: T.textSecondary, marginLeft: 12, lineHeight: 1.5 }}>{node.stuck.reasoning}</div>
                   )}
                 </div>
               </div>
@@ -445,16 +446,16 @@ export default function Preview() {
 
         {/* Improvements */}
         <div style={{ marginTop: 12 }}>
-          <div style={{ fontSize: 13, color: "#888", marginBottom: 8 }}>Recommendations</div>
+          <div style={{ fontSize: 13, color: T.textSecondary, marginBottom: 8 }}>Recommendations</div>
           <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
             {improvements.map((rec, i) => (
               <div key={i} style={{
                 display: "flex", gap: 10, alignItems: "flex-start",
-                fontSize: 13, padding: "8px 12px", background: "#0a0a0a",
-                borderRadius: 6, border: "1px solid #1a1a1a",
+                fontSize: 13, padding: "8px 12px", background: T.cardAlt,
+                borderRadius: 6, border: `1px solid ${T.border}`,
               }}>
-                <span style={{ color: "#2563eb", fontWeight: 700, minWidth: 20 }}>#{i + 1}</span>
-                <span style={{ color: "#ccc" }}>{rec}</span>
+                <span style={{ color: T.primary, fontWeight: 700, minWidth: 20 }}>#{i + 1}</span>
+                <span style={{ color: T.text }}>{rec}</span>
               </div>
             ))}
           </div>
@@ -464,7 +465,7 @@ export default function Preview() {
       {/* ═══ SECTION 2: Flow Progression Graph ═══ */}
       <div style={{ marginBottom: 32 }}>
         <h2 style={{ fontSize: 16, marginBottom: 12 }}>Flow Progression (Graph View)</h2>
-        <Suspense fallback={<div style={{ height: 500, background: "#0a0a0a", borderRadius: 8, display: "flex", alignItems: "center", justifyContent: "center", color: "#555" }}>Loading...</div>}>
+        <Suspense fallback={<div style={{ height: 500, background: T.cardAlt, borderRadius: 8, display: "flex", alignItems: "center", justifyContent: "center", color: T.textMuted }}>Loading...</div>}>
           <WorkflowCanvas
             workflowNodes={REAL_WORKFLOW_NODES}
             workflowEdges={REAL_WORKFLOW_EDGES}
@@ -477,13 +478,13 @@ export default function Preview() {
 
         {/* Summary bar */}
         <div style={{
-          marginTop: 12, padding: "8px 12px", background: "#0a0a0a",
-          borderRadius: 6, fontSize: 12, color: "#888",
+          marginTop: 12, padding: "8px 12px", background: T.cardAlt,
+          borderRadius: 6, fontSize: 12, color: T.textSecondary,
           display: "flex", gap: 16, flexWrap: "wrap",
         }}>
-          <span>Nodes reached: <strong style={{ color: "#fff" }}>{REAL_VISITED.size}/{REAL_WORKFLOW_NODES.length}</strong></span>
-          <span>Variables: <strong style={{ color: "#fff" }}>{REAL_EXTRACTED_VARS.length}</strong></span>
-          <span>Tools: <strong style={{ color: "#fff" }}>{REAL_TOOL_CALLS.length}</strong></span>
+          <span>Nodes reached: <strong style={{ color: T.text }}>{REAL_VISITED.size}/{REAL_WORKFLOW_NODES.length}</strong></span>
+          <span>Variables: <strong style={{ color: T.text }}>{REAL_EXTRACTED_VARS.length}</strong></span>
+          <span>Tools: <strong style={{ color: T.text }}>{REAL_TOOL_CALLS.length}</strong></span>
           <span style={{ color: "#ef4444" }}>Stuck at: Doctor Selection</span>
         </div>
       </div>

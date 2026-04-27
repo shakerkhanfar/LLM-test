@@ -19,6 +19,7 @@ function flog(msg: string) {
  *    - fetchCallLog(jobId) is also attempted for supplemental log data
  */
 import { Router } from "express";
+import { AuthRequest } from "../middleware/auth";
 import * as XLSX from "xlsx";
 import {
   exportConversations,
@@ -26,6 +27,9 @@ import {
   fetchCallLog,
   extractTranscriptFromConversation,
   extractJobIdFromConversation,
+  requestConversationExport,
+  pollExportStatus,
+  downloadAndParseExportCsv,
 } from "../services/hamsaApi";
 import { runEvaluationCheck } from "../services/evaluationRunner";
 
@@ -46,7 +50,7 @@ const VALID_PERIODS = new Set([
  * Returns immediately after creating run stubs.
  * Background workers then fetch conversation details and trigger evaluation.
  */
-router.post("/:projectId/import", async (req, res) => {
+router.post("/:projectId/import", async (req: AuthRequest, res) => {
   const { projectId } = req.params;
   // timezoneOffsetMinutes: client's UTC offset in minutes (e.g. 180 for UTC+3).
   // Used to compute start/end epoch timestamps that match the user's local midnight,
@@ -64,6 +68,7 @@ router.post("/:projectId/import", async (req, res) => {
 
   const project = await prisma.project.findUnique({ where: { id: projectId } });
   if (!project) return res.status(404).json({ error: "Project not found" });
+  if (project.userId !== null && project.userId !== req.userId) return res.status(403).json({ error: "Access denied" });
 
   const apiKey = project.hamsaApiKey || undefined;
   if (!apiKey && !process.env.HAMSA_API_KEY) {
@@ -170,13 +175,206 @@ router.post("/:projectId/import", async (req, res) => {
 });
 
 /**
+ * POST /api/history/:projectId/import-csv
+ *
+ * New async CSV export flow (works with Hamsa dev API):
+ *   1. Request export → get exportId
+ *   2. Poll until ready → get download URL
+ *   3. Download CSV → parse conversation IDs
+ *   4. For each conversation, fetch details via get-conversation API
+ *   5. Create runs and evaluate
+ *
+ * Body: {
+ *   hamsaProjectId: string,    // Hamsa project ID (not our project ID)
+ *   startDate?: string,        // "2025-01-01" format
+ *   endDate?: string,          // "2026-04-21" format
+ *   limit?: number,            // max calls to import (default 50)
+ *   apiBaseUrl?: string,       // override API base URL (e.g. "https://api-dev.tryhamsa.com")
+ * }
+ */
+router.post("/:projectId/import-csv", async (req: AuthRequest, res) => {
+  const { projectId } = req.params;
+  const {
+    hamsaProjectId,
+    startDate,
+    endDate,
+    limit = 50,
+    apiBaseUrl,
+  } = req.body;
+
+  const project = await prisma.project.findUnique({ where: { id: projectId } });
+  if (!project) return res.status(404).json({ error: "Project not found" });
+  if (project.userId !== null && project.userId !== req.userId) return res.status(403).json({ error: "Access denied" });
+
+  const apiKey = project.hamsaApiKey || process.env.HAMSA_API_KEY;
+  if (!apiKey) {
+    return res.status(400).json({ error: "No Hamsa API key configured for this project" });
+  }
+
+  if (!hamsaProjectId) {
+    return res.status(400).json({ error: "hamsaProjectId is required" });
+  }
+
+  const importLimit = Math.min(Math.max(1, parseInt(limit) || 50), 500);
+
+  // Default date range: last 30 days → now
+  const startPeriod = startDate
+    ? new Date(startDate + "T00:00:00.000Z").getTime()
+    : Date.now() - 30 * 24 * 60 * 60 * 1000;
+  const endPeriod = endDate
+    ? new Date(endDate + "T23:59:59.999Z").getTime()
+    : Date.now();
+
+  const baseUrl = apiBaseUrl || process.env.HAMSA_API_BASE || undefined;
+
+  flog(`[CSV Import] Starting for project ${projectId}, agent ${project.agentId}, hamsa project ${hamsaProjectId}`);
+
+  // ── Step 1: Request async export ──────────────────────────────────
+  let exportId: string;
+  try {
+    exportId = await requestConversationExport(
+      hamsaProjectId,
+      project.agentId,
+      { startPeriod, endPeriod },
+      apiKey,
+      baseUrl,
+    );
+    flog(`[CSV Import] Export requested, exportId: ${exportId}`);
+  } catch (err) {
+    return res.status(502).json({ error: `Failed to request export: ${(err as Error).message}` });
+  }
+
+  // Return the exportId immediately so the frontend can track progress.
+  // The actual polling + import happens in the background.
+  res.json({
+    started: true,
+    exportId,
+    message: "Export requested. Polling for CSV in the background.",
+  });
+
+  // ── Background: poll, download, parse, hydrate ────────────────────
+  (async () => {
+    try {
+      // Step 2: Poll until ready
+      flog(`[CSV Import] Polling export status...`);
+      const downloadUrl = await pollExportStatus(hamsaProjectId, exportId, apiKey, baseUrl);
+      flog(`[CSV Import] Export ready, downloading CSV...`);
+
+      // Step 3: Download and parse CSV
+      const conversationIds = await downloadAndParseExportCsv(downloadUrl);
+      flog(`[CSV Import] Parsed ${conversationIds.length} conversation IDs from CSV`);
+
+      if (conversationIds.length === 0) {
+        flog(`[CSV Import] No conversations found, done.`);
+        return;
+      }
+
+      // Deduplicate against existing runs
+      const existingRuns = await prisma.run.findMany({
+        where: { projectId, conversationId: { in: conversationIds } },
+        select: { conversationId: true },
+      });
+      const existingIds = new Set(existingRuns.map((r) => r.conversationId));
+      const newConvIds = conversationIds.filter((id) => !existingIds.has(id));
+      flog(`[CSV Import] ${newConvIds.length} new conversations (${existingIds.size} already imported)`);
+
+      const toImport = newConvIds.slice(0, importLimit);
+
+      // Step 4: Create stubs and hydrate
+      const now = new Date();
+      const stubs: { id: string; conversationId: string }[] = [];
+      for (const convId of toImport) {
+        try {
+          const run = await prisma.run.create({
+            data: {
+              projectId,
+              source: "HISTORY",
+              conversationId: convId,
+              modelUsed: null,
+              status: "PENDING",
+              startedAt: now,
+            },
+          });
+          stubs.push({ id: run.id, conversationId: convId });
+        } catch (createErr: any) {
+          // P2002 = unique constraint violation (duplicate) — expected, skip silently
+          if (createErr?.code === "P2002") {
+            flog(`[CSV Import] Skipping duplicate conversation ${convId}`);
+          } else {
+            flog(`[CSV Import] Failed to create stub for ${convId}: ${createErr.message}`);
+          }
+        }
+      }
+
+      flog(`[CSV Import] Created ${stubs.length} run stubs, starting hydration...`);
+
+      // Hydrate in batches of 3 (reuse existing hydrateRun function)
+      const BATCH_SIZE = 3;
+      let completed = 0;
+      for (let i = 0; i < stubs.length; i += BATCH_SIZE) {
+        const batch = stubs.slice(i, i + BATCH_SIZE);
+        const results = await Promise.allSettled(
+          batch.map((s) => hydrateRun(s.id, s.conversationId, apiKey, projectId, baseUrl))
+        );
+        for (const r of results) {
+          if (r.status === "fulfilled" && r.value === "COMPLETED") completed++;
+        }
+      }
+
+      flog(`[CSV Import] Done: ${completed}/${stubs.length} calls hydrated and evaluated`);
+    } catch (err) {
+      flog(`[CSV Import] Background import failed: ${(err as Error).message}`);
+    }
+  })();
+});
+
+/**
+ * GET /api/history/:projectId/export-status
+ *
+ * Check the status of an async export. Frontend can poll this.
+ * Query: { hamsaProjectId, exportId, apiBaseUrl? }
+ */
+router.get("/:projectId/export-status", async (req: AuthRequest, res) => {
+  const project = await prisma.project.findUnique({ where: { id: req.params.projectId } });
+  if (!project) return res.status(404).json({ error: "Project not found" });
+  if (project.userId !== null && project.userId !== req.userId) return res.status(403).json({ error: "Access denied" });
+
+  const { hamsaProjectId, exportId, apiBaseUrl } = req.query as Record<string, string>;
+  if (!hamsaProjectId || !exportId) {
+    return res.status(400).json({ error: "hamsaProjectId and exportId are required" });
+  }
+
+  const apiKey = project.hamsaApiKey || process.env.HAMSA_API_KEY;
+  if (!apiKey) return res.status(400).json({ error: "No API key" });
+
+  const base = apiBaseUrl || process.env.HAMSA_API_BASE || "https://api.tryhamsa.com";
+  const params = new URLSearchParams({ projectId: hamsaProjectId, exportId });
+  const url = `${base}/v1/agent-analytics/conversations/export/status?${params}`;
+
+  try {
+    const response = await fetch(url, {
+      method: "GET",
+      headers: {
+        Authorization: `Token ${apiKey}`,
+        "Content-Type": "application/json",
+      },
+    });
+    const result = await response.json();
+    res.json(result);
+  } catch (err) {
+    res.status(502).json({ error: (err as Error).message });
+  }
+});
+
+/**
  * GET /api/history/:projectId/debug-conv/:convId
  * Fetches a raw conversation from Hamsa and returns the full object.
  * Shows exactly where the transcript and logs live.
  */
-router.get("/:projectId/debug-conv/:convId", async (req, res) => {
+router.get("/:projectId/debug-conv/:convId", async (req: AuthRequest, res) => {
   const project = await prisma.project.findUnique({ where: { id: req.params.projectId } });
   if (!project) return res.status(404).json({ error: "Project not found" });
+  if (project.userId !== null && project.userId !== req.userId) return res.status(403).json({ error: "Access denied" });
 
   try {
     const conv = await fetchConversation(req.params.convId, project.hamsaApiKey || undefined);
@@ -218,9 +416,10 @@ router.get("/:projectId/debug-conv/:convId", async (req, res) => {
  * Downloads the Excel export and returns its columns + first 3 rows as JSON.
  * Dev/debug use only — lets us see exactly what Hamsa puts in the Excel.
  */
-router.get("/:projectId/debug-excel", async (req, res) => {
+router.get("/:projectId/debug-excel", async (req: AuthRequest, res) => {
   const project = await prisma.project.findUnique({ where: { id: req.params.projectId } });
   if (!project) return res.status(404).json({ error: "Project not found" });
+  if (project.userId !== null && project.userId !== req.userId) return res.status(403).json({ error: "Access denied" });
 
   try {
     const buf = await exportConversations(
@@ -248,7 +447,12 @@ router.get("/:projectId/debug-excel", async (req, res) => {
  * GET /api/history/:projectId/status
  * Returns counts of runs in each status for the project.
  */
-router.get("/:projectId/status", async (req, res) => {
+router.get("/:projectId/status", async (req: AuthRequest, res) => {
+  // Ownership check via project lookup
+  const project = await prisma.project.findUnique({ where: { id: req.params.projectId }, select: { userId: true } });
+  if (!project) return res.status(404).json({ error: "Project not found" });
+  if (project.userId !== null && project.userId !== req.userId) return res.status(403).json({ error: "Access denied" });
+
   const groups = await prisma.run.groupBy({
     by: ["status"],
     where: { projectId: req.params.projectId, source: "HISTORY" },
@@ -359,11 +563,12 @@ async function hydrateRun(
   runId: string,
   convId: string,
   apiKey: string | undefined,
-  _projectId: string
+  _projectId: string,
+  apiBaseUrl?: string,
 ): Promise<"COMPLETED" | "FAILED"> {
   try {
     // Fetch conversation details from Hamsa
-    const conv = await fetchConversation(convId, apiKey);
+    const conv = await fetchConversation(convId, apiKey, apiBaseUrl);
 
     // Log the top-level keys of the conv object for debugging transcript extraction
     if (process.env.NODE_ENV !== "production") {
@@ -467,7 +672,7 @@ async function hydrateRun(
     // Also try fetching supplemental logs via jobId (may have more detail)
     if (jobId) {
       try {
-        const logs = await fetchCallLog(jobId, apiKey);
+        const logs = await fetchCallLog(jobId, apiKey, apiBaseUrl);
         if (Array.isArray(logs) && logs.length > 0) {
           if (process.env.NODE_ENV !== "production") {
             flog(`[History] fetchCallLog returned ${logs.length} entries for ${convId}`);

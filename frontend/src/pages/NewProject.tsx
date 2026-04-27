@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from "react";
 import { useNavigate } from "react-router-dom";
 import { createProject, fetchAgentPreview, importHistory } from "../api/client";
+import T from "../theme";
 
 const DEFAULT_CRITERIA = [
   { key: "layered_evaluation", label: "Layered Node Evaluation", type: "LAYERED_EVALUATION", expectedValue: {}, weight: 5 },
@@ -180,10 +181,10 @@ export default function NewProject() {
   const inputStyle: React.CSSProperties = {
     width: "100%",
     padding: "8px 12px",
-    background: "#1a1a1a",
-    border: "1px solid #333",
+    background: T.input,
+    border: `1px solid ${T.borderDark}`,
     borderRadius: 6,
-    color: "#e0e0e0",
+    color: T.text,
     fontSize: 14,
     boxSizing: "border-box",
   };
@@ -193,7 +194,7 @@ export default function NewProject() {
       <h1>New Project</h1>
 
       {/* Project type toggle */}
-      <div style={{ display: "flex", gap: 0, marginBottom: 24, borderRadius: 8, overflow: "hidden", border: "1px solid #333" }}>
+      <div style={{ display: "flex", gap: 0, marginBottom: 24, borderRadius: 8, overflow: "hidden", border: `1px solid ${T.border}` }}>
         {(["WEBHOOK", "HISTORY", "LIVE"] as const).map((t) => (
           <button
             key={t}
@@ -202,8 +203,8 @@ export default function NewProject() {
             style={{
               flex: 1,
               padding: "10px 16px",
-              background: projectType === t ? "#2563eb" : "#111",
-              color: projectType === t ? "#fff" : "#888",
+              background: projectType === t ? T.primary : T.card,
+              color: projectType === t ? T.primaryText : T.textSecondary,
               border: "none",
               cursor: "pointer",
               fontSize: 14,
@@ -216,7 +217,7 @@ export default function NewProject() {
         ))}
       </div>
 
-      <p style={{ fontSize: 13, color: "#666", margin: "-16px 0 20px" }}>
+      <p style={{ fontSize: 13, color: T.textMuted, margin: "-16px 0 20px" }}>
         {projectType === "WEBHOOK"
           ? "Connect your agent's webhook and automatically evaluate every call."
           : projectType === "LIVE"
@@ -254,31 +255,31 @@ export default function NewProject() {
           <div style={{
             marginBottom: 16,
             padding: "10px 14px",
-            background: agentPreview ? "#0a1628" : "#1a1a1a",
-            border: `1px solid ${agentPreview ? "#1e40af" : "#333"}`,
+            background: agentPreview ? T.infoBg : T.card,
+            border: `1px solid ${agentPreview ? "#1e40af" : T.border}`,
             borderRadius: 6,
             fontSize: 13,
           }}>
-            {previewLoading && <span style={{ color: "#888" }}>Fetching agent details...</span>}
+            {previewLoading && <span style={{ color: T.textSecondary }}>Fetching agent details...</span>}
             {previewError && <span style={{ color: "#ef4444" }}>{previewError}</span>}
             {agentPreview && (
               <div>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
                   <div>
-                    <span style={{ color: "#60a5fa", fontWeight: 600 }}>{agentPreview.name}</span>
-                    <span style={{ color: "#666", marginLeft: 8 }}>{agentPreview.type}</span>
+                    <span style={{ color: T.link, fontWeight: 600 }}>{agentPreview.name}</span>
+                    <span style={{ color: T.textMuted, marginLeft: 8 }}>{agentPreview.type}</span>
                   </div>
                   <span style={{ color: "#22c55e", fontSize: 11 }}>Agent found</span>
                 </div>
-                <div style={{ marginTop: 6, display: "flex", gap: 12, color: "#888", fontSize: 12 }}>
+                <div style={{ marginTop: 6, display: "flex", gap: 12, color: T.textSecondary, fontSize: 12 }}>
                   {agentPreview.language && <span>Language: {agentPreview.language}</span>}
                   {agentPreview.llm?.model && <span>Model: {agentPreview.llm.model}</span>}
                   {agentPreview.nodeCount > 0 && <span>{agentPreview.nodeCount} flow nodes</span>}
                   {agentPreview.toolCount > 0 && <span>{agentPreview.toolCount} tools</span>}
                 </div>
                 {agentPreview.preamble && (
-                  <div style={{ marginTop: 8, color: "#555", fontSize: 11, fontStyle: "italic", borderTop: "1px solid #1e293b", paddingTop: 8 }}>
-                    <span style={{ color: "#4b5563" }}>Instructions: </span>
+                  <div style={{ marginTop: 8, color: T.textMuted, fontSize: 11, fontStyle: "italic", borderTop: `1px solid ${T.border}`, paddingTop: 8 }}>
+                    <span style={{ color: T.textSecondary }}>Instructions: </span>
                     {agentPreview.preamble.slice(0, 150)}{agentPreview.preamble.length > 150 ? "…" : ""}
                   </div>
                 )}
@@ -312,8 +313,8 @@ export default function NewProject() {
 
         {/* History import options */}
         {projectType === "HISTORY" && (
-          <div style={{ marginBottom: 20, padding: "16px", background: "#0f1626", border: "1px solid #1e3a5f", borderRadius: 8 }}>
-            <div style={{ fontSize: 13, color: "#93c5fd", fontWeight: 600, marginBottom: 12 }}>
+          <div style={{ marginBottom: 20, padding: "16px", background: T.infoBg, border: `1px solid ${T.border}`, borderRadius: 8 }}>
+            <div style={{ fontSize: 13, color: T.info, fontWeight: 600, marginBottom: 12 }}>
               Initial Import
             </div>
 
@@ -326,9 +327,9 @@ export default function NewProject() {
                   onClick={() => applyPreset(p.days)}
                   style={{
                     padding: "4px 10px",
-                    background: activePreset === p.days ? "#1d4ed8" : "#1a1a2e",
-                    color: activePreset === p.days ? "#fff" : "#888",
-                    border: `1px solid ${activePreset === p.days ? "#3b82f6" : "#333"}`,
+                    background: activePreset === p.days ? T.primary : T.card,
+                    color: activePreset === p.days ? T.primaryText : T.textSecondary,
+                    border: `1px solid ${activePreset === p.days ? T.primary : T.border}`,
                     borderRadius: 4,
                     cursor: "pointer",
                     fontSize: 12,
@@ -379,7 +380,7 @@ export default function NewProject() {
               </div>
             </div>
 
-            <p style={{ fontSize: 11, color: "#4b6a8f", margin: 0 }}>
+            <p style={{ fontSize: 11, color: T.textSecondary, margin: 0 }}>
               Pulls the oldest {importLimit} call{importLimit !== 1 ? "s" : ""} in the selected range. Import runs in the background — you'll see progress on the project page.
             </p>
           </div>
@@ -387,7 +388,7 @@ export default function NewProject() {
 
         {/* Default criteria toggle */}
         <div style={{ marginBottom: 24 }}>
-          <label style={{ fontSize: 14, color: "#aaa", cursor: "pointer" }}>
+          <label style={{ fontSize: 14, color: T.textSecondary, cursor: "pointer" }}>
             <input
               type="checkbox"
               checked={useCriteria}
@@ -404,8 +405,8 @@ export default function NewProject() {
           type="submit"
           disabled={saving}
           style={{
-            background: "#2563eb",
-            color: "#fff",
+            background: T.primary,
+            color: T.primaryText,
             padding: "10px 20px",
             borderRadius: 6,
             border: "none",
@@ -425,5 +426,5 @@ const labelStyle: React.CSSProperties = {
   display: "block",
   marginBottom: 4,
   fontSize: 14,
-  color: "#aaa",
+  color: T.textSecondary,
 };

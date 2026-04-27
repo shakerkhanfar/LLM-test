@@ -3,6 +3,8 @@ import { Router } from "express";
 import { RunStatus } from "@prisma/client";
 import { updateAgentModel } from "../services/hamsaApi";
 import { runEvaluationCheck } from "../services/evaluationRunner";
+import { AuthRequest } from "../middleware/auth";
+import { assertProjectAccess, assertRunAccess } from "../lib/ownership";
 
 const router = Router();
 
@@ -11,7 +13,10 @@ const VALID_STATUSES = new Set<string>(Object.values(RunStatus));
 const CLIENT_SETTABLE_STATUSES = new Set<string>(["PENDING", "RUNNING", "AWAITING_DATA", "FAILED"]);
 
 // List runs for a project (most recent 200, with pagination via ?skip=)
-router.get("/project/:projectId", async (req, res) => {
+router.get("/project/:projectId", async (req: AuthRequest, res) => {
+  const project = await assertProjectAccess(req.params.projectId, req.userId, res);
+  if (!project) return;
+
   const skip = parseInt(req.query.skip as string) || 0;
   const take = Math.min(parseInt(req.query.take as string) || 100, 200);
 
@@ -29,7 +34,7 @@ router.get("/project/:projectId", async (req, res) => {
 });
 
 // Get single run with full details
-router.get("/:id", async (req, res) => {
+router.get("/:id", async (req: AuthRequest, res) => {
   try {
     const run = await prisma.run.findUnique({
       where: { id: req.params.id },
@@ -40,6 +45,10 @@ router.get("/:id", async (req, res) => {
       },
     });
     if (!run) return res.status(404).json({ error: "Run not found" });
+    const projectUserId = (run.project as any)?.userId as string | null;
+    if (projectUserId !== null && projectUserId !== req.userId) {
+      return res.status(403).json({ error: "Access denied" });
+    }
     res.json(run);
   } catch {
     res.status(500).json({ error: "Failed to fetch run" });
@@ -47,13 +56,13 @@ router.get("/:id", async (req, res) => {
 });
 
 // Create a new run
-router.post("/", async (req, res) => {
+router.post("/", async (req: AuthRequest, res) => {
   const { projectId, modelUsed } = req.body;
   if (!projectId) return res.status(400).json({ error: "projectId is required" });
 
   try {
-    const project = await prisma.project.findUnique({ where: { id: projectId } });
-    if (!project) return res.status(404).json({ error: "Project not found" });
+    const project = await assertProjectAccess(projectId, req.userId, res);
+    if (!project) return;
 
     const run = await prisma.run.create({
       data: {
@@ -71,13 +80,16 @@ router.post("/", async (req, res) => {
 });
 
 // Switch agent model via Hamsa API (explicit action)
-router.post("/:id/switch-model", async (req, res) => {
+router.post("/:id/switch-model", async (req: AuthRequest, res) => {
   try {
     const run = await prisma.run.findUnique({
       where: { id: req.params.id },
       include: { project: true },
     });
     if (!run) return res.status(404).json({ error: "Run not found" });
+    if ((run.project as any).userId !== null && (run.project as any).userId !== req.userId) {
+      return res.status(403).json({ error: "Access denied" });
+    }
 
     const result = await updateAgentModel(
       run.project.agentId,
@@ -99,13 +111,16 @@ router.post("/:id/switch-model", async (req, res) => {
 });
 
 // Fetch call log from Hamsa API for a run
-router.post("/:id/fetch-logs", async (req, res) => {
+router.post("/:id/fetch-logs", async (req: AuthRequest, res) => {
   try {
     const run = await prisma.run.findUnique({
       where: { id: req.params.id },
       include: { project: true },
     });
     if (!run) return res.status(404).json({ error: "Run not found" });
+    if ((run.project as any).userId !== null && (run.project as any).userId !== req.userId) {
+      return res.status(403).json({ error: "Access denied" });
+    }
     if (!run.hamsaCallId) return res.status(400).json({ error: "No call ID on this run" });
 
     const { fetchCallLog } = await import("../services/hamsaApi");
@@ -121,17 +136,17 @@ router.post("/:id/fetch-logs", async (req, res) => {
 });
 
 // Manually attach call log to a run (for local testing without API)
-router.post("/:id/call-log", async (req, res) => {
+router.post("/:id/call-log", async (req: AuthRequest, res) => {
   const { callLog } = req.body;
   if (callLog === undefined) return res.status(400).json({ error: "callLog is required" });
   if (!Array.isArray(callLog)) return res.status(400).json({ error: "callLog must be an array" });
 
   try {
-    const existing = await prisma.run.findUnique({ where: { id: req.params.id } });
-    if (!existing) return res.status(404).json({ error: "Run not found" });
+    const access = await assertRunAccess(req.params.id, req.userId, res);
+    if (!access) return;
 
     const run = await prisma.run.update({
-      where: { id: req.params.id },
+      where: { id: access.id },
       data: { callLog },
     });
     await runEvaluationCheck(run.id);
@@ -143,15 +158,15 @@ router.post("/:id/call-log", async (req, res) => {
 });
 
 // Manually attach transcript/webhook data to a run (for local testing)
-router.post("/:id/transcript", async (req, res) => {
+router.post("/:id/transcript", async (req: AuthRequest, res) => {
   const { transcript, webhookData } = req.body;
 
   try {
-    const existing = await prisma.run.findUnique({ where: { id: req.params.id } });
-    if (!existing) return res.status(404).json({ error: "Run not found" });
+    const access = await assertRunAccess(req.params.id, req.userId, res);
+    if (!access) return;
 
     const run = await prisma.run.update({
-      where: { id: req.params.id },
+      where: { id: access.id },
       data: { transcript, webhookData },
     });
     await runEvaluationCheck(run.id);
@@ -163,23 +178,22 @@ router.post("/:id/transcript", async (req, res) => {
 });
 
 // Manually trigger evaluation (force re-run even if status is COMPLETE)
-router.post("/:id/evaluate", async (req, res) => {
+router.post("/:id/evaluate", async (req: AuthRequest, res) => {
   try {
-    // Atomic reset: only proceeds if the run exists; 404s cleanly otherwise.
-    // notIn guard prevents interrupting an already in-progress evaluation.
+    const access = await assertRunAccess(req.params.id, req.userId, res);
+    if (!access) return;
+
+    // Atomic reset: prevents interrupting an in-progress evaluation.
     const updated = await prisma.run.updateMany({
-      where: { id: req.params.id, status: { notIn: ["EVALUATING"] } },
+      where: { id: access.id, status: { notIn: ["EVALUATING"] } },
       data: { status: "PENDING" },
     });
 
     if (updated.count === 0) {
-      // Either the run doesn't exist or it's currently being evaluated
-      const exists = await prisma.run.findUnique({ where: { id: req.params.id }, select: { id: true, status: true } });
-      if (!exists) return res.status(404).json({ error: "Run not found" });
       return res.status(409).json({ error: "Evaluation already in progress" });
     }
 
-    await runEvaluationCheck(req.params.id);
+    await runEvaluationCheck(access.id);
     res.json({ ok: true, message: "Evaluation queued" });
   } catch (err) {
     res.status(500).json({ error: (err as Error).message });
@@ -187,7 +201,7 @@ router.post("/:id/evaluate", async (req, res) => {
 });
 
 // Set the hamsa call ID or status (after starting call via SDK)
-router.patch("/:id", async (req, res) => {
+router.patch("/:id", async (req: AuthRequest, res) => {
   const { hamsaCallId, status } = req.body;
 
   if (status !== undefined) {
@@ -200,12 +214,15 @@ router.patch("/:id", async (req, res) => {
   }
 
   try {
+    const access = await assertRunAccess(req.params.id, req.userId, res);
+    if (!access) return;
+
     const data: any = {};
     if (hamsaCallId !== undefined) data.hamsaCallId = hamsaCallId;
     if (status !== undefined) data.status = status;
 
     const run = await prisma.run.update({
-      where: { id: req.params.id },
+      where: { id: access.id },
       data,
     });
     res.json(run);
@@ -216,9 +233,12 @@ router.patch("/:id", async (req, res) => {
 });
 
 // Delete a run
-router.delete("/:id", async (req, res) => {
+router.delete("/:id", async (req: AuthRequest, res) => {
   try {
-    await prisma.run.delete({ where: { id: req.params.id } });
+    const access = await assertRunAccess(req.params.id, req.userId, res);
+    if (!access) return;
+
+    await prisma.run.delete({ where: { id: access.id } });
     res.json({ ok: true });
   } catch (err: any) {
     if (err?.code === "P2025") return res.status(404).json({ error: "Run not found" });
@@ -227,13 +247,16 @@ router.delete("/:id", async (req, res) => {
 });
 
 // Compare multiple runs — max 20, must all belong to the same project
-router.post("/compare", async (req, res) => {
+router.post("/compare", async (req: AuthRequest, res) => {
   const { runIds } = req.body;
   if (!Array.isArray(runIds) || runIds.length === 0) {
     return res.status(400).json({ error: "runIds must be a non-empty array" });
   }
   if (runIds.length > 20) {
     return res.status(400).json({ error: "Cannot compare more than 20 runs at once" });
+  }
+  if (runIds.some((id: unknown) => typeof id !== "string" || !id.trim())) {
+    return res.status(400).json({ error: "Each runId must be a non-empty string" });
   }
 
   try {
@@ -242,8 +265,14 @@ router.post("/compare", async (req, res) => {
       include: {
         evalResults: { include: { criterion: true } },
         _count: { select: { wordLabels: true } },
+        project: { select: { userId: true } },
       },
     });
+
+    // If none of the requested IDs exist, return 404 rather than an empty 200
+    if (runs.length === 0) {
+      return res.status(404).json({ error: "No runs found for the provided IDs" });
+    }
 
     // Verify all runs belong to the same project
     const projectIds = new Set(runs.map((r) => r.projectId));
@@ -251,6 +280,13 @@ router.post("/compare", async (req, res) => {
       return res.status(400).json({ error: "All runs must belong to the same project" });
     }
 
+    // Verify the user owns the project (runs.length > 0 is guaranteed above)
+    const projectUserId = (runs[0].project as any)?.userId as string | null;
+    if (projectUserId !== null && projectUserId !== req.userId) {
+      return res.status(403).json({ error: "Access denied" });
+    }
+
+    // Return only the runs the caller explicitly requested (IDs not found are silently absent)
     res.json(runs);
   } catch {
     res.status(500).json({ error: "Failed to compare runs" });

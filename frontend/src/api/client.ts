@@ -1,11 +1,32 @@
 const API_BASE = "/api";
 
+function getToken(): string | null {
+  return localStorage.getItem("hamsa_eval_token");
+}
+
+// Guard against multiple simultaneous 401 responses all triggering a redirect.
+let redirectingToLogin = false;
+
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
   const hasBody = options?.body != null;
+  const token = getToken();
   const res = await fetch(`${API_BASE}${path}`, {
-    headers: hasBody ? { "Content-Type": "application/json" } : {},
+    headers: {
+      ...(hasBody ? { "Content-Type": "application/json" } : {}),
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    },
     ...options,
   });
+  if (res.status === 401) {
+    // Token expired or invalid — clear session and redirect to login (once).
+    localStorage.removeItem("hamsa_eval_token");
+    localStorage.removeItem("hamsa_eval_user");
+    if (!redirectingToLogin) {
+      redirectingToLogin = true;
+      window.location.href = "/login";
+    }
+    throw new Error("Session expired. Please sign in again.");
+  }
   if (!res.ok) {
     const text = await res.text();
     throw new Error(`API error ${res.status}: ${text}`);
@@ -207,4 +228,13 @@ export function importHistory(
 
 export function getHistoryStatus(projectId: string) {
   return request<any>(`/history/${projectId}/status`);
+}
+
+// ─── Ask (natural language search) ───────────────────────────────
+
+export function askProject(projectId: string, question: string) {
+  return request<any>(`/projects/${projectId}/ask`, {
+    method: "POST",
+    body: JSON.stringify({ question }),
+  });
 }

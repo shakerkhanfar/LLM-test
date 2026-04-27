@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { useParams, Link } from "react-router-dom";
 import { getProject } from "../api/client";
+import T from "../theme";
 
 export default function Compare() {
   const { id } = useParams();
@@ -45,7 +46,7 @@ export default function Compare() {
 
   return (
     <div>
-      <Link to={`/projects/${id}`} style={{ color: "#888", textDecoration: "none", fontSize: 14 }}>
+      <Link to={`/projects/${id}`} style={{ color: T.textSecondary, textDecoration: "none", fontSize: 14 }}>
         &larr; Back to project
       </Link>
       <h1 style={{ margin: "16px 0" }}>Compare Runs</h1>
@@ -59,9 +60,9 @@ export default function Compare() {
             style={{
               padding: "6px 12px",
               borderRadius: 4,
-              border: `1px solid ${selectedRuns.includes(r.id) ? "#2563eb" : "#333"}`,
-              background: selectedRuns.includes(r.id) ? "#2563eb22" : "#1a1a1a",
-              color: selectedRuns.includes(r.id) ? "#60a5fa" : "#888",
+              border: `1px solid ${selectedRuns.includes(r.id) ? T.primary : T.border}`,
+              background: selectedRuns.includes(r.id) ? `${T.primary}22` : T.card,
+              color: selectedRuns.includes(r.id) ? T.link : T.textSecondary,
               cursor: "pointer",
               fontSize: 13,
             }}
@@ -72,16 +73,16 @@ export default function Compare() {
       </div>
 
       {runsToCompare.length < 2 ? (
-        <p style={{ color: "#666" }}>Select at least 2 runs to compare.</p>
+        <p style={{ color: T.textMuted }}>Select at least 2 runs to compare.</p>
       ) : (
         <div style={{ overflowX: "auto" }}>
           <table style={{ width: "100%", borderCollapse: "collapse" }}>
             <thead>
-              <tr style={{ borderBottom: "1px solid #333" }}>
+              <tr style={{ borderBottom: `1px solid ${T.border}` }}>
                 <th style={{ padding: "8px 12px", textAlign: "left", fontSize: 13 }}>Criterion</th>
                 {runsToCompare.map((r: any) => (
                   <th key={r.id} style={{ padding: "8px 12px", textAlign: "center", fontSize: 13 }}>
-                    <Link to={`/projects/${id}/runs/${r.id}`} style={{ color: "#60a5fa", textDecoration: "none" }}>
+                    <Link to={`/projects/${id}/runs/${r.id}`} style={{ color: T.link, textDecoration: "none" }}>
                       {runLabel(r)}
                     </Link>
                   </th>
@@ -90,7 +91,7 @@ export default function Compare() {
             </thead>
             <tbody>
               {/* Overall score row */}
-              <tr style={{ borderBottom: "1px solid #333", background: "#111" }}>
+              <tr style={{ borderBottom: `1px solid ${T.border}`, background: T.card }}>
                 <td style={{ padding: "8px 12px", fontWeight: 600 }}>Overall Score</td>
                 {runsToCompare.map((r: any) => {
                   const score = r.overallScore;
@@ -118,10 +119,10 @@ export default function Compare() {
                 const maxScore = Math.max(...scores.filter((s: any) => s != null));
 
                 return (
-                  <tr key={c.id} style={{ borderBottom: "1px solid #1a1a1a" }}>
+                  <tr key={c.id} style={{ borderBottom: `1px solid ${T.border}` }}>
                     <td style={{ padding: "8px 12px" }}>
                       <div>{c.label || c.key}</div>
-                      <div style={{ fontSize: 11, color: "#666" }}>{c.type}</div>
+                      <div style={{ fontSize: 11, color: T.textMuted }}>{c.type}</div>
                     </td>
                     {runsToCompare.map((r: any, ri: number) => {
                       const er = r.evalResults?.find((e: any) => e.criterionId === c.id);
@@ -136,12 +137,12 @@ export default function Compare() {
                               }}>
                                 {(er.score * 100).toFixed(0)}%
                               </span>
-                              <span style={{ fontSize: 11, color: "#666", marginLeft: 4 }}>
+                              <span style={{ fontSize: 11, color: T.textMuted, marginLeft: 4 }}>
                                 {er.passed ? "PASS" : "FAIL"}
                               </span>
                             </div>
                           ) : (
-                            <span style={{ color: "#444" }}>—</span>
+                            <span style={{ color: T.textMuted }}>—</span>
                           )}
                         </td>
                       );

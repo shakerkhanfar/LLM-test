@@ -11,19 +11,43 @@ import runsRouter from "./routes/runs";
 import labelsRouter from "./routes/labels";
 import webhooksRouter from "./routes/webhooks";
 import historyRouter from "./routes/history";
+import authRouter from "./routes/auth";
+import { requireAuth } from "./middleware/auth";
 
 const app = express();
 const PORT = process.env.PORT || 3001;
 
-app.use(cors());
+// Allow the local dev frontend (Vite) and the production same-origin.
+// Server-to-server callers (Hamsa webhooks) don't send an Origin header,
+// so they're unaffected by CORS policy.
+const ALLOWED_ORIGINS = new Set([
+  "http://localhost:5173",  // Vite dev server
+  "http://localhost:3000",
+  "http://localhost:5001",
+  ...(process.env.FRONTEND_URL ? [process.env.FRONTEND_URL] : []),
+]);
+app.use(cors({
+  origin: (origin, cb) => {
+    // Allow same-origin requests (no Origin header) and whitelisted origins
+    if (!origin || ALLOWED_ORIGINS.has(origin)) {
+      cb(null, true);
+    } else {
+      cb(new Error(`CORS: origin ${origin} not allowed`));
+    }
+  },
+  credentials: true,
+}));
 app.use(express.json({ limit: "10mb" }));
 
 // Routes
-app.use("/api/projects", projectsRouter);
-app.use("/api/runs", runsRouter);
-app.use("/api/labels", labelsRouter);
+app.use("/api/auth", authRouter);
+// Webhooks are called by Hamsa server — no user auth
 app.use("/api/webhooks", webhooksRouter);
-app.use("/api/history", historyRouter);
+// All other API routes require a valid JWT
+app.use("/api/projects", requireAuth, projectsRouter);
+app.use("/api/runs", requireAuth, runsRouter);
+app.use("/api/labels", requireAuth, labelsRouter);
+app.use("/api/history", requireAuth, historyRouter);
 
 // Health check
 app.get("/api/health", (_req, res) => {

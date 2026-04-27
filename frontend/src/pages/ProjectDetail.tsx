@@ -3,8 +3,10 @@ import { useParams, Link, useNavigate, useSearchParams } from "react-router-dom"
 import {
   getProject, createRun, deleteRun, triggerEvaluation, switchModel,
   attachCallLog, attachTranscript, importHistory, refreshAgent,
+  askProject,
 } from "../api/client";
 import CallAgent from "../components/CallAgent";
+import T from "../theme";
 
 const AVAILABLE_MODELS = [
   { provider: "OpenAI", models: [
@@ -24,7 +26,7 @@ const AVAILABLE_MODELS = [
 ];
 
 const STATUS_COLORS: Record<string, string> = {
-  PENDING: "#888",
+  PENDING: T.textSecondary,
   RUNNING: "#f59e0b",
   AWAITING_DATA: "#f59e0b",
   EVALUATING: "#3b82f6",
@@ -88,6 +90,12 @@ export default function ProjectDetail() {
   const [activeTab, setActiveTab] = useState<"evaluation" | "outcomes">("evaluation");
   const [searchQuery, setSearchQuery] = useState("");
   const [channelFilter, setChannelFilter] = useState<string | null>(null);
+
+  // Ask AI state
+  const [askQuery, setAskQuery] = useState("");
+  const [askLoading, setAskLoading] = useState(false);
+  const [askResult, setAskResult] = useState<any>(null);
+  const [askError, setAskError] = useState<string | null>(null);
 
   // History import state — always use date range (CUSTOM period)
   const [showHistoryImport, setShowHistoryImport] = useState(false);
@@ -211,29 +219,29 @@ export default function ProjectDetail() {
   return (
     <div>
       <div style={{ marginBottom: 24 }}>
-        <Link to="/" style={{ color: "#888", textDecoration: "none", fontSize: 14 }}>
+        <Link to="/" style={{ color: T.textSecondary, textDecoration: "none", fontSize: 14 }}>
           &larr; Projects
         </Link>
         <div style={{ display: "flex", alignItems: "center", gap: 12, margin: "8px 0 4px" }}>
           <h1 style={{ margin: 0 }}>{project.name}</h1>
           <span style={{
             fontSize: 11, padding: "2px 8px", borderRadius: 4,
-            background: isWebhook ? "#4c1d95" : isHistory ? "#1e3a5f" : "#14532d",
+            background: isWebhook ? "#f3e8ff" : isHistory ? T.infoBg : T.successBg,
             color: isWebhook ? "#c084fc" : isHistory ? "#60a5fa" : "#4ade80",
             border: `1px solid ${isWebhook ? "#7c3aed" : isHistory ? "#1d4ed8" : "#16a34a"}`,
           }}>
             {isWebhook ? "Webhook" : isHistory ? "History" : "Live"}
           </span>
         </div>
-        {project.description && <p style={{ color: "#888", margin: 0 }}>{project.description}</p>}
+        {project.description && <p style={{ color: T.textSecondary, margin: 0 }}>{project.description}</p>}
         {isWebhook && <WebhookUrlBar url={`${window.location.origin}/api/webhooks/hamsa/${project.id}`} />}
         {!isWebhook && project.hamsaApiKey && !isHistory && <WebhookUrlBar url={`${window.location.origin}/api/webhooks/hamsa`} />}
 
         {/* Agent info strip */}
         {agentStruct && (
-          <div style={{ marginTop: 8, display: "flex", gap: 16, fontSize: 12, color: "#555", alignItems: "center" }}>
-            <span style={{ color: "#666" }}>Agent: <span style={{ color: "#888" }}>{agentStruct.name || project.agentId}</span></span>
-            {agentStruct.type && <span style={{ color: "#444" }}>{agentStruct.type}</span>}
+          <div style={{ marginTop: 8, display: "flex", gap: 16, fontSize: 12, color: T.textMuted, alignItems: "center" }}>
+            <span style={{ color: T.textMuted }}>Agent: <span style={{ color: T.textSecondary }}>{agentStruct.name || project.agentId}</span></span>
+            {agentStruct.type && <span style={{ color: T.textFaint }}>{agentStruct.type}</span>}
             {agentStruct.voice?.lang && <span>Lang: {agentStruct.voice.lang}</span>}
             {agentStruct.llm?.model && <span>LLM: {agentStruct.llm.model}</span>}
             <RefreshAgentButton projectId={project.id} onSuccess={load} />
@@ -245,14 +253,14 @@ export default function ProjectDetail() {
       {importWarning === "noCalls" && !isWebhook && (
         <div style={{
           padding: "12px 16px", borderRadius: 8, marginBottom: 20,
-          background: "#1a130a", border: "1px solid #78350f", color: "#fbbf24",
+          background: T.warningBg, border: `1px solid ${T.border}`, color: "#b45309",
           fontSize: 13, lineHeight: 1.6,
         }}>
           <strong>No calls found</strong> for the selected date range. The agent may not have any calls in that period,
           or the date range may not match the agent's timezone. Try a wider range using the{" "}
           <button
             onClick={() => { setShowHistoryImport(true); navigate(`/projects/${id}`, { replace: true }); }}
-            style={{ color: "#fbbf24", background: "none", border: "none", cursor: "pointer", textDecoration: "underline", fontSize: 13, padding: 0 }}
+            style={{ color: "#b45309", background: "none", border: "none", cursor: "pointer", textDecoration: "underline", fontSize: 13, padding: 0 }}
           >
             Import History
           </button>{" "}panel below.
@@ -298,7 +306,7 @@ export default function ProjectDetail() {
       {isWebhook && (
         <div style={{
           padding: "10px 16px", borderRadius: 8, marginBottom: 16,
-          background: "#1a0a2e", border: "1px solid #7c3aed", color: "#c084fc",
+          background: "#f3e8ff", border: "1px solid #7c3aed", color: "#7c3aed",
           fontSize: 13, display: "flex", alignItems: "center", gap: 10,
         }}>
           <span style={{ display: "inline-block", width: 8, height: 8, borderRadius: "50%", background: "#22c55e", animation: "pulse 2s infinite" }} />
@@ -317,7 +325,7 @@ export default function ProjectDetail() {
         {!isWebhook && (
           <button
             onClick={() => { setShowHistoryImport(!showHistoryImport); setHistoryResult(null); }}
-            style={{ ...btnStyle, background: showHistoryImport ? "#1e3a5f" : "#1d4ed8" }}
+            style={{ ...btnStyle, background: showHistoryImport ? "#b8e6cc" : T.primary }}
           >
             {showHistoryImport ? "Close Import" : "Import History"}
           </button>
@@ -328,7 +336,7 @@ export default function ProjectDetail() {
           </button>
         )}
         {completedRuns.length >= 3 && (
-          <button onClick={() => navigate(`/projects/${id}/analyses`)} style={{ ...btnStyle, background: "#4c1d95" }}>
+          <button onClick={() => navigate(`/projects/${id}/analyses`)} style={{ ...btnStyle, background: "#7c3aed" }}>
             Analyze Project
           </button>
         )}
@@ -336,8 +344,8 @@ export default function ProjectDetail() {
 
       {/* History import panel */}
       {showHistoryImport && !isWebhook && (
-        <div style={{ background: "#0f1626", padding: 16, borderRadius: 8, marginBottom: 16, border: "1px solid #1e3a5f" }}>
-          <h3 style={{ margin: "0 0 14px", fontSize: 14, color: "#60a5fa" }}>Import Call History</h3>
+        <div style={{ background: T.infoBg, padding: 16, borderRadius: 8, marginBottom: 16, border: `1px solid ${T.border}` }}>
+          <h3 style={{ margin: "0 0 14px", fontSize: 14, color: T.link }}>Import Call History</h3>
 
           {/* Quick preset buttons — fill the date range */}
           <div style={{ marginBottom: 12 }}>
@@ -353,9 +361,9 @@ export default function ProjectDetail() {
                     onClick={() => { setHistoryStartDate(range.start); setHistoryEndDate(range.end); }}
                     style={{
                       padding: "4px 12px",
-                      background: isActive ? "#1d4ed8" : "#1a1a2e",
-                      color: isActive ? "#fff" : "#888",
-                      border: `1px solid ${isActive ? "#3b82f6" : "#333"}`,
+                      background: isActive ? T.primary : "#f3e8ff",
+                      color: isActive ? "#fff" : T.textSecondary,
+                      border: `1px solid ${isActive ? "#3b82f6" : T.border}`,
                       borderRadius: 4, cursor: "pointer", fontSize: 12,
                     }}
                   >
@@ -378,7 +386,7 @@ export default function ProjectDetail() {
                 onChange={(e) => setHistoryStartDate(e.target.value)}
               />
             </div>
-            <div style={{ color: "#444", paddingBottom: 8, fontSize: 18, userSelect: "none" }}>→</div>
+            <div style={{ color: T.textFaint, paddingBottom: 8, fontSize: 18, userSelect: "none" }}>→</div>
             <div style={{ flex: 1 }}>
               <label style={{ ...labelStyle, fontSize: 12 }}>To</label>
               <input
@@ -405,12 +413,12 @@ export default function ProjectDetail() {
             </div>
           </div>
 
-          <p style={{ fontSize: 11, color: "#4b6a8f", margin: "0 0 12px" }}>
-            Imports the oldest <strong style={{ color: "#60a5fa" }}>{historyLimit}</strong> calls in the range first. Already-imported conversations are skipped.
+          <p style={{ fontSize: 11, color: T.textSecondary, margin: "0 0 12px" }}>
+            Imports the oldest <strong style={{ color: T.link }}>{historyLimit}</strong> calls in the range first. Already-imported conversations are skipped.
           </p>
 
           {historyResult && !historyResult.error && (
-            <div style={{ padding: "8px 12px", background: "#0a2818", border: "1px solid #166534", borderRadius: 6, marginBottom: 12, fontSize: 13, color: "#4ade80" }}>
+            <div style={{ padding: "8px 12px", background: T.successBg, border: `1px solid ${T.border}`, borderRadius: 6, marginBottom: 12, fontSize: 13, color: "#22c55e" }}>
               Started import of {historyResult.imported} new call{historyResult.imported !== 1 ? "s" : ""}
               {historyResult.alreadyImported > 0 && ` (${historyResult.alreadyImported} already imported, skipped)`}
               {historyResult.total > historyResult.processed && ` — ${historyResult.total} total found, limited to ${historyResult.processed}`}
@@ -420,7 +428,7 @@ export default function ProjectDetail() {
             </div>
           )}
           {historyResult?.error && (
-            <div style={{ padding: "8px 12px", background: "#2d0a0a", border: "1px solid #7f1d1d", borderRadius: 6, marginBottom: 12, fontSize: 13, color: "#ef4444" }}>
+            <div style={{ padding: "8px 12px", background: T.errorBg, border: `1px solid ${T.border}`, borderRadius: 6, marginBottom: 12, fontSize: 13, color: "#ef4444" }}>
               {historyResult.error}
             </div>
           )}
@@ -446,12 +454,12 @@ export default function ProjectDetail() {
 
       {/* New live run modal */}
       {!isHistory && showNewRun && (
-        <div style={{ background: "#1a1a1a", padding: 16, borderRadius: 8, marginBottom: 16, border: "1px solid #333" }}>
-          <label style={{ fontSize: 14, color: "#aaa", marginBottom: 8, display: "block" }}>Select Model</label>
+        <div style={{ background: T.card, padding: 16, borderRadius: 8, marginBottom: 16, border: `1px solid ${T.border}` }}>
+          <label style={{ fontSize: 14, color: T.textSecondary, marginBottom: 8, display: "block" }}>Select Model</label>
           <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 12 }}>
             {AVAILABLE_MODELS.map((group) => (
               <div key={group.provider}>
-                <div style={{ fontSize: 11, color: "#666", textTransform: "uppercase", letterSpacing: 1, marginBottom: 6, marginTop: 4 }}>
+                <div style={{ fontSize: 11, color: T.textMuted, textTransform: "uppercase", letterSpacing: 1, marginBottom: 6, marginTop: 4 }}>
                   {group.provider}
                 </div>
                 <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
@@ -465,9 +473,9 @@ export default function ProjectDetail() {
                         style={{
                           display: "flex", alignItems: "center", justifyContent: "space-between",
                           padding: "10px 14px",
-                          background: isSelected ? "#2563eb22" : "#0a0a0a",
-                          border: `1px solid ${isSelected ? "#2563eb" : "#222"}`,
-                          borderRadius: 6, cursor: "pointer", textAlign: "left", color: "#e0e0e0",
+                          background: isSelected ? "#ecfdf3" : T.bg,
+                          border: `1px solid ${isSelected ? T.primary : T.border}`,
+                          borderRadius: 6, cursor: "pointer", textAlign: "left", color: T.text,
                         }}
                       >
                         <div>
@@ -475,9 +483,9 @@ export default function ProjectDetail() {
                             {m.label}
                             {alreadyRun && <span style={{ fontSize: 10, color: "#f59e0b", marginLeft: 8 }}>already tested</span>}
                           </div>
-                          <div style={{ fontSize: 12, color: "#888", marginTop: 2 }}>{m.desc}</div>
+                          <div style={{ fontSize: 12, color: T.textSecondary, marginTop: 2 }}>{m.desc}</div>
                         </div>
-                        {isSelected && <span style={{ color: "#2563eb", fontSize: 18 }}>&#10003;</span>}
+                        {isSelected && <span style={{ color: T.primary, fontSize: 18 }}>&#10003;</span>}
                       </button>
                     );
                   })}
@@ -496,7 +504,7 @@ export default function ProjectDetail() {
       <h2 style={{ fontSize: 16, marginBottom: 8 }}>Criteria</h2>
       <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 24 }}>
         {project.criteria?.map((c: any) => (
-          <span key={c.id} style={{ background: "#1a1a1a", padding: "4px 10px", borderRadius: 4, fontSize: 12, border: "1px solid #333" }}>
+          <span key={c.id} style={{ background: T.card, padding: "4px 10px", borderRadius: 4, fontSize: 12, border: `1px solid ${T.border}` }}>
             {c.label || c.key} ({c.type})
           </span>
         ))}
@@ -505,12 +513,167 @@ export default function ProjectDetail() {
       {/* Import progress banner */}
       <ImportProgressBanner runs={project.runs ?? []} />
 
+      {/* Ask AI */}
+      {project.runs?.length >= 3 && (
+        <div style={{ marginBottom: 20 }}>
+          <form
+            onSubmit={async (e) => {
+              e.preventDefault();
+              if (!askQuery.trim() || askLoading) return;
+              setAskLoading(true);
+              setAskError(null);
+              setAskResult(null);
+              try {
+                const result = await askProject(project.id, askQuery.trim());
+                setAskResult(result);
+              } catch (err) {
+                const msg = (err as Error).message;
+                // Extract the JSON error message if it's an API error wrapper
+                try {
+                  const parsed = JSON.parse(msg.replace(/^API error \d+:\s*/, ""));
+                  setAskError(parsed.error || msg);
+                } catch {
+                  setAskError(msg);
+                }
+              } finally {
+                setAskLoading(false);
+              }
+            }}
+            style={{ display: "flex", gap: 8, alignItems: "center" }}
+          >
+            <input
+              type="text"
+              placeholder="Ask about your calls... e.g. &quot;Which calls had hallucination issues?&quot;"
+              value={askQuery}
+              onChange={(e) => setAskQuery(e.target.value)}
+              style={{
+                flex: 1,
+                padding: "8px 12px",
+                background: T.input,
+                border: `1px solid ${T.borderDark}`,
+                borderRadius: 6,
+                color: T.text,
+                fontSize: 13,
+              }}
+            />
+            <button
+              type="submit"
+              disabled={askLoading || !askQuery.trim()}
+              style={{
+                padding: "8px 16px",
+                background: askLoading ? "#b8e6cc" : T.primary,
+                color: "#fff",
+                border: "none",
+                borderRadius: 6,
+                cursor: askLoading ? "default" : "pointer",
+                fontSize: 13,
+                fontWeight: 500,
+                whiteSpace: "nowrap",
+              }}
+            >
+              {askLoading ? "Searching..." : "Ask AI"}
+            </button>
+            {askResult && (
+              <button
+                type="button"
+                onClick={() => { setAskResult(null); setAskQuery(""); setAskError(null); }}
+                style={{ background: "none", border: "none", color: T.textMuted, cursor: "pointer", fontSize: 16 }}
+              >
+                x
+              </button>
+            )}
+          </form>
+
+          {askError && (
+            <div style={{ marginTop: 8, padding: "8px 12px", background: T.errorBg, border: `1px solid ${T.border}`, borderRadius: 6, fontSize: 12, color: "#ef4444" }}>
+              {askError}
+            </div>
+          )}
+
+          {askResult && (
+            <div style={{ marginTop: 12 }}>
+              {/* Summary */}
+              <div style={{
+                padding: "10px 14px", background: T.card, border: `1px solid ${T.border}`,
+                borderRadius: 6, fontSize: 13, color: T.text, lineHeight: 1.6, marginBottom: 10,
+              }}>
+                {askResult.summary}
+                <span style={{ fontSize: 10, color: T.textMuted, marginLeft: 8 }}>
+                  ({askResult.totalMatched} match{askResult.totalMatched !== 1 ? "es" : ""}
+                  {askResult.costUsd > 0 ? ` / $${askResult.costUsd.toFixed(4)}` : ""})
+                </span>
+              </div>
+
+              {/* Matching runs */}
+              {askResult.runs?.length > 0 && (
+                <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                  {askResult.runs.map((run: any) => (
+                    <Link
+                      key={run.id}
+                      to={`/projects/${project.id}/runs/${run.id}`}
+                      style={{ textDecoration: "none", color: "inherit" }}
+                    >
+                      <div style={{
+                        display: "flex", alignItems: "center", gap: 12, padding: "10px 14px",
+                        background: T.bg, border: `1px solid ${T.border}`, borderRadius: 6,
+                        cursor: "pointer", transition: "border-color 0.15s",
+                      }}
+                        onMouseEnter={(e) => (e.currentTarget.style.borderColor = T.borderDark)}
+                        onMouseLeave={(e) => (e.currentTarget.style.borderColor = T.border)}
+                      >
+                        {/* Score */}
+                        <div style={{
+                          width: 36, height: 36, borderRadius: "50%", flexShrink: 0,
+                          display: "flex", alignItems: "center", justifyContent: "center",
+                          fontSize: 12, fontWeight: 700,
+                          background: run.overallScore == null ? T.cardAlt
+                            : run.overallScore >= 0.8 ? T.successBg : run.overallScore >= 0.5 ? T.warningBg : T.errorBg,
+                          color: run.overallScore == null ? T.textMuted
+                            : run.overallScore >= 0.8 ? "#22c55e" : run.overallScore >= 0.5 ? "#f59e0b" : "#ef4444",
+                          border: `1px solid ${run.overallScore == null ? T.border
+                            : run.overallScore >= 0.8 ? "#22c55e44" : run.overallScore >= 0.5 ? "#f59e0b44" : "#ef444444"}`,
+                        }}>
+                          {run.overallScore != null ? `${(run.overallScore * 100).toFixed(0)}%` : "?"}
+                        </div>
+
+                        {/* Info */}
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 3 }}>
+                            <span style={{ fontSize: 12, color: T.textSecondary }}>{run.callDate || "?"}</span>
+                            {run.callOutcome && (
+                              <span style={{
+                                fontSize: 10, padding: "1px 6px", borderRadius: 3,
+                                background: run.callOutcome === "stuck" ? T.errorBg : T.card,
+                                color: run.callOutcome === "stuck" ? "#ef4444" : T.textSecondary,
+                                border: `1px solid ${run.callOutcome === "stuck" ? "#ef444433" : T.border}`,
+                              }}>
+                                {run.callOutcome}
+                              </span>
+                            )}
+                            {run.callDuration && (
+                              <span style={{ fontSize: 10, color: T.textMuted }}>{run.callDuration}s</span>
+                            )}
+                          </div>
+                          <div style={{ fontSize: 12, color: T.primary, lineHeight: 1.5 }}>
+                            {run.matchReason}
+                          </div>
+                        </div>
+                      </div>
+                    </Link>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+
       {/* Runs table */}
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8, flexWrap: "wrap", gap: 8 }}>
         <h2 style={{ fontSize: 16, margin: 0 }}>
           {isWebhook ? "Incoming Calls" : isHistory ? "Imported Calls" : "Runs"}
           {project.runs?.length > 0 && (
-            <span style={{ fontSize: 12, color: "#666", fontWeight: 400, marginLeft: 8 }}>
+            <span style={{ fontSize: 12, color: T.textMuted, fontWeight: 400, marginLeft: 8 }}>
               ({project.runs.length} total{(isHistory || isWebhook) ? ", latest first" : ""})
             </span>
           )}
@@ -523,10 +686,10 @@ export default function ProjectDetail() {
             onChange={(e) => setSearchQuery(e.target.value)}
             style={{
               padding: "5px 10px",
-              background: "#1a1a1a",
-              border: "1px solid #333",
+              background: T.input,
+              border: `1px solid ${T.borderDark}`,
               borderRadius: 4,
-              color: "#e0e0e0",
+              color: T.text,
               fontSize: 12,
               width: 260,
             }}
@@ -543,13 +706,13 @@ export default function ProjectDetail() {
             }
             if (channels.size < 2) return null;
             return (
-              <div style={{ display: "flex", gap: 0, borderRadius: 4, overflow: "hidden", border: "1px solid #333" }}>
+              <div style={{ display: "flex", gap: 0, borderRadius: 4, overflow: "hidden", border: `1px solid ${T.border}` }}>
                 <button
                   onClick={() => setChannelFilter(null)}
                   style={{
                     padding: "4px 10px", border: "none", cursor: "pointer", fontSize: 11,
-                    background: channelFilter === null ? "#2563eb" : "#111",
-                    color: channelFilter === null ? "#fff" : "#888",
+                    background: channelFilter === null ? T.primary : T.card,
+                    color: channelFilter === null ? "#fff" : T.textSecondary,
                   }}
                 >All</button>
                 {[...channels].sort().map((ch) => (
@@ -558,8 +721,8 @@ export default function ProjectDetail() {
                     onClick={() => setChannelFilter(channelFilter === ch ? null : ch)}
                     style={{
                       padding: "4px 10px", border: "none", cursor: "pointer", fontSize: 11,
-                      background: channelFilter === ch ? "#2563eb" : "#111",
-                      color: channelFilter === ch ? "#fff" : "#888",
+                      background: channelFilter === ch ? T.primary : T.card,
+                      color: channelFilter === ch ? "#fff" : T.textSecondary,
                     }}
                   >{ch}</button>
                 ))}
@@ -568,15 +731,15 @@ export default function ProjectDetail() {
           })()}
         </div>
         {outcomeColumns.length > 0 && (
-          <div style={{ display: "flex", gap: 0, borderRadius: 6, overflow: "hidden", border: "1px solid #333" }}>
+          <div style={{ display: "flex", gap: 0, borderRadius: 6, overflow: "hidden", border: `1px solid ${T.border}` }}>
             {(["evaluation", "outcomes"] as const).map((tab) => (
               <button
                 key={tab}
                 onClick={() => setActiveTab(tab)}
                 style={{
                   padding: "5px 14px",
-                  background: activeTab === tab ? "#2563eb" : "#111",
-                  color: activeTab === tab ? "#fff" : "#888",
+                  background: activeTab === tab ? T.primary : T.card,
+                  color: activeTab === tab ? "#fff" : T.textSecondary,
                   border: "none",
                   cursor: "pointer",
                   fontSize: 12,
@@ -591,7 +754,7 @@ export default function ProjectDetail() {
       </div>
       <table style={{ width: "100%", borderCollapse: "collapse" }}>
         <thead>
-          <tr style={{ borderBottom: "1px solid #333", textAlign: "left" }}>
+          <tr style={{ borderBottom: `1px solid ${T.border}`, textAlign: "left" }}>
             {(isHistory || isWebhook) ? (
               <>
                 <th style={thStyle}>Date</th>
@@ -653,18 +816,18 @@ export default function ProjectDetail() {
               (getChannel(run.webhookData) || "").toLowerCase().includes(q)
             );
           }).map((run: any) => (
-            <tr key={run.id} style={{ borderBottom: "1px solid #1a1a1a" }}>
+            <tr key={run.id} style={{ borderBottom: `1px solid ${T.border}` }}>
               {(isHistory || isWebhook) ? (
                 <>
                   <td style={tdStyle}>
-                    <Link to={`/projects/${id}/runs/${run.id}`} style={{ color: "#60a5fa", textDecoration: "none", whiteSpace: "nowrap" }}>
+                    <Link to={`/projects/${id}/runs/${run.id}`} style={{ color: T.link, textDecoration: "none", whiteSpace: "nowrap" }}>
                       {formatDate(run.callDate || run.createdAt)}
                     </Link>
                   </td>
                   <td style={{ ...tdStyle, fontSize: 11 }}>
                     <ChannelBadge webhookData={run.webhookData} />
                   </td>
-                  <td style={{ ...tdStyle, color: "#666", fontSize: 12, whiteSpace: "nowrap" }}>
+                  <td style={{ ...tdStyle, color: T.textMuted, fontSize: 12, whiteSpace: "nowrap" }}>
                     {run.callDuration ? `${run.callDuration}s` : "—"}
                   </td>
                   <td style={tdStyle}>
@@ -679,7 +842,7 @@ export default function ProjectDetail() {
                 </>
               ) : (
                 <td style={tdStyle}>
-                  <Link to={`/projects/${id}/runs/${run.id}`} style={{ color: "#60a5fa", textDecoration: "none" }}>
+                  <Link to={`/projects/${id}/runs/${run.id}`} style={{ color: T.link, textDecoration: "none" }}>
                     {run.modelUsed}
                   </Link>
                 </td>
@@ -688,7 +851,7 @@ export default function ProjectDetail() {
                 <>
                   <td style={tdStyle}><GoalBadge run={run} /></td>
                   <td style={tdStyle}>
-                    <span style={{ color: STATUS_COLORS[run.status] || "#888", display: "flex", alignItems: "center", gap: 4 }}>
+                    <span style={{ color: STATUS_COLORS[run.status] || T.textSecondary, display: "flex", alignItems: "center", gap: 4 }}>
                       {["RUNNING", "AWAITING_DATA", "EVALUATING"].includes(run.status) && (
                         <span style={{ display: "inline-block", width: 10, height: 10, border: "2px solid currentColor", borderTopColor: "transparent", borderRadius: "50%", animation: "spin 1s linear infinite" }} />
                       )}
@@ -702,7 +865,7 @@ export default function ProjectDetail() {
                       </span>
                     ) : "—"}
                   </td>
-                  <td style={{ ...tdStyle, fontSize: 11, color: "#555" }}>
+                  <td style={{ ...tdStyle, fontSize: 11, color: T.textMuted }}>
                     {run.evalCost != null && run.evalCost > 0
                       ? `$${run.evalCost < 0.01 ? run.evalCost.toFixed(4) : run.evalCost.toFixed(3)}`
                       : "—"}
@@ -764,7 +927,7 @@ export default function ProjectDetail() {
                   )}
                   <button
                     onClick={async () => { await deleteRun(run.id); load(); }}
-                    style={{ ...smallBtnStyle, color: "#666" }}
+                    style={{ ...smallBtnStyle, color: T.textMuted }}
                   >
                     Del
                   </button>
@@ -805,9 +968,9 @@ export default function ProjectDetail() {
         });
         if (filtered.length === 0) {
           return (
-            <p style={{ color: "#666", fontSize: 13, textAlign: "center", padding: "16px 0" }}>
+            <p style={{ color: T.textMuted, fontSize: 13, textAlign: "center", padding: "16px 0" }}>
               No calls match the current filter.{" "}
-              <button onClick={() => { setSearchQuery(""); setChannelFilter(null); }} style={{ color: "#60a5fa", background: "none", border: "none", cursor: "pointer", fontSize: 13 }}>
+              <button onClick={() => { setSearchQuery(""); setChannelFilter(null); }} style={{ color: T.link, background: "none", border: "none", cursor: "pointer", fontSize: 13 }}>
                 Clear filters
               </button>
             </p>
@@ -934,14 +1097,14 @@ function computeGoal(run: any): { status: GoalStatus; reason: string } | null {
 }
 
 const GOAL_STYLE: Record<GoalStatus, { color: string; bg: string; border: string; label: string }> = {
-  SUCCESSFUL: { color: "#22c55e", bg: "#14532d22", border: "#22c55e44", label: "Successful" },
-  PARTIAL:    { color: "#f59e0b", bg: "#78350f22", border: "#f59e0b44", label: "Partial"    },
-  FAILED:     { color: "#ef4444", bg: "#7f1d1d22", border: "#ef444444", label: "Failed"     },
+  SUCCESSFUL: { color: "#22c55e", bg: T.successBg, border: "#22c55e44", label: "Successful" },
+  PARTIAL:    { color: "#f59e0b", bg: T.warningBg, border: "#f59e0b44", label: "Partial"    },
+  FAILED:     { color: "#ef4444", bg: T.errorBg, border: "#ef444444", label: "Failed"     },
 };
 
 function GoalBadge({ run }: { run: any }) {
   const goal = computeGoal(run);
-  if (!goal) return <span style={{ color: "#444", fontSize: 11 }}>—</span>;
+  if (!goal) return <span style={{ color: T.textFaint, fontSize: 11 }}>—</span>;
   const s = GOAL_STYLE[goal.status];
   return (
     <span
@@ -973,20 +1136,20 @@ function UploadPanel({ runId, onUpload }: { runId: string; onUpload: (runId: str
   const [callLogJson, setCallLogJson] = useState("");
   const [transcriptJson, setTranscriptJson] = useState("");
   const textareaStyle: React.CSSProperties = {
-    width: "100%", height: 80, background: "#0a0a0a", border: "1px solid #333",
-    borderRadius: 4, color: "#e0e0e0", fontFamily: "monospace", fontSize: 11, padding: 8,
+    width: "100%", height: 80, background: T.bg, border: `1px solid ${T.borderDark}`,
+    borderRadius: 4, color: T.text, fontFamily: "monospace", fontSize: 11, padding: 8,
   };
   return (
-    <div style={{ marginTop: 8, background: "#111", padding: 12, borderRadius: 6, border: "1px solid #222" }}>
+    <div style={{ marginTop: 8, background: T.card, padding: 12, borderRadius: 6, border: `1px solid ${T.border}` }}>
       <div style={{ marginBottom: 8 }}>
-        <label style={{ fontSize: 12, color: "#aaa" }}>Call Log JSON</label>
+        <label style={{ fontSize: 12, color: T.textSecondary }}>Call Log JSON</label>
         <textarea style={textareaStyle} value={callLogJson} onChange={(e) => setCallLogJson(e.target.value)} placeholder="Paste call log array..." />
         <button onClick={() => onUpload(runId, "callLog", callLogJson)} style={smallBtnStyle} disabled={!callLogJson.trim()}>
           Upload Call Log
         </button>
       </div>
       <div>
-        <label style={{ fontSize: 12, color: "#aaa" }}>Webhook/Transcript JSON</label>
+        <label style={{ fontSize: 12, color: T.textSecondary }}>Webhook/Transcript JSON</label>
         <textarea style={textareaStyle} value={transcriptJson} onChange={(e) => setTranscriptJson(e.target.value)} placeholder="Paste webhook payload..." />
         <button onClick={() => onUpload(runId, "transcript", transcriptJson)} style={smallBtnStyle} disabled={!transcriptJson.trim()}>
           Upload Transcript
@@ -997,11 +1160,11 @@ function UploadPanel({ runId, onUpload }: { runId: string; onUpload: (runId: str
 }
 
 const CALL_STATUS_STYLE: Record<string, { color: string; bg: string; label: string }> = {
-  COMPLETED:  { color: "#22c55e", bg: "#14532d22", label: "Completed" },
-  FAILED:     { color: "#ef4444", bg: "#7f1d1d22", label: "Failed" },
-  NO_ANSWER:  { color: "#f59e0b", bg: "#78350f22", label: "No Answer" },
-  IN_PROGRESS:{ color: "#3b82f6", bg: "#1e3a5f22", label: "In Progress" },
-  PENDING:    { color: "#888",    bg: "#1a1a1a",   label: "Pending" },
+  COMPLETED:  { color: "#22c55e", bg: T.successBg, label: "Completed" },
+  FAILED:     { color: "#ef4444", bg: T.errorBg, label: "Failed" },
+  NO_ANSWER:  { color: "#f59e0b", bg: T.warningBg, label: "No Answer" },
+  IN_PROGRESS:{ color: "#3b82f6", bg: T.infoBg, label: "In Progress" },
+  PENDING:    { color: T.textSecondary, bg: T.card, label: "Pending" },
 };
 
 function getChannel(webhookData: any): string | null {
@@ -1018,13 +1181,13 @@ function getChannel(webhookData: any): string | null {
 
 function ChannelBadge({ webhookData }: { webhookData: any }) {
   const channel = getChannel(webhookData);
-  if (!channel) return <span style={{ color: "#444", fontSize: 12 }}>—</span>;
+  if (!channel) return <span style={{ color: T.textFaint, fontSize: 12 }}>—</span>;
   const isWeb = channel.toLowerCase() === "web";
   return (
     <span style={{
       fontSize: 10, padding: "2px 7px", borderRadius: 10,
-      background: isWeb ? "#1e3a5f22" : "#14532d22",
-      color: isWeb ? "#60a5fa" : "#4ade80",
+      background: isWeb ? T.infoBg : T.successBg,
+      color: isWeb ? "#3b82f6" : "#22c55e",
       border: `1px solid ${isWeb ? "#60a5fa" : "#4ade80"}44`,
       whiteSpace: "nowrap",
     }}>
@@ -1034,8 +1197,8 @@ function ChannelBadge({ webhookData }: { webhookData: any }) {
 }
 
 function CallStatusBadge({ status }: { status: string | null | undefined }) {
-  if (!status) return <span style={{ color: "#444", fontSize: 12 }}>—</span>;
-  const s = CALL_STATUS_STYLE[status.toUpperCase()] ?? { color: "#888", bg: "#1a1a1a", label: status };
+  if (!status) return <span style={{ color: T.textFaint, fontSize: 12 }}>—</span>;
+  const s = CALL_STATUS_STYLE[status.toUpperCase()] ?? { color: T.textSecondary, bg: T.card, label: status };
   return (
     <span style={{
       fontSize: 11, padding: "2px 8px", borderRadius: 10,
@@ -1058,18 +1221,18 @@ function outcomeStyle(outcome: string): { color: string; bg: string } {
   const lower = outcome.toLowerCase();
   // Check negative BEFORE positive — "not_interested" contains "interested"
   if (lower.includes("not_interested") || lower.includes("rejected") || lower.includes("declined") || lower.includes("refused") || lower.includes("hangup") || lower.includes("hang_up"))
-    return { color: "#ef4444", bg: "#7f1d1d22" };
+    return { color: "#ef4444", bg: T.errorBg };
   if (lower.includes("interested") || lower.includes("success") || lower.includes("converted") || lower.includes("booked"))
-    return { color: "#22c55e", bg: "#14532d22" };
+    return { color: "#22c55e", bg: T.successBg };
   if (lower.includes("followup") || lower.includes("callback") || lower.includes("pending") || lower.includes("later"))
-    return { color: "#f59e0b", bg: "#78350f22" };
+    return { color: "#f59e0b", bg: T.warningBg };
   if (lower.includes("no_answer") || lower.includes("busy") || lower.includes("voicemail"))
-    return { color: "#6b7280", bg: "#1a1a1a" };
-  return { color: "#a78bfa", bg: "#2e1065aa" }; // unknown outcomes get purple
+    return { color: "#6b7280", bg: T.card };
+  return { color: "#a78bfa", bg: "#f3e8ff" }; // unknown outcomes get purple
 }
 
 function OutcomeBadge({ outcome }: { outcome: string | null | undefined }) {
-  if (!outcome) return <span style={{ color: "#444", fontSize: 12 }}>—</span>;
+  if (!outcome) return <span style={{ color: T.textFaint, fontSize: 12 }}>—</span>;
   const { color, bg } = outcomeStyle(outcome);
   return (
     <span style={{
@@ -1111,8 +1274,8 @@ function ImportProgressBanner({ runs }: { runs: any[] }) {
 
   return (
     <div style={{
-      background: "#0a1628",
-      border: "1px solid #1e3a5f",
+      background: T.infoBg,
+      border: `1px solid ${T.border}`,
       borderRadius: 8,
       padding: "12px 16px",
       marginBottom: 20,
@@ -1134,7 +1297,7 @@ function ImportProgressBanner({ runs }: { runs: any[] }) {
       </div>
 
       {/* Progress bar */}
-      <div style={{ background: "#1e293b", borderRadius: 4, height: 6, marginBottom: 10, overflow: "hidden" }}>
+      <div style={{ background: T.cardAlt, borderRadius: 4, height: 6, marginBottom: 10, overflow: "hidden" }}>
         <div style={{
           height: "100%",
           width: `${pct}%`,
@@ -1163,13 +1326,14 @@ function ImportProgressBanner({ runs }: { runs: any[] }) {
 function Card({ label, value, href }: { label: string; value: string | number; href?: string }) {
   const inner = (
     <div style={{
-      background: "#1a1a1a", padding: "12px 16px", borderRadius: 8, border: "1px solid #222", minWidth: 120,
+      background: T.card, padding: "12px 16px", borderRadius: 8, border: `1px solid ${T.border}`, minWidth: 120,
+      boxShadow: T.shadow,
       ...(href ? { cursor: "pointer", transition: "border-color 0.15s" } : {}),
     }}
-      onMouseEnter={href ? (e) => (e.currentTarget.style.borderColor = "#444") : undefined}
-      onMouseLeave={href ? (e) => (e.currentTarget.style.borderColor = "#222") : undefined}
+      onMouseEnter={href ? (e) => (e.currentTarget.style.borderColor = T.borderDark) : undefined}
+      onMouseLeave={href ? (e) => (e.currentTarget.style.borderColor = T.border) : undefined}
     >
-      <div style={{ fontSize: 12, color: "#888", marginBottom: 4 }}>{label}</div>
+      <div style={{ fontSize: 12, color: T.textSecondary, marginBottom: 4 }}>{label}</div>
       <div style={{ fontSize: 18, fontWeight: 600 }}>{value}</div>
     </div>
   );
@@ -1178,19 +1342,19 @@ function Card({ label, value, href }: { label: string; value: string | number; h
 }
 
 const btnStyle: React.CSSProperties = {
-  background: "#2563eb", color: "#fff", padding: "8px 16px", borderRadius: 6,
+  background: T.primary, color: "#fff", padding: "8px 16px", borderRadius: 6,
   border: "none", cursor: "pointer", fontSize: 14,
 };
 const smallBtnStyle: React.CSSProperties = {
-  background: "#1e293b", color: "#94a3b8", padding: "4px 8px", borderRadius: 4,
+  background: T.cardAlt, color: T.textSecondary, padding: "4px 8px", borderRadius: 4,
   border: "none", cursor: "pointer", fontSize: 11,
 };
 const thStyle: React.CSSProperties = { padding: "8px 12px", fontSize: 13 };
 const tdStyle: React.CSSProperties = { padding: "8px 12px" };
-const labelStyle: React.CSSProperties = { display: "block", marginBottom: 4, fontSize: 13, color: "#aaa" };
+const labelStyle: React.CSSProperties = { display: "block", marginBottom: 4, fontSize: 13, color: T.textSecondary };
 const inputStyle: React.CSSProperties = {
-  width: "100%", padding: "6px 10px", background: "#1a1a1a", border: "1px solid #333",
-  borderRadius: 4, color: "#e0e0e0", fontSize: 13, boxSizing: "border-box",
+  width: "100%", padding: "6px 10px", background: T.input, border: `1px solid ${T.borderDark}`,
+  borderRadius: 4, color: T.text, fontSize: 13, boxSizing: "border-box",
 };
 
 /**
@@ -1199,7 +1363,7 @@ const inputStyle: React.CSSProperties = {
  */
 function CopyableId({ id, label }: { id: string | null | undefined; label?: string }) {
   const [copied, setCopied] = useState(false);
-  if (!id) return <span style={{ color: "#444", fontSize: 12 }}>—</span>;
+  if (!id) return <span style={{ color: T.textFaint, fontSize: 12 }}>—</span>;
 
   const short = id.slice(0, 8) + "…" + id.slice(-4);
 
@@ -1221,8 +1385,8 @@ function CopyableId({ id, label }: { id: string | null | undefined; label?: stri
         title={id}
         style={{
           fontSize: 11, color: "#64748b", fontFamily: "monospace",
-          background: "#0f172a", padding: "2px 6px", borderRadius: 3,
-          border: "1px solid #1e293b", letterSpacing: "0.02em", whiteSpace: "nowrap",
+          background: T.cardAlt, padding: "2px 6px", borderRadius: 3,
+          border: `1px solid ${T.border}`, letterSpacing: "0.02em", whiteSpace: "nowrap",
           cursor: "default",
         }}
       >
@@ -1268,7 +1432,7 @@ function AgentIntelligencePanel({ agentStruct, agentSummary }: { agentStruct: an
 
   return (
     <div style={{
-      background: "#0d1117", border: "1px solid #1e3a5f", borderRadius: 10,
+      background: T.card, border: `1px solid ${T.border}`, borderRadius: 10, boxShadow: T.shadow,
       marginBottom: 24, overflow: "hidden",
     }}>
       {/* Toggle header */}
@@ -1277,12 +1441,12 @@ function AgentIntelligencePanel({ agentStruct, agentSummary }: { agentStruct: an
         style={{
           padding: "12px 18px", cursor: "pointer",
           display: "flex", alignItems: "center", gap: 12,
-          borderBottom: open ? "1px solid #1e293b" : "none",
+          borderBottom: open ? `1px solid ${T.border}` : "none",
         }}
       >
         <span style={{ fontSize: 11, color: "#3b82f6" }}>{open ? "▼" : "▶"}</span>
-        <span style={{ fontSize: 13, fontWeight: 700, color: "#60a5fa" }}>What the system understood from this agent</span>
-        <span style={{ fontSize: 11, color: "#444", marginLeft: 4 }}>
+        <span style={{ fontSize: 13, fontWeight: 700, color: T.link }}>What the system understood from this agent</span>
+        <span style={{ fontSize: 11, color: T.textFaint, marginLeft: 4 }}>
           {nodes.length > 0 && `${nodes.length} nodes`}
           {tools.length > 0 && ` · ${tools.length} tools`}
           {preamble && " · has instructions"}
@@ -1303,8 +1467,8 @@ function AgentIntelligencePanel({ agentStruct, agentSummary }: { agentStruct: an
                 LLM Understanding
               </div>
               <div style={{
-                background: "#0a0f1a", border: "1px solid #1e3a5f", borderRadius: 8,
-                padding: "14px 16px", fontSize: 13, color: "#cbd5e1",
+                background: T.infoBg, border: `1px solid ${T.border}`, borderRadius: 8,
+                padding: "14px 16px", fontSize: 13, color: T.text,
                 lineHeight: 1.7, whiteSpace: "pre-wrap", fontFamily: "inherit",
               }}>
                 {agentSummary}
@@ -1323,8 +1487,8 @@ function AgentIntelligencePanel({ agentStruct, agentSummary }: { agentStruct: an
                 Agent Instructions (Preamble)
               </div>
               <div style={{
-                background: "#0a0a0a", border: "1px solid #2d1b69", borderRadius: 8,
-                padding: "14px 16px", fontSize: 12, color: "#c4b5fd",
+                background: "#f3e8ff", border: `1px solid ${T.border}`, borderRadius: 8,
+                padding: "14px 16px", fontSize: 12, color: "#7c3aed",
                 lineHeight: 1.7, whiteSpace: "pre-wrap", fontFamily: "inherit",
                 maxHeight: 320, overflowY: "auto",
               }}>
@@ -1340,8 +1504,8 @@ function AgentIntelligencePanel({ agentStruct, agentSummary }: { agentStruct: an
                 Opening Greeting
               </div>
               <div style={{
-                background: "#0a0a0a", border: "1px solid #065f46", borderRadius: 8,
-                padding: "10px 14px", fontSize: 13, color: "#a7f3d0", lineHeight: 1.6,
+                background: T.successBg, border: `1px solid ${T.border}`, borderRadius: 8,
+                padding: "10px 14px", fontSize: 13, color: "#166534", lineHeight: 1.6,
               }}>
                 {greeting}
               </div>
@@ -1360,12 +1524,12 @@ function AgentIntelligencePanel({ agentStruct, agentSummary }: { agentStruct: an
                   const vars: string[] = (node.extractVariables?.variables ?? []).map((v: any) => v.name);
                   return (
                     <div key={i} style={{
-                      background: "#0a0a0a", border: "1px solid #292524",
+                      background: T.bg, border: `1px solid ${T.border}`,
                       borderLeft: "3px solid #f59e0b", borderRadius: 6, padding: "10px 14px",
                     }}>
                       <div style={{ display: "flex", gap: 10, alignItems: "center", marginBottom: 4, flexWrap: "wrap" }}>
                         <span style={{ fontSize: 12, fontWeight: 700, color: "#fcd34d" }}>{node.label || `Node ${i + 1}`}</span>
-                        <span style={{ fontSize: 10, color: "#555", padding: "1px 6px", background: "#1a1a1a", borderRadius: 3 }}>{node.type}</span>
+                        <span style={{ fontSize: 10, color: T.textMuted, padding: "1px 6px", background: T.card, borderRadius: 3 }}>{node.type}</span>
                         {vars.length > 0 && (
                           <span style={{ fontSize: 10, color: "#60a5fa" }}>Collects: {vars.join(", ")}</span>
                         )}
@@ -1381,9 +1545,9 @@ function AgentIntelligencePanel({ agentStruct, agentSummary }: { agentStruct: an
                             const cond = t.condition?.description || t.condition?.prompt || "auto";
                             return (
                               <span key={j} style={{
-                                fontSize: 10, color: "#94a3b8",
-                                padding: "1px 8px", background: "#0f172a",
-                                border: "1px solid #1e3a5f", borderRadius: 3,
+                                fontSize: 10, color: T.textSecondary,
+                                padding: "1px 8px", background: T.infoBg,
+                                border: `1px solid ${T.border}`, borderRadius: 3,
                               }}>
                                 → {cond.slice(0, 60)}{cond.length > 60 ? "…" : ""}
                               </span>
@@ -1407,7 +1571,7 @@ function AgentIntelligencePanel({ agentStruct, agentSummary }: { agentStruct: an
               <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
                 {tools.map((t: any, i: number) => (
                   <div key={i} style={{
-                    background: "#0a0a0a", border: "1px solid #831843",
+                    background: T.bg, border: `1px solid ${T.border}`,
                     borderLeft: "3px solid #f472b6", borderRadius: 6, padding: "8px 12px",
                   }}>
                     <div style={{ fontSize: 12, fontWeight: 600, color: "#f9a8d4", marginBottom: 2 }}>
@@ -1456,7 +1620,7 @@ function RefreshAgentButton({ projectId, onSuccess }: { projectId: string; onSuc
       <button
         onClick={handleRefresh}
         disabled={loading}
-        style={{ background: "none", border: "none", color: loading ? "#555" : "#3b82f6", cursor: loading ? "default" : "pointer", fontSize: 11, padding: 0 }}
+        style={{ background: "none", border: "none", color: loading ? T.textMuted : "#3b82f6", cursor: loading ? "default" : "pointer", fontSize: 11, padding: 0 }}
       >
         {loading ? "Refreshing…" : "Refresh Agent"}
       </button>
@@ -1469,19 +1633,19 @@ function WebhookUrlBar({ url }: { url: string }) {
   const [copied, setCopied] = useState(false);
   return (
     <div style={{
-      marginTop: 8, padding: "6px 12px", background: "#0a0a0a", borderRadius: 6,
-      border: "1px solid #222", display: "flex", alignItems: "center", gap: 8,
+      marginTop: 8, padding: "6px 12px", background: T.bg, borderRadius: 6,
+      border: `1px solid ${T.border}`, display: "flex", alignItems: "center", gap: 8,
     }}>
-      <span style={{ fontSize: 11, color: "#666" }}>Webhook URL:</span>
-      <code style={{ fontSize: 11, color: "#888", flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+      <span style={{ fontSize: 11, color: T.textMuted }}>Webhook URL:</span>
+      <code style={{ fontSize: 11, color: T.textSecondary, flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
         {url}
       </code>
       <button
         onClick={() => { navigator.clipboard.writeText(url).catch(() => {}); setCopied(true); setTimeout(() => setCopied(false), 2000); }}
         style={{
-          background: copied ? "#22c55e22" : "#1a1a1a",
-          border: `1px solid ${copied ? "#22c55e44" : "#333"}`,
-          color: copied ? "#22c55e" : "#888",
+          background: copied ? T.successBg : T.card,
+          border: `1px solid ${copied ? "#22c55e44" : T.border}`,
+          color: copied ? "#22c55e" : T.textSecondary,
           padding: "2px 10px", borderRadius: 3, cursor: "pointer", fontSize: 11,
         }}
       >

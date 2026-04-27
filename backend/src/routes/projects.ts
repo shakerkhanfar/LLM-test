@@ -4,15 +4,18 @@ import { CriterionType } from "@prisma/client";
 import { getAgent } from "../services/hamsaApi";
 import { generateAgentSummary } from "../services/llmJudge";
 import { analyzeProject, compareAnalyses } from "../services/projectAnalyzer";
+import { searchRuns } from "../services/runSearch";
+import { AuthRequest } from "../middleware/auth";
 
 const router = Router();
 
 const VALID_CRITERION_TYPES = new Set<string>(Object.values(CriterionType));
 const VALID_PROJECT_TYPES = new Set(["LIVE", "HISTORY", "WEBHOOK"]);
 
-// List all projects (no pagination yet — acceptable for reasonable project counts)
-router.get("/", async (_req, res) => {
+// List all projects scoped to the authenticated user
+router.get("/", async (req: AuthRequest, res) => {
   const projects = await prisma.project.findMany({
+    where: { userId: req.userId },
     include: {
       _count: { select: { criteria: true, runs: true } },
       runs: {
@@ -54,7 +57,7 @@ router.post("/agent-preview", async (req, res) => {
 });
 
 // Get single project with criteria and runs (most recent 100 runs)
-router.get("/:id", async (req, res) => {
+router.get("/:id", async (req: AuthRequest, res) => {
   try {
     const project = await prisma.project.findUnique({
       where: { id: req.params.id },
@@ -70,6 +73,9 @@ router.get("/:id", async (req, res) => {
       },
     });
     if (!project) return res.status(404).json({ error: "Project not found" });
+    if (project.userId && project.userId !== req.userId) {
+      return res.status(403).json({ error: "Access denied" });
+    }
     res.json(project);
   } catch (err) {
     res.status(500).json({ error: "Failed to fetch project" });
@@ -77,7 +83,7 @@ router.get("/:id", async (req, res) => {
 });
 
 // Create project
-router.post("/", async (req, res) => {
+router.post("/", async (req: AuthRequest, res) => {
   const { name, agentId, hamsaApiKey, description, agentStructure, criteria, projectType, historyStartDate, historyEndDate } = req.body;
 
   // Basic input validation
@@ -115,6 +121,7 @@ router.post("/", async (req, res) => {
     // Run in background after project creation so it doesn't block the response.
     const project = await prisma.project.create({
       data: {
+        userId: req.userId,
         name: name.trim(),
         agentId: agentId.trim(),
         hamsaApiKey: hamsaApiKey?.trim() || null,
@@ -163,10 +170,14 @@ router.post("/", async (req, res) => {
 });
 
 // Update project
-router.patch("/:id", async (req, res) => {
+router.patch("/:id", async (req: AuthRequest, res) => {
   const { name, description, agentStructure } = req.body;
 
   try {
+    const existing = await prisma.project.findUnique({ where: { id: req.params.id }, select: { userId: true } });
+    if (!existing) return res.status(404).json({ error: "Project not found" });
+    if (existing.userId && existing.userId !== req.userId) return res.status(403).json({ error: "Access denied" });
+
     const data: any = {};
     if (name !== undefined) data.name = name;
     if (description !== undefined) data.description = description;
@@ -190,10 +201,11 @@ router.patch("/:id", async (req, res) => {
 });
 
 // Refresh agent details from Hamsa API
-router.post("/:id/refresh-agent", async (req, res) => {
+router.post("/:id/refresh-agent", async (req: AuthRequest, res) => {
   try {
     const project = await prisma.project.findUnique({ where: { id: req.params.id } });
     if (!project) return res.status(404).json({ error: "Project not found" });
+    if (project.userId && project.userId !== req.userId) return res.status(403).json({ error: "Access denied" });
 
     const agent = await getAgent(project.agentId, project.hamsaApiKey || undefined);
     const updated = await prisma.project.update({
@@ -223,8 +235,11 @@ router.post("/:id/refresh-agent", async (req, res) => {
 });
 
 // Delete project
-router.delete("/:id", async (req, res) => {
+router.delete("/:id", async (req: AuthRequest, res) => {
   try {
+    const existing = await prisma.project.findUnique({ where: { id: req.params.id }, select: { userId: true } });
+    if (!existing) return res.status(404).json({ error: "Project not found" });
+    if (existing.userId && existing.userId !== req.userId) return res.status(403).json({ error: "Access denied" });
     await prisma.project.delete({ where: { id: req.params.id } });
     res.json({ ok: true });
   } catch (err: any) {
@@ -234,7 +249,7 @@ router.delete("/:id", async (req, res) => {
 });
 
 // Add criterion to project
-router.post("/:id/criteria", async (req, res) => {
+router.post("/:id/criteria", async (req: AuthRequest, res) => {
   const { key, label, type, expectedValue, weight } = req.body;
 
   if (!key || typeof key !== "string") {
@@ -245,6 +260,10 @@ router.post("/:id/criteria", async (req, res) => {
   }
 
   try {
+    const existing = await prisma.project.findUnique({ where: { id: req.params.id }, select: { userId: true } });
+    if (!existing) return res.status(404).json({ error: "Project not found" });
+    if (existing.userId !== null && existing.userId !== req.userId) return res.status(403).json({ error: "Access denied" });
+
     const criterion = await prisma.criterion.create({
       data: {
         projectId: req.params.id,
@@ -264,8 +283,12 @@ router.post("/:id/criteria", async (req, res) => {
 });
 
 // Delete criterion — verify it belongs to this project first
-router.delete("/:id/criteria/:criterionId", async (req, res) => {
+router.delete("/:id/criteria/:criterionId", async (req: AuthRequest, res) => {
   try {
+    const existing = await prisma.project.findUnique({ where: { id: req.params.id }, select: { userId: true } });
+    if (!existing) return res.status(404).json({ error: "Project not found" });
+    if (existing.userId !== null && existing.userId !== req.userId) return res.status(403).json({ error: "Access denied" });
+
     const criterion = await prisma.criterion.findFirst({
       where: { id: req.params.criterionId, projectId: req.params.id },
     });
@@ -329,7 +352,7 @@ function extractFlowDefinition(workflow: any) {
 const analyzingProjects = new Set<string>();
 
 // Trigger a new analysis version for the project
-router.post("/:id/analyze", async (req, res) => {
+router.post("/:id/analyze", async (req: AuthRequest, res) => {
   const projectId = req.params.id;
   const { dateFilterType, from, to } = req.body;
 
@@ -340,6 +363,11 @@ router.post("/:id/analyze", async (req, res) => {
   if (analyzingProjects.has(projectId)) {
     return res.status(409).json({ error: "An analysis is already running for this project" });
   }
+
+  // Ownership check
+  const projectOwner = await prisma.project.findUnique({ where: { id: projectId }, select: { userId: true } });
+  if (!projectOwner) return res.status(404).json({ error: "Project not found" });
+  if (projectOwner.userId !== null && projectOwner.userId !== req.userId) return res.status(403).json({ error: "Access denied" });
 
   analyzingProjects.add(projectId);
   try {
@@ -365,8 +393,12 @@ router.post("/:id/analyze", async (req, res) => {
 });
 
 // List all analysis versions for the project (newest first)
-router.get("/:id/analyses", async (req, res) => {
+router.get("/:id/analyses", async (req: AuthRequest, res) => {
   try {
+    const p = await prisma.project.findUnique({ where: { id: req.params.id }, select: { userId: true } });
+    if (!p) return res.status(404).json({ error: "Project not found" });
+    if (p.userId !== null && p.userId !== req.userId) return res.status(403).json({ error: "Access denied" });
+
     const analyses = await prisma.projectAnalysis.findMany({
       where:   { projectId: req.params.id },
       orderBy: { version: "desc" },
@@ -378,7 +410,7 @@ router.get("/:id/analyses", async (req, res) => {
 });
 
 // Compare multiple analysis versions (LLM-powered)
-router.post("/:id/analyses/compare", async (req, res) => {
+router.post("/:id/analyses/compare", async (req: AuthRequest, res) => {
   const { analysisIds } = req.body;
   if (!Array.isArray(analysisIds) || analysisIds.length < 2) {
     return res.status(400).json({ error: "Provide at least 2 analysisIds to compare" });
@@ -409,8 +441,12 @@ router.post("/:id/analyses/compare", async (req, res) => {
 });
 
 // Delete a single analysis version (ownership check: analysisId must belong to this project)
-router.delete("/:id/analyses/:analysisId", async (req, res) => {
+router.delete("/:id/analyses/:analysisId", async (req: AuthRequest, res) => {
   try {
+    const p = await prisma.project.findUnique({ where: { id: req.params.id }, select: { userId: true } });
+    if (!p) return res.status(404).json({ error: "Project not found" });
+    if (p.userId !== null && p.userId !== req.userId) return res.status(403).json({ error: "Access denied" });
+
     await prisma.projectAnalysis.delete({
       where: { id: req.params.analysisId, projectId: req.params.id },
     });
@@ -418,6 +454,41 @@ router.delete("/:id/analyses/:analysisId", async (req, res) => {
   } catch (err: any) {
     if (err?.code === "P2025") return res.status(404).json({ error: "Analysis not found" });
     res.status(500).json({ error: (err as Error).message });
+  }
+});
+
+/**
+ * POST /api/projects/:id/ask
+ *
+ * Natural language search across evaluated runs.
+ * Body: { question: string }
+ * Returns matching runs with explanations.
+ */
+router.post("/:id/ask", async (req: AuthRequest, res) => {
+  const { question } = req.body;
+  if (!question || typeof question !== "string" || question.trim().length < 3) {
+    return res.status(400).json({ error: "Please provide a question (min 3 characters)" });
+  }
+
+  const project = await prisma.project.findUnique({ where: { id: req.params.id } });
+  if (!project) return res.status(404).json({ error: "Project not found" });
+  if (project.userId !== null && project.userId !== req.userId) return res.status(403).json({ error: "Access denied" });
+
+  // 30s timeout — two LLM calls + DB query can take time
+  const timeout = setTimeout(() => {
+    if (!res.headersSent) {
+      res.status(504).json({ error: "Search timed out. Try a more specific question." });
+    }
+  }, 30_000);
+
+  try {
+    const result = await searchRuns(project.id, question.trim(), project.agentSummary || "");
+    clearTimeout(timeout);
+    if (!res.headersSent) res.json(result);
+  } catch (err) {
+    clearTimeout(timeout);
+    console.error("[Ask] Search failed:", err);
+    if (!res.headersSent) res.status(500).json({ error: (err as Error).message });
   }
 });
 

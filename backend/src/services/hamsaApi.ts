@@ -114,8 +114,9 @@ export async function updateAgentModel(
  * Fetch the call log for a completed call.
  * Endpoint: GET /v1/agent-analytics/logs?jobId={callId}
  */
-export async function fetchCallLog(callId: string, apiKey?: string) {
-  const url = `${HAMSA_API_BASE}/v1/agent-analytics/logs?jobId=${callId}`;
+export async function fetchCallLog(callId: string, apiKey?: string, baseUrl?: string) {
+  const base = baseUrl || HAMSA_API_BASE;
+  const url = `${base}/v1/agent-analytics/logs?jobId=${callId}`;
 
   console.log(`[HamsaAPI] Fetching call log: ${url}`);
 
@@ -161,8 +162,9 @@ export async function getAgent(agentId: string, apiKey?: string) {
  * Returns transcript, logs, call duration, media URL, and agent config at time of call.
  * Endpoint: GET /v1/voice-agents/conversation/{conversationId}
  */
-export async function fetchConversation(conversationId: string, apiKey?: string) {
-  const url = `${HAMSA_API_BASE}/v1/voice-agents/conversation/${conversationId}`;
+export async function fetchConversation(conversationId: string, apiKey?: string, baseUrl?: string) {
+  const base = baseUrl || HAMSA_API_BASE;
+  const url = `${base}/v1/voice-agents/conversation/${conversationId}`;
 
   console.log(`[HamsaAPI] Fetching conversation: ${conversationId}`);
 
@@ -242,6 +244,200 @@ export async function exportConversations(
 
   const arrayBuffer = await res.arrayBuffer();
   return Buffer.from(arrayBuffer);
+}
+
+// ─── Async CSV Export (new dev API) ──────────────────────────────────
+
+/**
+ * Request an async conversation export (CSV) from Hamsa's analytics API.
+ * Returns an exportId that can be polled for status.
+ *
+ * Endpoint: GET /v1/agent-analytics/conversations/export
+ * (with projectId param instead of voiceAgentId — the new pattern)
+ */
+export async function requestConversationExport(
+  projectId: string,
+  voiceAgentId: string,
+  options: {
+    startPeriod: number;
+    endPeriod: number;
+  },
+  apiKey?: string,
+  baseUrl?: string,
+): Promise<string> {
+  const base = baseUrl || HAMSA_API_BASE;
+  const params = new URLSearchParams({
+    projectId,
+    voiceAgentId,
+    period: "CUSTOM",
+    startPeriod: String(options.startPeriod),
+    endPeriod: String(options.endPeriod),
+  });
+
+  const url = `${base}/v1/agent-analytics/conversations/export?${params}`;
+  console.log(`[HamsaAPI] Requesting async export: ${url}`);
+
+  const res = await fetchWithTimeout(url, {
+    method: "GET",
+    headers: headers(apiKey),
+    timeoutMs: 30_000,
+  });
+
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`Failed to request export: ${res.status} — ${text}`);
+  }
+
+  const json = await res.json() as any;
+  if (!json.success || !json.data?.exportId) {
+    throw new Error(`Export request failed: ${json.message || "no exportId returned"}`);
+  }
+
+  return json.data.exportId;
+}
+
+/**
+ * Poll the export status until ready, failed, or expired.
+ * Returns the download URL when ready.
+ */
+export async function pollExportStatus(
+  projectId: string,
+  exportId: string,
+  apiKey?: string,
+  baseUrl?: string,
+): Promise<string> {
+  const base = baseUrl || HAMSA_API_BASE;
+  const params = new URLSearchParams({ projectId, exportId });
+  const url = `${base}/v1/agent-analytics/conversations/export/status?${params}`;
+
+  const MAX_POLLS = 60; // 5 minutes max (5s intervals)
+  let consecutiveErrors = 0;
+  const MAX_CONSECUTIVE_ERRORS = 3;
+
+  for (let i = 0; i < MAX_POLLS; i++) {
+    try {
+      const res = await fetchWithTimeout(url, {
+        method: "GET",
+        headers: headers(apiKey),
+        timeoutMs: 15_000,
+      });
+
+      if (!res.ok) {
+        const text = await res.text();
+        // Treat 5xx as transient — retry
+        if (res.status >= 500) {
+          consecutiveErrors++;
+          console.warn(`[HamsaAPI] Export status poll got ${res.status}, retrying (${consecutiveErrors}/${MAX_CONSECUTIVE_ERRORS})`);
+          if (consecutiveErrors >= MAX_CONSECUTIVE_ERRORS) {
+            throw new Error(`Export status check failed after ${MAX_CONSECUTIVE_ERRORS} retries: ${res.status} — ${text}`);
+          }
+          await new Promise((resolve) => setTimeout(resolve, 5000));
+          continue;
+        }
+        throw new Error(`Export status check failed: ${res.status} — ${text}`);
+      }
+
+      consecutiveErrors = 0; // reset on success
+      const json = await res.json() as any;
+      const { status, downloadUrl, error } = json.data || {};
+
+      if (status === "ready" && downloadUrl) {
+        console.log(`[HamsaAPI] Export ready after ${i + 1} polls`);
+        return downloadUrl;
+      }
+      if (status === "failed") {
+        throw new Error(`Export failed: ${error || "unknown error"}`);
+      }
+      if (status === "expired") {
+        throw new Error("Export job expired");
+      }
+    } catch (err) {
+      // Network errors (timeout, DNS, etc.) — retry unless too many
+      if ((err as Error).message.includes("Export failed") || (err as Error).message.includes("expired")) {
+        throw err; // terminal errors — don't retry
+      }
+      consecutiveErrors++;
+      console.warn(`[HamsaAPI] Export status poll error: ${(err as Error).message} (${consecutiveErrors}/${MAX_CONSECUTIVE_ERRORS})`);
+      if (consecutiveErrors >= MAX_CONSECUTIVE_ERRORS) throw err;
+    }
+
+    // Wait 5 seconds before next poll
+    await new Promise((resolve) => setTimeout(resolve, 5000));
+  }
+
+  throw new Error("Export timed out after 5 minutes of polling");
+}
+
+/**
+ * Download a CSV from a URL and parse conversation IDs from the "ID" column.
+ * Returns array of conversation UUIDs.
+ */
+export async function downloadAndParseExportCsv(downloadUrl: string): Promise<string[]> {
+  const res = await fetchWithTimeout(downloadUrl, { timeoutMs: 60_000 });
+  if (!res.ok) {
+    throw new Error(`Failed to download export CSV: ${res.status}`);
+  }
+
+  const text = await res.text();
+  // Normalize line endings (handle \r\n from Windows/CloudFront)
+  const lines = text.replace(/\r\n/g, "\n").replace(/\r/g, "\n").split("\n").filter((l) => l.trim());
+  if (lines.length < 2) return []; // header only or empty
+
+  const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+  // Parse CSV header to find the ID column
+  const headerLine = lines[0];
+  const csvHeaders = parseCsvLine(headerLine);
+  const idColIndex = csvHeaders.findIndex((h) => h.trim().toUpperCase() === "ID");
+
+  if (idColIndex === -1) {
+    // Fallback: find any column with UUIDs
+    const ids: string[] = [];
+    for (let i = 1; i < lines.length; i++) {
+      const cols = parseCsvLine(lines[i]);
+      for (const col of cols) {
+        const v = col.trim();
+        if (UUID_RE.test(v)) { ids.push(v); break; }
+      }
+    }
+    return ids;
+  }
+
+  // Extract IDs from the identified column, validate UUID format
+  const ids: string[] = [];
+  for (let i = 1; i < lines.length; i++) {
+    const cols = parseCsvLine(lines[i]);
+    const val = cols[idColIndex]?.trim();
+    if (val && UUID_RE.test(val)) ids.push(val);
+  }
+  return ids;
+}
+
+/** Simple CSV line parser that handles quoted fields with commas and escaped quotes */
+function parseCsvLine(line: string): string[] {
+  const cleaned = line.replace(/\r$/, ""); // strip trailing carriage return
+  const result: string[] = [];
+  let current = "";
+  let inQuotes = false;
+  for (let i = 0; i < cleaned.length; i++) {
+    const ch = cleaned[i];
+    if (ch === '"') {
+      // Handle escaped quotes ("") inside quoted fields
+      if (inQuotes && cleaned[i + 1] === '"') {
+        current += '"';
+        i++; // skip the second quote
+      } else {
+        inQuotes = !inQuotes;
+      }
+    } else if (ch === "," && !inQuotes) {
+      result.push(current);
+      current = "";
+    } else {
+      current += ch;
+    }
+  }
+  result.push(current);
+  return result;
 }
 
 /**

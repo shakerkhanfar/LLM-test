@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { useParams, Link, useLocation } from "react-router-dom";
 import { listProjectAnalyses, compareProjectAnalyses } from "../api/client";
+import T from "../theme";
 
 // ─── Types ────────────────────────────────────────────────────────
 
@@ -57,29 +58,29 @@ function healthColor(h: string | undefined) {
   if (h === "Good")    return "#22c55e";
   if (h === "Fair")    return "#f59e0b";
   if (h === "Poor")    return "#ef4444";
-  return "#888";
+  return T.textSecondary;
 }
 
 function trajectoryColor(t: string | undefined) {
   if (t === "Improving") return "#22c55e";
   if (t === "Declining") return "#ef4444";
   if (t === "Mixed")     return "#f59e0b";
-  return "#888";
+  return T.textSecondary;
 }
 
 function severityColor(s: string) {
   if (s === "High")   return "#ef4444";
   if (s === "Medium") return "#f59e0b";
-  return "#888";
+  return T.textSecondary;
 }
 
 function ScoreBar({ score }: { score: number | null }) {
-  if (score == null) return <span style={{ color: "#555", fontSize: 12 }}>N/A</span>;
+  if (score == null) return <span style={{ color: T.textMuted, fontSize: 12 }}>N/A</span>;
   const pct = Math.round(score * 100);
   const color = score >= 0.7 ? "#22c55e" : score >= 0.5 ? "#f59e0b" : "#ef4444";
   return (
     <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-      <div style={{ flex: 1, height: 6, background: "#1a1a1a", borderRadius: 3, minWidth: 80 }}>
+      <div style={{ flex: 1, height: 6, background: T.cardAlt, borderRadius: 3, minWidth: 80 }}>
         <div style={{ width: `${pct}%`, height: "100%", background: color, borderRadius: 3 }} />
       </div>
       <span style={{ fontSize: 12, color, fontWeight: 700, minWidth: 32 }}>{pct}%</span>
@@ -94,13 +95,13 @@ function VersionSummaryCard({ summary }: { summary: any }) {
   return (
     <div style={{
       flex: "1 1 200px", minWidth: 0,
-      background: "#111", border: "1px solid #222", borderRadius: 8,
+      background: T.card, border: `1px solid ${T.border}`, borderRadius: 8,
       padding: "14px 16px",
     }}>
       <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
         <div style={{
           fontSize: 11, fontWeight: 700, padding: "2px 8px", borderRadius: 4,
-          background: "#1e3a5f", color: "#60a5fa", border: "1px solid #1d4ed8",
+          background: "#1e3a5f", color: T.link, border: "1px solid #1d4ed8",
         }}>
           v{summary.version}
         </div>
@@ -111,21 +112,21 @@ function VersionSummaryCard({ summary }: { summary: any }) {
 
       <ScoreBar score={summary.healthScore} />
 
-      <div style={{ fontSize: 11, color: "#555", marginTop: 8, marginBottom: 10 }}>
+      <div style={{ fontSize: 11, color: T.textMuted, marginTop: 8, marginBottom: 10 }}>
         {summary.runsIncluded} runs · {fmtDate(summary.createdAt)}
       </div>
 
       {summary.executive_summary && (
-        <div style={{ fontSize: 12, color: "#9ca3af", lineHeight: 1.5, marginBottom: 10 }}>
+        <div style={{ fontSize: 12, color: T.textSecondary, lineHeight: 1.5, marginBottom: 10 }}>
           {summary.executive_summary}
         </div>
       )}
 
       {summary.priority_actions?.length > 0 && (
         <div>
-          <div style={{ fontSize: 11, color: "#555", marginBottom: 4 }}>Top priorities</div>
+          <div style={{ fontSize: 11, color: T.textMuted, marginBottom: 4 }}>Top priorities</div>
           {summary.priority_actions.slice(0, 3).map((a: string, i: number) => (
-            <div key={i} style={{ fontSize: 11, color: "#d1d5db", marginBottom: 3, display: "flex", gap: 6 }}>
+            <div key={i} style={{ fontSize: 11, color: T.text, marginBottom: 3, display: "flex", gap: 6 }}>
               <span style={{ color: "#3b82f6", fontWeight: 700 }}>#{i + 1}</span>
               <span>{a}</span>
             </div>
@@ -206,11 +207,11 @@ export default function AnalysisCompare() {
     <div style={{ maxWidth: 1100, margin: "0 auto" }}>
       {/* Header */}
       <div style={{ marginBottom: 24 }}>
-        <Link to={`/projects/${id}/analyses`} style={{ color: "#888", textDecoration: "none", fontSize: 14 }}>
+        <Link to={`/projects/${id}/analyses`} style={{ color: T.textSecondary, textDecoration: "none", fontSize: 14 }}>
           ← Back to analyses
         </Link>
         <h1 style={{ margin: "8px 0 4px", fontSize: 22 }}>Compare Versions</h1>
-        <p style={{ color: "#666", fontSize: 13, margin: 0 }}>
+        <p style={{ color: T.textMuted, fontSize: 13, margin: 0 }}>
           Select 2–6 versions, then press Compare to get an LLM-powered breakdown of what changed.
         </p>
       </div>
@@ -218,7 +219,7 @@ export default function AnalysisCompare() {
       {loadError && (
         <div style={{
           padding: "10px 14px", borderRadius: 6, marginBottom: 16,
-          background: "#2d0a0a", border: "1px solid #7f1d1d", color: "#ef4444", fontSize: 13,
+          background: T.errorBg, border: "1px solid #7f1d1d", color: "#ef4444", fontSize: 13,
         }}>
           {loadError}
         </div>
@@ -226,16 +227,16 @@ export default function AnalysisCompare() {
 
       {/* Version picker */}
       <div style={{
-        background: "#111", border: "1px solid #222", borderRadius: 10,
+        background: T.card, border: `1px solid ${T.border}`, borderRadius: 10,
         padding: "18px 20px", marginBottom: 24,
       }}>
         <div style={{
           display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14,
           flexWrap: "wrap", gap: 10,
         }}>
-          <div style={{ fontSize: 14, fontWeight: 600, color: "#e5e7eb" }}>
+          <div style={{ fontSize: 14, fontWeight: 600, color: T.text }}>
             Select versions to compare
-            <span style={{ fontSize: 12, color: "#555", fontWeight: 400, marginLeft: 10 }}>
+            <span style={{ fontSize: 12, color: T.textMuted, fontWeight: 400, marginLeft: 10 }}>
               ({selected.size} selected · max 6)
             </span>
           </div>
@@ -243,8 +244,8 @@ export default function AnalysisCompare() {
             onClick={handleCompare}
             disabled={!canCompare}
             style={{
-              background: canCompare ? "#2563eb" : "#1a1a1a",
-              color: canCompare ? "#fff" : "#555",
+              background: canCompare ? T.primary : T.card,
+              color: canCompare ? "#fff" : T.textMuted,
               border: "none", borderRadius: 6, padding: "8px 20px",
               fontSize: 13, fontWeight: 600,
               cursor: canCompare ? "pointer" : "default",
@@ -255,9 +256,9 @@ export default function AnalysisCompare() {
         </div>
 
         {loadingList ? (
-          <p style={{ color: "#555", fontSize: 13 }}>Loading…</p>
+          <p style={{ color: T.textMuted, fontSize: 13 }}>Loading…</p>
         ) : analyses.length === 0 ? (
-          <p style={{ color: "#555", fontSize: 13 }}>No analyses found for this project.</p>
+          <p style={{ color: T.textMuted, fontSize: 13 }}>No analyses found for this project.</p>
         ) : (
           <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
             {analyses.map((av) => {
@@ -271,16 +272,16 @@ export default function AnalysisCompare() {
                   style={{
                     display: "flex", alignItems: "center", gap: 14, padding: "10px 14px",
                     borderRadius: 7, cursor: "pointer",
-                    background: isSelected ? "#0f1f3d" : "#0a0a0a",
-                    border: `1px solid ${isSelected ? "#2563eb" : "#1a1a1a"}`,
+                    background: isSelected ? T.infoBg : T.cardAlt,
+                    border: `1px solid ${isSelected ? T.primary : T.border}`,
                     transition: "border-color 0.15s, background 0.15s",
                   }}
                 >
                   {/* Checkbox */}
                   <div style={{
                     width: 16, height: 16, borderRadius: 4, flexShrink: 0,
-                    border: `2px solid ${isSelected ? "#3b82f6" : "#333"}`,
-                    background: isSelected ? "#2563eb" : "transparent",
+                    border: `2px solid ${isSelected ? "#3b82f6" : T.border}`,
+                    background: isSelected ? T.primary : "transparent",
                     display: "flex", alignItems: "center", justifyContent: "center",
                   }}>
                     {isSelected && <span style={{ color: "#fff", fontSize: 10, fontWeight: 900 }}>✓</span>}
@@ -289,7 +290,7 @@ export default function AnalysisCompare() {
                   {/* Version badge */}
                   <div style={{
                     fontSize: 11, fontWeight: 700, padding: "2px 8px", borderRadius: 4,
-                    background: "#1e3a5f", color: "#60a5fa", border: "1px solid #1d4ed8",
+                    background: "#1e3a5f", color: T.link, border: "1px solid #1d4ed8",
                     whiteSpace: "nowrap",
                   }}>
                     v{av.version}
@@ -304,7 +305,7 @@ export default function AnalysisCompare() {
                   )}
 
                   {/* Runs & date */}
-                  <div style={{ fontSize: 12, color: "#555" }}>
+                  <div style={{ fontSize: 12, color: T.textMuted }}>
                     {av.runsIncluded} runs
                     {av.dateFilterType && (
                       <span> · {av.dateFilterType === "CALL_DATE" ? "call date" : "eval date"}
@@ -315,7 +316,7 @@ export default function AnalysisCompare() {
                   </div>
 
                   <div style={{ flex: 1 }} />
-                  <div style={{ fontSize: 11, color: "#444", whiteSpace: "nowrap" }}>
+                  <div style={{ fontSize: 11, color: T.textMuted, whiteSpace: "nowrap" }}>
                     {fmtDate(av.createdAt)}
                   </div>
                 </div>
@@ -328,7 +329,7 @@ export default function AnalysisCompare() {
       {/* Side-by-side preview of selected */}
       {selectedAnalyses.length >= 2 && !result && (
         <div style={{ marginBottom: 28 }}>
-          <div style={{ fontSize: 13, color: "#666", marginBottom: 12 }}>Preview</div>
+          <div style={{ fontSize: 13, color: T.textMuted, marginBottom: 12 }}>Preview</div>
           <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
             {selectedAnalyses.map((av) => (
               <VersionSummaryCard
@@ -351,14 +352,14 @@ export default function AnalysisCompare() {
       {compareError && (
         <div style={{
           padding: "10px 14px", borderRadius: 6, marginBottom: 20,
-          background: "#2d0a0a", border: "1px solid #7f1d1d", color: "#ef4444", fontSize: 13,
+          background: T.errorBg, border: "1px solid #7f1d1d", color: "#ef4444", fontSize: 13,
         }}>
           {compareError}
         </div>
       )}
 
       {comparing && (
-        <div style={{ color: "#555", fontSize: 13, marginBottom: 20 }}>
+        <div style={{ color: T.textMuted, fontSize: 13, marginBottom: 20 }}>
           Comparing {selected.size} versions with GPT-4.1… (this may take 20–30 seconds)
         </div>
       )}
@@ -384,7 +385,7 @@ export default function AnalysisCompare() {
               {result.comparison.overall_trajectory}
             </div>
             {result.cost > 0 && (
-              <div style={{ fontSize: 12, color: "#4b5563" }}>
+              <div style={{ fontSize: 12, color: T.textSecondary }}>
                 Cost: ${result.cost < 0.01 ? result.cost.toFixed(4) : result.cost.toFixed(3)}
               </div>
             )}
@@ -392,7 +393,7 @@ export default function AnalysisCompare() {
 
           {/* Side-by-side version cards */}
           <div style={{ marginBottom: 28 }}>
-            <div style={{ fontSize: 13, fontWeight: 600, color: "#e5e7eb", marginBottom: 12 }}>
+            <div style={{ fontSize: 13, fontWeight: 600, color: T.text, marginBottom: 12 }}>
               Versions compared
             </div>
             <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
@@ -405,8 +406,8 @@ export default function AnalysisCompare() {
           {/* Overall summary */}
           <div style={{
             padding: "14px 18px", borderRadius: 8, marginBottom: 24,
-            background: "#0a0f1a", border: "1px solid #1e3a5f",
-            fontSize: 14, color: "#ccc", lineHeight: 1.6,
+            background: T.cardAlt, border: `1px solid ${T.border}`,
+            fontSize: 14, color: T.text, lineHeight: 1.6,
           }}>
             {result.comparison.summary}
           </div>
@@ -414,23 +415,23 @@ export default function AnalysisCompare() {
           {/* Version-by-version timeline */}
           {result.comparison.version_by_version?.length > 0 && (
             <div style={{ marginBottom: 28 }}>
-              <div style={{ fontSize: 13, fontWeight: 700, color: "#e5e7eb", marginBottom: 12 }}>
+              <div style={{ fontSize: 13, fontWeight: 700, color: T.text, marginBottom: 12 }}>
                 Version-by-version changes
               </div>
               <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
                 {result.comparison.version_by_version.map((step, i) => (
                   <div key={i} style={{
-                    background: "#0a0a0a", border: "1px solid #1a1a1a",
+                    background: T.cardAlt, border: `1px solid ${T.border}`,
                     borderLeft: "3px solid #3b82f6",
                     borderRadius: 6, padding: "12px 14px",
                   }}>
-                    <div style={{ fontSize: 12, color: "#60a5fa", fontWeight: 700, marginBottom: 8 }}>
+                    <div style={{ fontSize: 12, color: T.link, fontWeight: 700, marginBottom: 8 }}>
                       {step.from} → {step.to}
                     </div>
                     <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
                       {(step.key_changes ?? []).map((c: string, j: number) => (
-                        <div key={j} style={{ fontSize: 12, color: "#9ca3af", display: "flex", gap: 8 }}>
-                          <span style={{ color: "#444" }}>·</span>
+                        <div key={j} style={{ fontSize: 12, color: T.textSecondary, display: "flex", gap: 8 }}>
+                          <span style={{ color: T.textMuted }}>·</span>
                           <span>{c}</span>
                         </div>
                       ))}
@@ -447,7 +448,7 @@ export default function AnalysisCompare() {
             {/* Improvements */}
             {result.comparison.improvements?.length > 0 && (
               <div style={{
-                background: "#0a0a0a", border: "1px solid #22c55e33",
+                background: T.cardAlt, border: "1px solid #22c55e33",
                 borderTop: "3px solid #22c55e", borderRadius: 8, padding: "14px 16px",
               }}>
                 <div style={{ fontSize: 12, color: "#22c55e", fontWeight: 700, marginBottom: 10 }}>
@@ -456,7 +457,7 @@ export default function AnalysisCompare() {
                 {result.comparison.improvements.map((item, i) => (
                   <div key={i} style={{ marginBottom: 8 }}>
                     <div style={{ fontSize: 12, color: "#86efac", fontWeight: 600 }}>{item.area}</div>
-                    <div style={{ fontSize: 11, color: "#6b7280", lineHeight: 1.4, marginTop: 2 }}>{item.detail}</div>
+                    <div style={{ fontSize: 11, color: T.textMuted, lineHeight: 1.4, marginTop: 2 }}>{item.detail}</div>
                   </div>
                 ))}
               </div>
@@ -465,7 +466,7 @@ export default function AnalysisCompare() {
             {/* Resolved issues */}
             {result.comparison.resolved_issues?.length > 0 && (
               <div style={{
-                background: "#0a0a0a", border: "1px solid #3b82f633",
+                background: T.cardAlt, border: "1px solid #3b82f633",
                 borderTop: "3px solid #3b82f6", borderRadius: 8, padding: "14px 16px",
               }}>
                 <div style={{ fontSize: 12, color: "#3b82f6", fontWeight: 700, marginBottom: 10 }}>
@@ -479,7 +480,7 @@ export default function AnalysisCompare() {
                         fixed in {item.fixed_in}
                       </span>
                     </div>
-                    <div style={{ fontSize: 11, color: "#6b7280", lineHeight: 1.4, marginTop: 2 }}>{item.detail}</div>
+                    <div style={{ fontSize: 11, color: T.textMuted, lineHeight: 1.4, marginTop: 2 }}>{item.detail}</div>
                   </div>
                 ))}
               </div>
@@ -488,7 +489,7 @@ export default function AnalysisCompare() {
             {/* Regressions */}
             {result.comparison.regressions?.length > 0 && (
               <div style={{
-                background: "#0a0a0a", border: "1px solid #ef444433",
+                background: T.cardAlt, border: "1px solid #ef444433",
                 borderTop: "3px solid #ef4444", borderRadius: 8, padding: "14px 16px",
               }}>
                 <div style={{ fontSize: 12, color: "#ef4444", fontWeight: 700, marginBottom: 10 }}>
@@ -502,7 +503,7 @@ export default function AnalysisCompare() {
                         appeared in {item.appeared_in}
                       </span>
                     </div>
-                    <div style={{ fontSize: 11, color: "#6b7280", lineHeight: 1.4, marginTop: 2 }}>{item.detail}</div>
+                    <div style={{ fontSize: 11, color: T.textMuted, lineHeight: 1.4, marginTop: 2 }}>{item.detail}</div>
                   </div>
                 ))}
               </div>
@@ -511,7 +512,7 @@ export default function AnalysisCompare() {
             {/* Persistent issues */}
             {result.comparison.persistent_issues?.length > 0 && (
               <div style={{
-                background: "#0a0a0a", border: "1px solid #f59e0b33",
+                background: T.cardAlt, border: "1px solid #f59e0b33",
                 borderTop: "3px solid #f59e0b", borderRadius: 8, padding: "14px 16px",
               }}>
                 <div style={{ fontSize: 12, color: "#f59e0b", fontWeight: 700, marginBottom: 10 }}>
@@ -529,7 +530,7 @@ export default function AnalysisCompare() {
                         {item.severity}
                       </span>
                     </div>
-                    <div style={{ fontSize: 11, color: "#6b7280", lineHeight: 1.4, marginTop: 2 }}>{item.detail}</div>
+                    <div style={{ fontSize: 11, color: T.textMuted, lineHeight: 1.4, marginTop: 2 }}>{item.detail}</div>
                   </div>
                 ))}
               </div>
@@ -539,7 +540,7 @@ export default function AnalysisCompare() {
           {/* Top remaining priorities */}
           {result.comparison.top_remaining_priorities?.length > 0 && (
             <div style={{
-              background: "#0f0a1e", border: "1px solid #4c1d95",
+              background: T.cardAlt, border: "1px solid #4c1d95",
               borderRadius: 8, padding: "14px 18px",
             }}>
               <div style={{ fontSize: 13, fontWeight: 700, color: "#a855f7", marginBottom: 12 }}>
@@ -549,13 +550,13 @@ export default function AnalysisCompare() {
                 {result.comparison.top_remaining_priorities.map((p, i) => (
                   <div key={i} style={{
                     display: "flex", gap: 12, alignItems: "flex-start",
-                    padding: "8px 12px", background: "#0a0a0a",
-                    borderRadius: 6, border: "1px solid #1a1a1a",
+                    padding: "8px 12px", background: T.cardAlt,
+                    borderRadius: 6, border: `1px solid ${T.border}`,
                   }}>
                     <span style={{ color: "#7c3aed", fontWeight: 800, fontSize: 13, minWidth: 22 }}>
                       #{i + 1}
                     </span>
-                    <span style={{ fontSize: 13, color: "#d1d5db", lineHeight: 1.5 }}>{p}</span>
+                    <span style={{ fontSize: 13, color: T.text, lineHeight: 1.5 }}>{p}</span>
                   </div>
                 ))}
               </div>
