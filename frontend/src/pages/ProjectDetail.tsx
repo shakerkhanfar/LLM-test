@@ -2,8 +2,8 @@ import { useEffect, useState, useCallback } from "react";
 import { useParams, Link, useNavigate, useSearchParams } from "react-router-dom";
 import {
   getProject, createRun, deleteRun, triggerEvaluation, switchModel,
-  attachCallLog, attachTranscript, importHistory, refreshAgent,
-  askProject,
+  attachCallLog, attachTranscript, importHistory, importHistoryCsv, refreshAgent,
+  askProject, fetchHamsaProjects,
 } from "../api/client";
 import CallAgent from "../components/CallAgent";
 import T from "../theme";
@@ -104,6 +104,9 @@ export default function ProjectDetail() {
   const [historyLimit, setHistoryLimit] = useState(50);
   const [historyImporting, setHistoryImporting] = useState(false);
   const [historyResult, setHistoryResult] = useState<any>(null);
+  const [hamsaProjectId, setHamsaProjectId] = useState("");
+  const [hamsaProjects, setHamsaProjects] = useState<any[]>([]);
+  const [hamsaProjectsLoaded, setHamsaProjectsLoaded] = useState(false);
 
   const isHistory = project?.projectType === "HISTORY";
   const isWebhook = project?.projectType === "WEBHOOK";
@@ -116,15 +119,18 @@ export default function ProjectDetail() {
 
   useEffect(() => { load(); }, [load]);
 
-  // Poll while there are in-progress runs OR for WEBHOOK projects (always listen for new calls)
+  // Poll while there are in-progress runs, webhook projects, or recently-created
+  // history projects (background CSV import may not have created stubs yet).
   useEffect(() => {
     if (!project) return;
     const hasActive = project.runs?.some((r: any) =>
       ["PENDING", "AWAITING_DATA", "EVALUATING"].includes(r.status)
     );
     const isWebhookProject = project.projectType === "WEBHOOK";
-    if (!hasActive && !isWebhookProject) return;
-    // Poll faster when runs are in-progress, slower for idle webhook polling
+    // History projects with 0 runs may have a background import in flight
+    const isHistoryAwaiting = project.projectType === "HISTORY" && (!project.runs || project.runs.length === 0);
+    if (!hasActive && !isWebhookProject && !isHistoryAwaiting) return;
+    // Poll faster when runs are in-progress, slower for idle webhook/history polling
     const interval = hasActive ? 4000 : 10000;
     const timer = setTimeout(load, interval);
     return () => clearTimeout(timer);
@@ -153,12 +159,24 @@ export default function ProjectDetail() {
     setHistoryImporting(true);
     setHistoryResult(null);
     try {
-      const result = await importHistory(project.id, {
-        period: "CUSTOM",
-        startDate: historyStartDate,
-        endDate: historyEndDate,
-        limit: historyLimit,
-      });
+      let result;
+      if (hamsaProjectId.trim()) {
+        // Use the async CSV pipeline (works with dev API)
+        result = await importHistoryCsv(project.id, {
+          hamsaProjectId: hamsaProjectId.trim(),
+          startDate: historyStartDate,
+          endDate: historyEndDate,
+          limit: historyLimit,
+        });
+      } else {
+        // Use the legacy Excel pipeline (production API)
+        result = await importHistory(project.id, {
+          period: "CUSTOM",
+          startDate: historyStartDate,
+          endDate: historyEndDate,
+          limit: historyLimit,
+        });
+      }
       setHistoryResult(result);
       load();
     } catch (err) {
@@ -302,6 +320,33 @@ export default function ProjectDetail() {
         )}
       </div>
 
+      {/* History import progress — shows while runs are being hydrated/evaluated */}
+      {isHistory && (() => {
+        const runs = project.runs ?? [];
+        const pending = runs.filter((r: any) => ["PENDING", "AWAITING_DATA"].includes(r.status)).length;
+        const evaluating = runs.filter((r: any) => r.status === "EVALUATING").length;
+        const complete = runs.filter((r: any) => r.status === "COMPLETE").length;
+        const failed = runs.filter((r: any) => r.status === "FAILED").length;
+        const inProgress = pending + evaluating;
+        // Show banner if there are in-progress runs OR if the project has 0 runs (import may be starting)
+        if (inProgress === 0 && runs.length > 0) return null;
+        return (
+          <div style={{
+            padding: "12px 16px", borderRadius: 8, marginBottom: 16,
+            background: T.infoBg, border: `1px solid ${T.info}`, color: T.info,
+            fontSize: 13, display: "flex", alignItems: "center", gap: 10,
+          }}>
+            <svg width="16" height="16" viewBox="0 0 16 16" style={{ animation: "spin 1s linear infinite", flexShrink: 0 }}>
+              <circle cx="8" cy="8" r="6" fill="none" stroke="currentColor" strokeWidth="2" strokeDasharray="28" strokeDashoffset="8" strokeLinecap="round" />
+            </svg>
+            <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
+            {runs.length === 0
+              ? "Importing calls from Hamsa… This may take a minute."
+              : `Processing: ${complete} evaluated · ${evaluating} evaluating · ${pending} pending${failed ? ` · ${failed} failed` : ""}`}
+          </div>
+        );
+      })()}
+
       {/* Webhook status — auto-polling indicator */}
       {isWebhook && (
         <div style={{
@@ -324,7 +369,19 @@ export default function ProjectDetail() {
         {/* Import History — not shown for WEBHOOK projects (they get data via webhook) */}
         {!isWebhook && (
           <button
-            onClick={() => { setShowHistoryImport(!showHistoryImport); setHistoryResult(null); }}
+            onClick={() => {
+              const opening = !showHistoryImport;
+              setShowHistoryImport(opening);
+              setHistoryResult(null);
+              // Auto-resolve the Hamsa project that contains this agent
+              if (opening && !hamsaProjectsLoaded && project?.hamsaApiKey) {
+                setHamsaProjectsLoaded(true);
+                fetchHamsaProjects(project.hamsaApiKey, project.agentId).then((result: any) => {
+                  if (result.projectId) setHamsaProjectId(result.projectId);
+                  setHamsaProjects(result.projects || []);
+                }).catch(() => {});
+              }
+            }}
             style={{ ...btnStyle, background: showHistoryImport ? "#b8e6cc" : T.primary }}
           >
             {showHistoryImport ? "Close Import" : "Import History"}
@@ -346,6 +403,17 @@ export default function ProjectDetail() {
       {showHistoryImport && !isWebhook && (
         <div style={{ background: T.infoBg, padding: 16, borderRadius: 8, marginBottom: 16, border: `1px solid ${T.border}` }}>
           <h3 style={{ margin: "0 0 14px", fontSize: 14, color: T.link }}>Import Call History</h3>
+
+          {/* Hamsa Project — auto-resolved */}
+          {!hamsaProjectId && hamsaProjectsLoaded && (
+            <div style={{ fontSize: 12, color: T.warning, marginBottom: 12 }}>
+              Could not resolve Hamsa project for this agent. Enter manually:
+              <input type="text" style={{ ...inputStyle, marginTop: 4 }} value={hamsaProjectId} onChange={(e) => setHamsaProjectId(e.target.value)} placeholder="Hamsa Project ID" />
+            </div>
+          )}
+          {!hamsaProjectsLoaded && !hamsaProjectId && (
+            <div style={{ fontSize: 12, color: T.textMuted, marginBottom: 12 }}>Resolving Hamsa project...</div>
+          )}
 
           {/* Quick preset buttons — fill the date range */}
           <div style={{ marginBottom: 12 }}>
@@ -730,7 +798,7 @@ export default function ProjectDetail() {
             );
           })()}
         </div>
-        {outcomeColumns.length > 0 && (
+        {(isHistory || isWebhook) && (
           <div style={{ display: "flex", gap: 0, borderRadius: 6, overflow: "hidden", border: `1px solid ${T.border}` }}>
             {(["evaluation", "outcomes"] as const).map((tab) => (
               <button
@@ -746,7 +814,7 @@ export default function ProjectDetail() {
                   fontWeight: activeTab === tab ? 600 : 400,
                 }}
               >
-                {tab === "evaluation" ? "Evaluation" : `Outcomes (${outcomeColumns.length})`}
+                {tab === "evaluation" ? "Evaluation" : `Outcomes${outcomeColumns.length ? ` (${outcomeColumns.length})` : ""}`}
               </button>
             ))}
           </div>

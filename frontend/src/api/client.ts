@@ -73,6 +73,13 @@ export function fetchAgentPreview(agentId: string, apiKey?: string) {
   });
 }
 
+export function fetchHamsaProjects(apiKey: string, agentId?: string) {
+  return request<any>("/projects/hamsa-projects", {
+    method: "POST",
+    body: JSON.stringify({ apiKey, agentId }),
+  });
+}
+
 export function refreshAgent(projectId: string) {
   return request<any>(`/projects/${projectId}/refresh-agent`, { method: "POST" });
 }
@@ -223,6 +230,22 @@ export function importHistory(
   return request<any>(`/history/${projectId}/import`, {
     method: "POST",
     body: JSON.stringify({ ...options, timezoneOffsetMinutes }),
+  });
+}
+
+export function importHistoryCsv(
+  projectId: string,
+  options: {
+    hamsaProjectId: string;
+    startDate?: string;
+    endDate?: string;
+    limit?: number;
+    apiBaseUrl?: string;
+  }
+) {
+  return request<any>(`/history/${projectId}/import-csv`, {
+    method: "POST",
+    body: JSON.stringify(options),
   });
 }
 

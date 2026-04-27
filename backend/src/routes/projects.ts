@@ -12,10 +12,10 @@ const router = Router();
 const VALID_CRITERION_TYPES = new Set<string>(Object.values(CriterionType));
 const VALID_PROJECT_TYPES = new Set(["LIVE", "HISTORY", "WEBHOOK"]);
 
-// List all projects scoped to the authenticated user
+// List projects: user's own projects + legacy projects (userId=null)
 router.get("/", async (req: AuthRequest, res) => {
   const projects = await prisma.project.findMany({
-    where: { userId: req.userId },
+    where: { OR: [{ userId: req.userId }, { userId: null }] },
     include: {
       _count: { select: { criteria: true, runs: true } },
       runs: {
@@ -53,6 +53,51 @@ router.post("/agent-preview", async (req, res) => {
     });
   } catch (err) {
     res.status(400).json({ error: (err as Error).message });
+  }
+});
+
+// Find the Hamsa project that contains a given agent.
+// Fetches all projects for the API key, then checks each for the agent.
+router.post("/hamsa-projects", async (req: AuthRequest, res) => {
+  const { apiKey, agentId } = req.body as { apiKey?: string; agentId?: string };
+  const key = apiKey?.trim() || process.env.HAMSA_API_KEY;
+  if (!key) return res.status(400).json({ error: "API key is required" });
+
+  try {
+    const base = process.env.HAMSA_API_BASE || "https://api.tryhamsa.com";
+
+    // Step 1: list all projects for this account
+    const projRes = await fetch(`${base}/v1/projects`, {
+      headers: { Authorization: `Token ${key}`, "Content-Type": "application/json" },
+    });
+    if (!projRes.ok) {
+      return res.status(projRes.status).json({ error: "Failed to fetch Hamsa projects" });
+    }
+    const projJson = await projRes.json() as any;
+    const projects: any[] = projJson.data || projJson;
+
+    // Step 2: if agentId provided, find which project contains it
+    if (agentId?.trim()) {
+      for (const project of projects) {
+        try {
+          const agentsRes = await fetch(`${base}/v2/voice-agents?projectId=${project.id}`, {
+            headers: { Authorization: `Token ${key}`, "Content-Type": "application/json" },
+          });
+          if (!agentsRes.ok) continue;
+          const agentsJson = await agentsRes.json() as any;
+          const agents = agentsJson.data?.voiceAgents || [];
+          if (agents.some((a: any) => a.id === agentId.trim())) {
+            return res.json({ projectId: project.id, projectName: project.name, projects });
+          }
+        } catch { continue; }
+      }
+      // Agent not found in any project — return all projects as fallback
+      return res.json({ projectId: null, projects });
+    }
+
+    res.json({ projects });
+  } catch (err) {
+    res.status(500).json({ error: (err as Error).message });
   }
 });
 

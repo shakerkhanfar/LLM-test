@@ -17,23 +17,18 @@ import { requireAuth } from "./middleware/auth";
 const app = express();
 const PORT = process.env.PORT || 3001;
 
-// Allow the local dev frontend (Vite) and the production same-origin.
+// CORS: allow any localhost port in development, plus an explicit production URL.
 // Server-to-server callers (Hamsa webhooks) don't send an Origin header,
 // so they're unaffected by CORS policy.
-const ALLOWED_ORIGINS = new Set([
-  "http://localhost:5173",  // Vite dev server
-  "http://localhost:3000",
-  "http://localhost:5001",
-  ...(process.env.FRONTEND_URL ? [process.env.FRONTEND_URL] : []),
-]);
 app.use(cors({
   origin: (origin, cb) => {
-    // Allow same-origin requests (no Origin header) and whitelisted origins
-    if (!origin || ALLOWED_ORIGINS.has(origin)) {
-      cb(null, true);
-    } else {
-      cb(new Error(`CORS: origin ${origin} not allowed`));
-    }
+    // No Origin header (same-origin / server-to-server) → always allow
+    if (!origin) return cb(null, true);
+    // Any localhost port → allow (safe for local dev)
+    if (/^https?:\/\/localhost(:\d+)?$/.test(origin)) return cb(null, true);
+    // Explicit production URL
+    if (process.env.FRONTEND_URL && origin === process.env.FRONTEND_URL) return cb(null, true);
+    cb(new Error(`CORS: origin ${origin} not allowed`));
   },
   credentials: true,
 }));

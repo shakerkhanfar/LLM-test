@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from "react";
 import { useNavigate } from "react-router-dom";
-import { createProject, fetchAgentPreview, importHistory } from "../api/client";
+import { createProject, fetchAgentPreview, fetchHamsaProjects, importHistory, importHistoryCsv } from "../api/client";
 import T from "../theme";
 
 const DEFAULT_CRITERIA = [
@@ -57,6 +57,9 @@ export default function NewProject() {
   const [endDate, setEndDate] = useState(today);
   const [importLimit, setImportLimit] = useState(50);
   const [activePreset, setActivePreset] = useState<number | null>(30); // "Last 30 days" active by default
+  const [hamsaProjectId, setHamsaProjectId] = useState(""); // Required for CSV pipeline
+  const [hamsaProjects, setHamsaProjects] = useState<any[]>([]);
+  const [hamsaProjectsLoading, setHamsaProjectsLoading] = useState(false);
 
   // Agent preview state
   const [agentPreview, setAgentPreview] = useState<any>(null);
@@ -88,6 +91,16 @@ export default function NewProject() {
             setName(preview.name + " Evaluation");
             nameAutoFilled.current = true;
           }
+          // Auto-resolve the Hamsa project that contains this agent
+          setHamsaProjectsLoading(true);
+          try {
+            const result = await fetchHamsaProjects(hamsaApiKey.trim(), agentId.trim());
+            if (result.projectId) {
+              setHamsaProjectId(result.projectId);
+            }
+            setHamsaProjects(result.projects || []);
+          } catch { setHamsaProjects([]); }
+          finally { setHamsaProjectsLoading(false); }
         } catch {
           setPreviewError("Could not load agent — check ID and API key");
         } finally {
@@ -152,15 +165,25 @@ export default function NewProject() {
       if (projectType === "HISTORY" && startDate && endDate) {
         setSavingStage("Starting import…");
         try {
-          const importResult = await importHistory(project.id, {
-            period: "CUSTOM",
-            startDate,
-            endDate,
-            limit: importLimit,
-          });
-          if (importResult?.imported === 0) {
-            // No conversations found — navigate anyway but surface the warning
-            // as a URL param so the project page can show it
+          let importResult;
+          if (hamsaProjectId.trim()) {
+            // Use the async CSV pipeline (dev API)
+            importResult = await importHistoryCsv(project.id, {
+              hamsaProjectId: hamsaProjectId.trim(),
+              startDate,
+              endDate,
+              limit: importLimit,
+            });
+          } else {
+            // Use the legacy Excel pipeline (production API)
+            importResult = await importHistory(project.id, {
+              period: "CUSTOM",
+              startDate,
+              endDate,
+              limit: importLimit,
+            });
+          }
+          if (importResult?.imported === 0 && !importResult?.started) {
             navigate(`/projects/${project.id}?importWarning=noCalls`);
             return;
           }
@@ -317,6 +340,16 @@ export default function NewProject() {
             <div style={{ fontSize: 13, color: T.info, fontWeight: 600, marginBottom: 12 }}>
               Initial Import
             </div>
+
+            {/* Hamsa Project — auto-resolved from agent */}
+            {hamsaProjectsLoading && (
+              <div style={{ fontSize: 12, color: T.textMuted, marginBottom: 12 }}>Resolving Hamsa project...</div>
+            )}
+            {hamsaProjectId && !hamsaProjectsLoading && (
+              <div style={{ fontSize: 12, color: T.success, marginBottom: 12 }}>
+                Hamsa Project: {hamsaProjects.find((p: any) => p.id === hamsaProjectId)?.name || hamsaProjectId.slice(0, 12) + "…"}
+              </div>
+            )}
 
             {/* Quick presets */}
             <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 12 }}>
