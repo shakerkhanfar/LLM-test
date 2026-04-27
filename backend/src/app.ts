@@ -26,7 +26,9 @@ app.use(cors({
     if (!origin) return cb(null, true);
     // Any localhost port → allow (safe for local dev)
     if (/^https?:\/\/localhost(:\d+)?$/.test(origin)) return cb(null, true);
-    // Explicit production URL
+    // Replit hosting (same-origin but browser may still send Origin header)
+    if (/\.replit\.app$/.test(origin) || /\.repl\.co$/.test(origin)) return cb(null, true);
+    // Explicit production URL from env
     if (process.env.FRONTEND_URL && origin === process.env.FRONTEND_URL) return cb(null, true);
     cb(new Error(`CORS: origin ${origin} not allowed`));
   },
