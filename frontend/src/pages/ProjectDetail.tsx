@@ -105,7 +105,7 @@ export default function ProjectDetail() {
   const [historyImporting, setHistoryImporting] = useState(false);
   const [historyResult, setHistoryResult] = useState<any>(null);
   const [hamsaProjectId, setHamsaProjectId] = useState("");
-  const [hamsaProjects, setHamsaProjects] = useState<any[]>([]);
+  const [, setHamsaProjects] = useState<any[]>([]);
   const [hamsaProjectsLoaded, setHamsaProjectsLoaded] = useState(false);
 
   const isHistory = project?.projectType === "HISTORY";
