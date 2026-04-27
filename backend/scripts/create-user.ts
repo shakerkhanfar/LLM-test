@@ -21,12 +21,13 @@ async function main() {
     process.exit(1);
   }
 
-  if (password.length < 6) {
+  const cleanPassword = password.trim();
+  if (cleanPassword.length < 6) {
     console.error("Password must be at least 6 characters");
     process.exit(1);
   }
 
-  const passwordHash = await bcrypt.hash(password, 12); // cost 12 per OWASP recommendation
+  const passwordHash = await bcrypt.hash(cleanPassword, 12); // cost 12 per OWASP recommendation
   const user = await prisma.user.create({
     data: { email: email.trim().toLowerCase(), passwordHash },
   });

@@ -6,10 +6,11 @@ import { requireAuth, signToken, AuthRequest } from "../middleware/auth";
 const router = Router();
 
 // ── Simple in-memory rate limiter for login ────────────────────────
-// Limits to 10 attempts per IP per 15-minute window.
-// (An in-process map is sufficient for a single-instance internal tool.)
+// Limits to 20 attempts per IP per 15-minute window.
+// On platforms like Replit, all requests may share the same proxy IP,
+// so we're generous with the limit.
 const loginAttempts = new Map<string, { count: number; resetAt: number }>();
-const RATE_LIMIT_MAX = 10;
+const RATE_LIMIT_MAX = 20;
 const RATE_LIMIT_WINDOW_MS = 15 * 60 * 1000; // 15 minutes
 
 function checkLoginRateLimit(ip: string): { allowed: boolean; retryAfterSec: number } {
@@ -19,8 +20,6 @@ function checkLoginRateLimit(ip: string): { allowed: boolean; retryAfterSec: num
     entry = { count: 0, resetAt: now + RATE_LIMIT_WINDOW_MS };
     loginAttempts.set(ip, entry);
   }
-  // Check BEFORE incrementing so the (MAX+1)th request is the first to be blocked,
-  // not the (MAX+2)th (off-by-one fix).
   if (entry.count >= RATE_LIMIT_MAX) {
     return { allowed: false, retryAfterSec: Math.ceil((entry.resetAt - now) / 1000) };
   }
@@ -28,13 +27,18 @@ function checkLoginRateLimit(ip: string): { allowed: boolean; retryAfterSec: num
   return { allowed: true, retryAfterSec: 0 };
 }
 
-// Clean up stale entries every 30 minutes to prevent unbounded growth
+// Clean up stale entries every 30 minutes
 setInterval(() => {
   const now = Date.now();
   for (const [ip, entry] of loginAttempts) {
     if (entry.resetAt < now) loginAttempts.delete(ip);
   }
 }, 30 * 60 * 1000).unref();
+
+// Pre-compute a valid dummy hash (for timing-attack prevention on non-existent users).
+// This is a real bcrypt hash of the string "dummy" with cost 12.
+let DUMMY_HASH = "";
+bcrypt.hash("dummy", 12).then((h) => { DUMMY_HASH = h; });
 
 // POST /api/auth/login
 router.post("/login", async (req, res) => {
@@ -44,6 +48,7 @@ router.post("/login", async (req, res) => {
 
   const { allowed, retryAfterSec } = checkLoginRateLimit(ip);
   if (!allowed) {
+    console.log(`[Auth] Rate limited IP: ${ip}`);
     res.setHeader("Retry-After", String(retryAfterSec));
     return res.status(429).json({ error: `Too many login attempts. Try again in ${Math.ceil(retryAfterSec / 60)} minutes.` });
   }
@@ -53,40 +58,47 @@ router.post("/login", async (req, res) => {
   if (!email || typeof email !== "string" || !email.trim()) {
     return res.status(400).json({ error: "Email is required" });
   }
-  // Guard against extremely long inputs that could slow down DB queries or bcrypt
   if (email.length > 254) {
     return res.status(400).json({ error: "Invalid email" });
   }
-  if (!password || typeof password !== "string") {
+  if (!password || typeof password !== "string" || !password.trim()) {
     return res.status(400).json({ error: "Password is required" });
   }
-  if (!password.trim()) {
-    return res.status(400).json({ error: "Password is required" });
-  }
-  if (password.length < 6) {
+
+  // Trim password to avoid copy-paste whitespace mismatches
+  const cleanPassword = password.trim();
+  if (cleanPassword.length < 6) {
     return res.status(400).json({ error: "Password must be at least 6 characters" });
   }
 
+  const cleanEmail = email.trim().toLowerCase();
+
   try {
     const user = await prisma.user.findUnique({
-      where: { email: email.trim().toLowerCase() },
+      where: { email: cleanEmail },
     });
 
-    console.log(`[Auth] Login attempt: email=${email.trim().toLowerCase()} found=${!!user} hashPrefix=${user?.passwordHash?.slice(0, 7) ?? "none"}`);
+    console.log(`[Auth] Login attempt: ip=${ip} email=${cleanEmail} found=${!!user} hashLen=${user?.passwordHash?.length ?? 0}`);
 
     if (!user) {
-      // Run a dummy compare to prevent timing attacks, but don't crash
-      try { await bcrypt.compare(password, "$2b$12$000000000000000000000000000000000000000000000000000000"); } catch {}
+      // Timing-safe: always run bcrypt even when user doesn't exist
+      if (DUMMY_HASH) {
+        try { await bcrypt.compare(cleanPassword, DUMMY_HASH); } catch {}
+      }
       return res.status(401).json({ error: "Invalid email or password" });
     }
 
     let valid = false;
     try {
-      valid = await bcrypt.compare(password, user.passwordHash);
+      valid = await bcrypt.compare(cleanPassword, user.passwordHash);
     } catch (bcryptErr) {
-      console.error("[Auth] bcrypt error:", bcryptErr);
+      console.error("[Auth] bcrypt.compare threw:", {
+        message: (bcryptErr as Error).message,
+        hashLength: user.passwordHash?.length,
+        hashPrefix: user.passwordHash?.slice(0, 7),
+      });
     }
-    console.log(`[Auth] bcrypt result: valid=${valid}`);
+    console.log(`[Auth] bcrypt result: valid=${valid} passwordLen=${cleanPassword.length}`);
 
     if (!valid) {
       return res.status(401).json({ error: "Invalid email or password" });

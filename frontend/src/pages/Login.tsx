@@ -32,7 +32,7 @@ export default function Login() {
     setError(null);
     setSubmitting(true);
     try {
-      await login(email.trim(), password);
+      await login(email.trim(), password.trim());
       navigate(destination, { replace: true });
     } catch (err) {
       setError((err as Error).message);

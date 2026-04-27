@@ -11,7 +11,7 @@ import dotenv from "dotenv";
 dotenv.config();
 
 const EMAIL = "demo@tryhamsa.com";
-const PASSWORD = "Hamsa@1234";
+const PASSWORD = "Hamsa@1234".trim();
 
 async function main() {
   // 1. Create user (skip if already exists)
