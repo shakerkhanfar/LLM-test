@@ -70,6 +70,25 @@ async function ensureDemoUser() {
   const email = "demo@tryhamsa.com";
   const password = "Hamsa@1234";
   try {
+    // Ensure the User table exists (raw SQL — works even if prisma db push wasn't run)
+    await prisma.$executeRawUnsafe(`
+      CREATE TABLE IF NOT EXISTS "User" (
+        "id" TEXT NOT NULL,
+        "email" TEXT NOT NULL,
+        "passwordHash" TEXT NOT NULL,
+        "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        CONSTRAINT "User_pkey" PRIMARY KEY ("id")
+      )
+    `);
+    await prisma.$executeRawUnsafe(`
+      CREATE UNIQUE INDEX IF NOT EXISTS "User_email_key" ON "User"("email")
+    `);
+    // Ensure Project.userId column exists
+    await prisma.$executeRawUnsafe(`
+      ALTER TABLE "Project" ADD COLUMN IF NOT EXISTS "userId" TEXT
+    `);
+    console.log("[Seed] Schema verified");
+
     const existing = await prisma.user.findUnique({ where: { email } });
     if (existing) {
       console.log(`[Seed] User ${email} exists (${existing.id})`);
@@ -82,7 +101,7 @@ async function ensureDemoUser() {
     const result = await prisma.project.updateMany({ where: { userId: null }, data: { userId: user.id } });
     if (result.count > 0) console.log(`[Seed] Assigned ${result.count} unowned projects to ${email}`);
   } catch (err) {
-    console.error(`[Seed] Failed to ensure demo user:`, err);
+    console.error(`[Seed] Failed:`, (err as Error).message);
   }
 }
 
