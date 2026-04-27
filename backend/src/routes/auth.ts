@@ -72,9 +72,12 @@ router.post("/login", async (req, res) => {
       where: { email: email.trim().toLowerCase() },
     });
 
-    // Always run bcrypt to prevent timing-based user enumeration
-    const hash = user?.passwordHash ?? "$2b$10$invalidhashinvalidhashXXXXXXXXXXXXXXXXXXXXXXXXXXX";
-    const valid = await bcrypt.compare(password, hash);
+    // Always run bcrypt to prevent timing-based user enumeration.
+    // The dummy hash is a real bcrypt hash of "nobody" — structurally valid so bcrypt.compare won't throw.
+    const DUMMY_HASH = "$2b$12$LJ3m4ys3Lf0Xg0eTk.XOxOKqKz8VJz5G9GQfMYwKz5G9GQfMYwKz5";
+    const hash = user?.passwordHash ?? DUMMY_HASH;
+    let valid = false;
+    try { valid = await bcrypt.compare(password, hash); } catch { valid = false; }
 
     if (!user || !valid) {
       return res.status(401).json({ error: "Invalid email or password" });
