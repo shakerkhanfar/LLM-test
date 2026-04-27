@@ -219,15 +219,15 @@ Example: {"keywords": ["hospital location"], "evalIssueTypes": ["hallucination"]
     const transcript = run.transcript as any[] | null;
     const transcriptText = transcript
       ?.map((t: any) => {
-        if (t.Agent) return `Agent: ${(t.Agent as string).slice(0, 100)}`;
-        if (t.User) return `User: ${(t.User as string).slice(0, 100)}`;
+        if (t.Agent) return `Agent: ${(t.Agent as string).slice(0, 300)}`;
+        if (t.User) return `User: ${(t.User as string).slice(0, 200)}`;
         return "";
       })
       .filter(Boolean)
       .join(" | ") || "";
 
     const evalSummaries = run.evalResults.map((er) => {
-      const detail = extractReadableDetail(er.detail, 200);
+      const detail = extractReadableDetail(er.detail, 500);
       return `[${er.criterion?.label || er.criterion?.key}] score=${er.score} passed=${er.passed} ${detail}`;
     }).join(" /// ");
 
@@ -242,8 +242,8 @@ Example: {"keywords": ["hospital location"], "evalIssueTypes": ["hallucination"]
       outcome,
       score,
       overallScore: run.overallScore,
-      transcriptPreview: transcriptText.slice(0, 300),
-      compact: `[${run.id.slice(0, 8)}] date:${run.callDate?.toISOString().split("T")[0] || "?"} outcome:${outcome} score:${score} dur:${run.callDuration || "?"}s\nTranscript: ${transcriptText.slice(0, 200)}\nEvals: ${evalSummaries.slice(0, 400)}`,
+      transcriptPreview: transcriptText.slice(0, 500),
+      compact: `[${run.id.slice(0, 8)}] date:${run.callDate?.toISOString().split("T")[0] || "?"} outcome:${outcome} score:${score} dur:${run.callDuration || "?"}s\nTranscript: ${transcriptText.slice(0, 600)}\nEvals: ${evalSummaries.slice(0, 800)}`,
     };
   });
 
