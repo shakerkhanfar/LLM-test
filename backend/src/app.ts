@@ -62,10 +62,34 @@ if (fs.existsSync(frontendDist)) {
 }
 
 import { initQueue } from "./services/evaluationRunner";
+import prisma from "./lib/prisma";
+import bcrypt from "bcryptjs";
+
+// Ensure the demo user exists on every startup — no manual scripts needed.
+async function ensureDemoUser() {
+  const email = "demo@tryhamsa.com";
+  const password = "Hamsa@1234";
+  try {
+    const existing = await prisma.user.findUnique({ where: { email } });
+    if (existing) {
+      console.log(`[Seed] User ${email} exists (${existing.id})`);
+      return;
+    }
+    const hash = await bcrypt.hash(password, 12);
+    const user = await prisma.user.create({ data: { email, passwordHash: hash } });
+    console.log(`[Seed] Created user ${email} (${user.id})`);
+    // Assign any unowned projects to this user
+    const result = await prisma.project.updateMany({ where: { userId: null }, data: { userId: user.id } });
+    if (result.count > 0) console.log(`[Seed] Assigned ${result.count} unowned projects to ${email}`);
+  } catch (err) {
+    console.error(`[Seed] Failed to ensure demo user:`, err);
+  }
+}
 
 app.listen(PORT, () => {
   console.log(`[App] Hamsa Eval API running on http://localhost:${PORT}`);
   initQueue();
+  ensureDemoUser();
 });
 
 export default app;
