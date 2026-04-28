@@ -232,6 +232,31 @@ export function mapNodeVisits(
     segments.push(currentSegment);
   }
 
+  // Fallback: if no node_movement events were found, create segments from TRANSITION events
+  if (segments.length === 0 && transitionTargets.length > 0) {
+    let prevIdx = 0;
+    for (const tt of transitionTargets) {
+      const node = nodeById.get(tt.nodeId);
+      segments.push({
+        node: node || null,
+        entryIdx: prevIdx, exitIdx: tt.idx,
+        entryTimestamp: callLog[prevIdx]?.timestamp || "",
+        exitTimestamp: callLog[tt.idx]?.timestamp || "",
+        promptMessage: "", variablesExtracted: [], toolsCalled: [], toolResults: [],
+      });
+      prevIdx = tt.idx + 1;
+    }
+    // Add final segment after last transition
+    if (prevIdx < callLog.length) {
+      segments.push({
+        node: null, entryIdx: prevIdx, exitIdx: callLog.length - 1,
+        entryTimestamp: callLog[prevIdx]?.timestamp || "",
+        exitTimestamp: callLog[callLog.length - 1]?.timestamp || "",
+        promptMessage: "", variablesExtracted: [], toolsCalled: [], toolResults: [],
+      });
+    }
+  }
+
   // Pass 3: Identify which node each segment belongs to.
   // KEY PRINCIPLE: Nodes CAN be revisited (loops are common). Don't exclude already-matched IDs.
   // Priority: TRANSITION events > exact message match > graph traversal > fuzzy match > start node.
@@ -240,16 +265,17 @@ export function mapNodeVisits(
     const seg = segments[si];
     if (seg.node) continue;
 
-    // Strategy 1: TRANSITION event — find the transition that led to this segment.
-    // Look for the most recent TRANSITION before this segment's entry.
-    let bestTransition: { nodeId: string; idx: number } | null = null;
-    for (const tt of transitionTargets) {
-      if (tt.idx <= seg.entryIdx && (!bestTransition || tt.idx > bestTransition.idx)) {
-        bestTransition = tt;
-      }
-    }
-    if (bestTransition) {
-      const targetNode = nodeById.get(bestTransition.nodeId);
+    // Strategy 1: TRANSITION event — find transitions that happened IN THE GAP
+    // between the previous segment and this one. The TRANSITION's next_node
+    // tells us what THIS segment should be (the destination).
+    const prevEntryIdx = si > 0 ? segments[si - 1].entryIdx : -1;
+    const transitionsInGap = transitionTargets.filter(
+      (tt) => tt.idx > prevEntryIdx && tt.idx <= seg.entryIdx
+    );
+    // Use the LAST transition in the gap (closest to this segment's start)
+    if (transitionsInGap.length > 0) {
+      const lastTT = transitionsInGap[transitionsInGap.length - 1];
+      const targetNode = nodeById.get(lastTT.nodeId);
       if (targetNode) { seg.node = targetNode; continue; }
     }
 
@@ -294,14 +320,12 @@ export function mapNodeVisits(
               if (staticWords.length < 2) continue;
               const matchCount = staticWords.filter((w: string) => msgLower.includes(w)).length;
               const ratio = matchCount / staticWords.length;
-              if (ratio > bestScore && ratio >= 0.3) { bestScore = ratio; match = node; }
+              if (ratio > bestScore && ratio >= 0.45) { bestScore = ratio; match = node; }
             }
-            // If no fuzzy match, try conversation type
+            // If no fuzzy match, try conversation type among reachable
             if (!match) match = reachable.find((n: any) => n.type === "conversation");
           }
           if (match) seg.node = match;
-          // If still nothing, could be a self-loop (same node again)
-          if (!seg.node && prevNode) seg.node = prevNode;
         }
         if (seg.node) continue;
       }
@@ -321,7 +345,7 @@ export function mapNodeVisits(
         if (staticWords.length < 2) continue;
         const matchCount = staticWords.filter((w: string) => msgLower.includes(w)).length;
         const ratio = matchCount / staticWords.length;
-        if (ratio > bestScore && ratio >= 0.4) { bestScore = ratio; bestMatch = node; }
+        if (ratio > bestScore && ratio >= 0.45) { bestScore = ratio; bestMatch = node; }
       }
       if (bestMatch) { seg.node = bestMatch; continue; }
     }
