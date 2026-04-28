@@ -3,7 +3,7 @@ import { useParams, Link, useNavigate, useSearchParams } from "react-router-dom"
 import {
   getProject, createRun, deleteRun, triggerEvaluation, switchModel,
   attachCallLog, attachTranscript, importHistory, importHistoryCsv, refreshAgent,
-  askProject, fetchHamsaProjects,
+  askProject, fetchHamsaProjects, reEvaluateProject,
 } from "../api/client";
 import CallAgent from "../components/CallAgent";
 import T from "../theme";
@@ -395,6 +395,23 @@ export default function ProjectDetail() {
         {completedRuns.length >= 3 && (
           <button onClick={() => navigate(`/projects/${id}/analyses`)} style={{ ...btnStyle, background: "#7c3aed" }}>
             Analyze Project
+          </button>
+        )}
+        {(project.runs?.length ?? 0) > 0 && (
+          <button
+            onClick={async () => {
+              if (!confirm(`Re-evaluate all ${project.runs?.length ?? 0} calls? This will clear existing scores and run all criteria fresh.`)) return;
+              try {
+                const result = await reEvaluateProject(project.id);
+                alert(`Reset ${result.resetCount} calls for re-evaluation. They will process in the background.`);
+                load();
+              } catch (err) {
+                alert("Failed: " + (err as Error).message);
+              }
+            }}
+            style={{ ...btnStyle, background: T.warning }}
+          >
+            Re-evaluate All
           </button>
         )}
       </div>

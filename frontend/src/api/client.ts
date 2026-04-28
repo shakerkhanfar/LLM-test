@@ -253,6 +253,10 @@ export function getHistoryStatus(projectId: string) {
   return request<any>(`/history/${projectId}/status`);
 }
 
+export function reEvaluateProject(projectId: string) {
+  return request<any>(`/projects/${projectId}/re-evaluate`, { method: "POST" });
+}
+
 // ─── Ask (natural language search) ───────────────────────────────
 
 export function askProject(projectId: string, question: string) {

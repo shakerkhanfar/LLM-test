@@ -5,6 +5,7 @@ import { getAgent } from "../services/hamsaApi";
 import { generateAgentSummary } from "../services/llmJudge";
 import { analyzeProject, compareAnalyses } from "../services/projectAnalyzer";
 import { searchRuns } from "../services/runSearch";
+import { runEvaluationCheck } from "../services/evaluationRunner";
 import { AuthRequest } from "../middleware/auth";
 
 const router = Router();
@@ -498,6 +499,45 @@ router.delete("/:id/analyses/:analysisId", async (req: AuthRequest, res) => {
     res.json({ ok: true });
   } catch (err: any) {
     if (err?.code === "P2025") return res.status(404).json({ error: "Analysis not found" });
+    res.status(500).json({ error: (err as Error).message });
+  }
+});
+
+/**
+ * POST /api/projects/:id/re-evaluate
+ *
+ * Reset all COMPLETE/FAILED runs to PENDING so they get re-evaluated.
+ * Deletes existing eval results so criteria run fresh.
+ */
+router.post("/:id/re-evaluate", async (req: AuthRequest, res) => {
+  const projectId = req.params.id;
+  const p = await prisma.project.findUnique({ where: { id: projectId }, select: { userId: true } });
+  if (!p) return res.status(404).json({ error: "Project not found" });
+  if (p.userId !== null && p.userId !== req.userId) return res.status(403).json({ error: "Access denied" });
+
+  try {
+    // Delete existing eval results so they run fresh
+    await prisma.evalResult.deleteMany({
+      where: { run: { projectId } },
+    });
+
+    // Reset runs to PENDING
+    const result = await prisma.run.updateMany({
+      where: { projectId, status: { in: ["COMPLETE", "FAILED"] } },
+      data: { status: "PENDING", overallScore: null, evalCost: null },
+    });
+
+    // Trigger evaluation check for each reset run
+    const runs = await prisma.run.findMany({
+      where: { projectId, status: "PENDING" },
+      select: { id: true },
+    });
+    for (const run of runs) {
+      runEvaluationCheck(run.id).catch(() => {});
+    }
+
+    res.json({ ok: true, resetCount: result.count });
+  } catch (err) {
     res.status(500).json({ error: (err as Error).message });
   }
 });
