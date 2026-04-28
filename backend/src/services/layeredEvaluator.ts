@@ -87,9 +87,10 @@ export interface Layer3NodeResult {
   nodeType: string;
   instructionAdherence: { score: number; followed: string[]; violated: string[]; evidence: string };
   transitionCorrectness: { score: number; correct: boolean; reasoning: string };
-  offTopic: { detected: boolean; turns: string[] };
+  offTopic: { detected: boolean; turns: string[]; topics: string[] };
   hallucination: { detected: boolean; evidence: string };
   stuck: { detected: boolean; unnecessaryTurns: number; reasoning: string };
+  contextSummary: string;           // What was happening at this node — user intent, agent behavior, outcome
   overallNodeScore: number;         // 0-10
 }
 
@@ -597,12 +598,13 @@ Respond with JSON:
           correct: parsed.transition_correctness?.correct ?? true,
           reasoning: parsed.transition_correctness?.reasoning ?? "",
         },
-        offTopic: { detected: false, turns: [] },
+        offTopic: { detected: false, turns: [], topics: [] },
         hallucination: {
           detected: parsed.hallucination?.detected ?? false,
           evidence: parsed.hallucination?.evidence ?? "",
         },
         stuck: { detected: false, unnecessaryTurns: 0, reasoning: "" },
+        contextSummary: parsed.context_summary ?? `Tool node: ${visit.toolsCalled.join(", ")} — ${allSucceeded ? "succeeded" : "failed"}`,
         overallNodeScore: num(parsed.overall_node_score, allSucceeded ? 8 : 4),
       },
       costUsd,
@@ -620,9 +622,10 @@ Respond with JSON:
           evidence: "",
         },
         transitionCorrectness: { score: 5, correct: true, reasoning: "" },
-        offTopic: { detected: false, turns: [] },
+        offTopic: { detected: false, turns: [], topics: [] },
         hallucination: { detected: false, evidence: "" },
         stuck: { detected: false, unnecessaryTurns: 0, reasoning: "" },
+        contextSummary: `Tool node: ${visit.toolsCalled.join(", ")} — ${allSucceeded ? "succeeded" : "failed"}`,
         overallNodeScore: allSucceeded ? 8 : 4,
       },
       costUsd,
@@ -644,9 +647,10 @@ export async function evaluateNodeBehavior(
         nodeType: visit.nodeType,
         instructionAdherence: { score: 10, followed: [], violated: [], evidence: "Non-conversation node — structural only." },
         transitionCorrectness: { score: 10, correct: true, reasoning: "Automatic transition." },
-        offTopic: { detected: false, turns: [] },
+        offTopic: { detected: false, turns: [], topics: [] },
         hallucination: { detected: false, evidence: "" },
         stuck: { detected: false, unnecessaryTurns: 0, reasoning: "" },
+        contextSummary: "Non-conversation node — structural only.",
         overallNodeScore: 10,
       },
       costUsd: 0,
@@ -666,9 +670,10 @@ export async function evaluateNodeBehavior(
         nodeType: visit.nodeType,
         instructionAdherence: { score: 10, followed: [], violated: [], evidence: "No transcript turns at this node." },
         transitionCorrectness: { score: 10, correct: true, reasoning: "No interaction." },
-        offTopic: { detected: false, turns: [] },
+        offTopic: { detected: false, turns: [], topics: [] },
         hallucination: { detected: false, evidence: "" },
         stuck: { detected: false, unnecessaryTurns: 0, reasoning: "" },
+        contextSummary: "No transcript turns at this node.",
         overallNodeScore: 10,
       },
       costUsd: 0,
@@ -720,7 +725,8 @@ Evaluate this node ONLY. Respond with JSON:
   },
   "off_topic": {
     "detected": true/false,
-    "turns": ["list any turns where agent said something unrelated to this node's purpose"]
+    "turns": ["list any turns where the USER asked about something outside the agent's scope"],
+    "topics": ["list the specific out-of-scope topics the user brought up, e.g. 'insurance coverage details', 'medical reports', 'billing dispute'"]
   },
   "hallucination": {
     "detected": true/false,
@@ -731,6 +737,7 @@ Evaluate this node ONLY. Respond with JSON:
     "unnecessary_turns": 0,
     "reasoning": "could the agent have transitioned earlier?"
   },
+  "context_summary": "2-3 sentences describing WHAT was happening at this node — what the user wanted, what the agent did, and why it succeeded or failed. Include specific details from the transcript (e.g., 'User asked for dermatology appointment, agent kept asking for national ID repeatedly without acknowledging the user already provided it'). This should give someone who hasn't read the transcript a clear picture.",
   "overall_node_score": 0-10
 }`;
 
@@ -757,6 +764,7 @@ Evaluate this node ONLY. Respond with JSON:
         offTopic: {
           detected: parsed.off_topic?.detected ?? false,
           turns: parsed.off_topic?.turns ?? [],
+          topics: parsed.off_topic?.topics ?? [],
         },
         hallucination: {
           detected: parsed.hallucination?.detected ?? false,
@@ -767,6 +775,7 @@ Evaluate this node ONLY. Respond with JSON:
           unnecessaryTurns: parsed.stuck?.unnecessary_turns ?? 0,
           reasoning: parsed.stuck?.reasoning ?? "",
         },
+        contextSummary: parsed.context_summary ?? "",
         overallNodeScore: num(parsed.overall_node_score, 5),
       },
       costUsd,
@@ -778,9 +787,10 @@ Evaluate this node ONLY. Respond with JSON:
         nodeType: visit.nodeType,
         instructionAdherence: { score: 5, followed: [], violated: [], evidence: "Failed to parse LLM response" },
         transitionCorrectness: { score: 5, correct: true, reasoning: "" },
-        offTopic: { detected: false, turns: [] },
+        offTopic: { detected: false, turns: [], topics: [] },
         hallucination: { detected: false, evidence: "" },
         stuck: { detected: false, unnecessaryTurns: 0, reasoning: "" },
+        contextSummary: "",
         overallNodeScore: 5,
       },
       costUsd,
@@ -816,6 +826,12 @@ export async function evaluateOverall(
 
   const prompt = `You are producing the final evaluation summary for a voice AI agent call. You receive pre-evaluated summaries from structural and per-node analyses — do NOT re-evaluate the raw data.
 
+IMPORTANT SCORING RULES:
+- If the user asks about something OUTSIDE the agent's scope (e.g., reports, insurance details, billing) and the agent CORRECTLY handles it (politely says it can't help, offers to transfer to a call center, stays on track), this is a SUCCESS — score it HIGH, not low. The agent performed correctly by recognizing its limitations.
+- A call should only be scored low if the agent exhibited actual problems: hallucinating information, getting stuck in loops, ignoring user input, providing wrong information, or failing to follow its instructions.
+- "Stuck" calls where the agent keeps repeating the same prompt without progress ARE genuine failures.
+- Calls with outcome "stuck" but where the agent properly handled an out-of-scope request should be re-assessed — the "stuck" outcome may be misleading if the agent was actually performing correctly within its scope.
+
 AGENT CONTEXT:
 ${agentSummary ? safeTruncate(agentSummary, 400) : "No agent summary."}
 
@@ -834,13 +850,15 @@ Based on these pre-evaluated results, provide a final JSON assessment:
   "overall_score": 0-10,
   "objective_achieved": true/false/null,
   "caller_sentiment": "positive" | "neutral" | "negative" | "unknown",
+  "out_of_scope_handled": true/false/null,
+  "out_of_scope_topics": ["list topics the user asked about that were outside the agent's scope, if any"],
   "efficiency": {
     "score": 0-10,
     "reasoning": "was the call longer than needed? unnecessary turns?"
   },
-  "critical_issues": ["list of the most important problems found"],
+  "critical_issues": ["list of the most important ACTUAL problems found — do NOT list proper out-of-scope handling as an issue"],
   "improvements": ["specific actionable improvements for the agent"],
-  "summary": "2-3 sentence human-readable summary of the call quality"
+  "summary": "2-3 sentence human-readable summary of the call quality. Mention if the agent correctly handled an out-of-scope request."
 }`;
 
   const { detail, costUsd } = await evaluateWithLLMJudge(prompt, "", true);
