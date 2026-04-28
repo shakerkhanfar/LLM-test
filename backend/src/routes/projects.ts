@@ -151,10 +151,13 @@ router.get("/:id", async (req: AuthRequest, res) => {
       console.log(`[Projects] Access denied: project.userId=${project.userId} req.userId=${req.userId}`);
       return res.status(403).json({ error: "Access denied" });
     }
-    // Strip heavy eval detail from list response to keep payload under proxy limits.
-    // Individual run detail pages load full eval data via GET /runs/:id.
+    // Strip heavy fields from list response to keep payload under proxy limits.
+    // Individual run detail pages load full data via GET /runs/:id.
     const lightRuns = project.runs.map((run: any) => ({
       ...run,
+      webhookData: undefined,
+      callLog: undefined,
+      transcript: undefined,
       evalResults: run.evalResults.map((er: any) => ({
         ...er,
         detail: undefined,
