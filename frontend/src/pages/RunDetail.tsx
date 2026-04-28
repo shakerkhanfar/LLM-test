@@ -273,6 +273,39 @@ export default function RunDetail() {
         <span style={{ color: run.status === "COMPLETE" ? "#22c55e" : "#f59e0b", fontSize: 14 }}>
           {run.status}
         </span>
+      </div>
+
+      {/* Call IDs — copyable */}
+      {(run.conversationId || run.hamsaCallId) && (
+        <div style={{ display: "flex", gap: 16, marginBottom: 16, fontSize: 12, color: T.textSecondary }}>
+          {run.conversationId && (
+            <span>
+              Conv ID:{" "}
+              <code
+                onClick={() => { navigator.clipboard.writeText(run.conversationId); }}
+                title="Click to copy"
+                style={{ cursor: "pointer", background: T.cardAlt, padding: "2px 6px", borderRadius: 3, color: T.text, fontFamily: "monospace", fontSize: 11 }}
+              >
+                {run.conversationId}
+              </code>
+            </span>
+          )}
+          {run.hamsaCallId && (
+            <span>
+              Call ID:{" "}
+              <code
+                onClick={() => { navigator.clipboard.writeText(run.hamsaCallId); }}
+                title="Click to copy"
+                style={{ cursor: "pointer", background: T.cardAlt, padding: "2px 6px", borderRadius: 3, color: T.text, fontFamily: "monospace", fontSize: 11 }}
+              >
+                {run.hamsaCallId}
+              </code>
+            </span>
+          )}
+        </div>
+      )}
+
+      <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
         {run.hamsaCallId && (!run.callLog || (Array.isArray(run.callLog) && run.callLog.length === 0)) && (
           <button
             onClick={async () => {
