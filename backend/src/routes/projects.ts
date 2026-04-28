@@ -151,8 +151,19 @@ router.get("/:id", async (req: AuthRequest, res) => {
       console.log(`[Projects] Access denied: project.userId=${project.userId} req.userId=${req.userId}`);
       return res.status(403).json({ error: "Access denied" });
     }
-    console.log(`[Projects] Returning project ${project.name} with ${project.runs.length} runs`);
-    res.json(project);
+    // Strip heavy eval detail from list response to keep payload under proxy limits.
+    // Individual run detail pages load full eval data via GET /runs/:id.
+    const lightRuns = project.runs.map((run: any) => ({
+      ...run,
+      evalResults: run.evalResults.map((er: any) => ({
+        ...er,
+        detail: undefined,
+        metadata: undefined,
+      })),
+    }));
+    const responseSize = JSON.stringify({ ...project, runs: lightRuns }).length;
+    console.log(`[Projects] Returning project ${project.name} with ${lightRuns.length} runs (~${(responseSize / 1024).toFixed(0)}KB)`);
+    res.json({ ...project, runs: lightRuns });
   } catch (err) {
     console.error("[Projects] GET /:id error:", (err as Error).message, (err as Error).stack?.slice(0, 300));
     res.status(500).json({ error: "Failed to fetch project" });
