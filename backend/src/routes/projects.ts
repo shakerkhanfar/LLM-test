@@ -153,17 +153,25 @@ router.get("/:id", async (req: AuthRequest, res) => {
     }
     // Strip heavy fields from list response to keep payload under proxy limits.
     // Individual run detail pages load full data via GET /runs/:id.
-    const lightRuns = project.runs.map((run: any) => ({
-      ...run,
-      webhookData: undefined,
-      callLog: undefined,
-      transcript: undefined,
-      evalResults: run.evalResults.map((er: any) => ({
-        ...er,
-        detail: undefined,
-        metadata: undefined,
-      })),
-    }));
+    const lightRuns = project.runs.map((run: any) => {
+      // Keep only the fields the project page actually uses from webhookData
+      const wd = run.webhookData as any;
+      const lightWebhookData = wd ? {
+        caller_info: wd.caller_info ? { call_type: wd.caller_info.call_type } : undefined,
+        channelType: wd.channelType,
+      } : undefined;
+      return {
+        ...run,
+        webhookData: lightWebhookData,
+        callLog: run.callLog ? true : null,       // boolean flag — frontend checks existence
+        transcript: run.transcript ? true : null,  // boolean flag — frontend checks existence
+        evalResults: run.evalResults.map((er: any) => ({
+          ...er,
+          detail: undefined,
+          metadata: undefined,
+        })),
+      };
+    });
     const responseSize = JSON.stringify({ ...project, runs: lightRuns }).length;
     console.log(`[Projects] Returning project ${project.name} with ${lightRuns.length} runs (~${(responseSize / 1024).toFixed(0)}KB)`);
     res.json({ ...project, runs: lightRuns });

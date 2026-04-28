@@ -282,9 +282,9 @@ export default function RunDetail() {
             <span>
               Conv ID:{" "}
               <code
-                onClick={() => { navigator.clipboard.writeText(run.conversationId); }}
+                onClick={(e) => { navigator.clipboard.writeText(run.conversationId).then(() => { (e.target as HTMLElement).style.background = T.successBg; setTimeout(() => { (e.target as HTMLElement).style.background = T.cardAlt; }, 600); }).catch(() => { window.prompt("Copy this ID:", run.conversationId); }); }}
                 title="Click to copy"
-                style={{ cursor: "pointer", background: T.cardAlt, padding: "2px 6px", borderRadius: 3, color: T.text, fontFamily: "monospace", fontSize: 11 }}
+                style={{ cursor: "pointer", background: T.cardAlt, padding: "2px 6px", borderRadius: 3, color: T.text, fontFamily: "monospace", fontSize: 11, transition: "background 0.2s" }}
               >
                 {run.conversationId}
               </code>
@@ -294,9 +294,9 @@ export default function RunDetail() {
             <span>
               Call ID:{" "}
               <code
-                onClick={() => { navigator.clipboard.writeText(run.hamsaCallId); }}
+                onClick={(e) => { navigator.clipboard.writeText(run.hamsaCallId).then(() => { (e.target as HTMLElement).style.background = T.successBg; setTimeout(() => { (e.target as HTMLElement).style.background = T.cardAlt; }, 600); }).catch(() => { window.prompt("Copy this ID:", run.hamsaCallId); }); }}
                 title="Click to copy"
-                style={{ cursor: "pointer", background: T.cardAlt, padding: "2px 6px", borderRadius: 3, color: T.text, fontFamily: "monospace", fontSize: 11 }}
+                style={{ cursor: "pointer", background: T.cardAlt, padding: "2px 6px", borderRadius: 3, color: T.text, fontFamily: "monospace", fontSize: 11, transition: "background 0.2s" }}
               >
                 {run.hamsaCallId}
               </code>
