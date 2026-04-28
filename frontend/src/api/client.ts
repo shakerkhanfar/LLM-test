@@ -249,6 +249,17 @@ export function importHistoryCsv(
   });
 }
 
+export function exportCallIds(projectId: string) {
+  return `/api/projects/${projectId}/export-call-ids`;
+}
+
+export function importByIds(projectId: string, conversationIds: string[]) {
+  return request<any>(`/history/${projectId}/import-ids`, {
+    method: "POST",
+    body: JSON.stringify({ conversationIds }),
+  });
+}
+
 export function getHistoryStatus(projectId: string) {
   return request<any>(`/history/${projectId}/status`);
 }

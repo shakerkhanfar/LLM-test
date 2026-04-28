@@ -37,6 +37,146 @@ const router = Router();
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
+/**
+ * POST /api/history/:projectId/import-ids
+ *
+ * Import calls by conversation IDs. Accepts a list of IDs,
+ * creates run stubs, then fetches conversation details and evaluates
+ * one at a time with delays to avoid rate limits.
+ *
+ * Body: { conversationIds: string[], delay?: number }
+ */
+router.post("/:projectId/import-ids", async (req: AuthRequest, res) => {
+  const { projectId } = req.params;
+  const { conversationIds, delay = 3000 } = req.body;
+
+  if (!Array.isArray(conversationIds) || conversationIds.length === 0) {
+    return res.status(400).json({ error: "conversationIds must be a non-empty array" });
+  }
+
+  // Validate all IDs are UUIDs
+  const validIds = conversationIds
+    .map((id: unknown) => typeof id === "string" ? id.trim() : "")
+    .filter((id: string) => UUID_RE.test(id));
+
+  if (validIds.length === 0) {
+    return res.status(400).json({ error: "No valid conversation IDs found. Expected UUID format." });
+  }
+
+  const project = await prisma.project.findUnique({ where: { id: projectId } });
+  if (!project) return res.status(404).json({ error: "Project not found" });
+  if (project.userId !== null && project.userId !== (req as any).userId) {
+    return res.status(403).json({ error: "Access denied" });
+  }
+
+  const apiKey = project.hamsaApiKey || process.env.HAMSA_API_KEY;
+  if (!apiKey) {
+    return res.status(400).json({ error: "No Hamsa API key configured for this project" });
+  }
+
+  // Deduplicate against existing runs
+  const existingRuns = await prisma.run.findMany({
+    where: { projectId, conversationId: { in: validIds } },
+    select: { conversationId: true },
+  });
+  const existingIds = new Set(existingRuns.map((r) => r.conversationId));
+  const newIds = validIds.filter((id: string) => !existingIds.has(id));
+
+  // Respond immediately
+  res.json({
+    ok: true,
+    total: validIds.length,
+    new: newIds.length,
+    skipped: validIds.length - newIds.length,
+    message: newIds.length > 0
+      ? `Importing ${newIds.length} calls in the background (${validIds.length - newIds.length} already imported).`
+      : "All conversation IDs are already imported.",
+  });
+
+  if (newIds.length === 0) return;
+
+  // Background: create stubs, fetch details, evaluate — one at a time
+  (async () => {
+    const throttleMs = Math.max(1000, Math.min(10000, Number(delay) || 3000));
+    let completed = 0;
+    let failed = 0;
+
+    for (const convId of newIds) {
+      try {
+        flog(`[ImportIDs] ${completed + failed + 1}/${newIds.length} Processing ${convId}`);
+
+        // Create run stub
+        const run = await prisma.run.create({
+          data: {
+            projectId,
+            source: "HISTORY",
+            conversationId: convId,
+            modelUsed: null,
+            status: "PENDING",
+            startedAt: new Date(),
+          },
+        }).catch((err: any) => {
+          if (err?.code === "P2002") return null; // duplicate — skip
+          throw err;
+        });
+
+        if (!run) { flog(`[ImportIDs] Skipping duplicate ${convId}`); continue; }
+
+        // Fetch conversation details
+        const conv = await fetchConversation(convId, apiKey);
+        const transcript = extractTranscriptFromConversation(conv);
+        const callLog = Array.isArray(conv?.logs) && conv.logs.length > 0 ? conv.logs : null;
+        const callStatus = conv?.status || null;
+        const callDuration = typeof conv?.callDuration === "number" ? conv.callDuration : null;
+        const callDate = conv?.createdAt ? new Date(conv.createdAt) : null;
+        const outcomeResult = conv?.jobResponse?.outcomeResult ?? null;
+        const callOutcome: string | null = outcomeResult?.call_outcome ?? null;
+        const jobId = extractJobIdFromConversation(conv);
+        const modelUsed = conv?.agentDetails?.llm?.model || conv?.voiceAgent?.llm?.model || conv?.model || null;
+
+        await prisma.run.update({
+          where: { id: run.id },
+          data: {
+            transcript: transcript as any,
+            callLog: callLog as any,
+            callStatus,
+            callDuration,
+            callDate,
+            callOutcome,
+            outcomeResult: outcomeResult as any,
+            hamsaCallId: jobId,
+            modelUsed,
+            webhookData: conv as any,
+            status: "AWAITING_DATA",
+          },
+        });
+
+        // Try supplemental logs
+        if (jobId) {
+          try {
+            const logs = await fetchCallLog(jobId, apiKey);
+            if (Array.isArray(logs) && logs.length > (callLog?.length ?? 0)) {
+              await prisma.run.update({ where: { id: run.id }, data: { callLog: logs as any } });
+            }
+          } catch {}
+        }
+
+        // Trigger evaluation
+        await runEvaluationCheck(run.id);
+        completed++;
+
+        await new Promise((r) => setTimeout(r, throttleMs));
+      } catch (err) {
+        flog(`[ImportIDs] Failed ${convId}: ${(err as Error).message}`);
+        failed++;
+        await new Promise((r) => setTimeout(r, 2000));
+      }
+    }
+
+    flog(`[ImportIDs] Done: ${completed} succeeded, ${failed} failed out of ${newIds.length}`);
+  })();
+});
+
 // CUSTOM period requires both dates
 const VALID_PERIODS = new Set([
   "LAST_HOUR", "TODAY", "YESTERDAY", "THIS_WEEK", "THIS_MONTH", "CUSTOM",

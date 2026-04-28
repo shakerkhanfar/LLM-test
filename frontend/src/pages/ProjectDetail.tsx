@@ -4,6 +4,7 @@ import {
   getProject, createRun, deleteRun, triggerEvaluation, switchModel,
   attachCallLog, attachTranscript, importHistory, importHistoryCsv, refreshAgent,
   askProject, fetchHamsaProjects, reEvaluateProject, reHydrateProject,
+  exportCallIds, importByIds,
 } from "../api/client";
 import CallAgent from "../components/CallAgent";
 import T from "../theme";
@@ -431,6 +432,15 @@ export default function ProjectDetail() {
             </button>
           </>
         )}
+        {(project.runs?.length ?? 0) > 0 && (
+          <a
+            href={exportCallIds(project.id)}
+            download
+            style={{ ...btnStyle, background: T.cardAlt, color: T.textSecondary, border: `1px solid ${T.border}`, textDecoration: "none", display: "inline-flex", alignItems: "center" }}
+          >
+            Export Call IDs
+          </a>
+        )}
       </div>
 
       {/* History import panel */}
@@ -537,7 +547,7 @@ export default function ProjectDetail() {
 
           <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
             <button onClick={handleHistoryImport} disabled={historyImporting || !historyStartDate || !historyEndDate} style={btnStyle}>
-              {historyImporting ? "Importing…" : "Import"}
+              {historyImporting ? "Importing…" : "Import by Date Range"}
             </button>
             <button
               onClick={() => { setShowHistoryImport(false); setHistoryResult(null); }}
@@ -550,6 +560,60 @@ export default function ProjectDetail() {
                 You can run another pull with a different date range at any time.
               </span>
             )}
+          </div>
+
+          {/* Import by Call IDs — CSV upload or paste */}
+          <div style={{ marginTop: 16, paddingTop: 16, borderTop: `1px solid ${T.border}` }}>
+            <h4 style={{ margin: "0 0 8px", fontSize: 13, color: T.textSecondary }}>Or import by Call IDs</h4>
+            <p style={{ fontSize: 11, color: T.textMuted, margin: "0 0 8px" }}>
+              Paste conversation IDs (one per line) or upload a CSV file.
+            </p>
+            <textarea
+              id="callIdsPaste"
+              placeholder={"Paste conversation IDs here, one per line:\ne.g.\n890b0210-a7d4-432f-bdc6-264c7848c5e2\n35c47330-2101-4e8e-bb5d-c0295c9d55f2"}
+              style={{ ...inputStyle, height: 100, resize: "vertical", fontFamily: "monospace", fontSize: 11 }}
+            />
+            <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 8 }}>
+              <label style={{ ...btnStyle, background: T.cardAlt, color: T.textSecondary, border: `1px solid ${T.border}`, cursor: "pointer", display: "inline-flex", alignItems: "center", gap: 4 }}>
+                Upload CSV
+                <input
+                  type="file"
+                  accept=".csv,.txt"
+                  style={{ display: "none" }}
+                  onChange={(e) => {
+                    const file = e.target.files?.[0];
+                    if (!file) return;
+                    const reader = new FileReader();
+                    reader.onload = (ev) => {
+                      const text = ev.target?.result as string;
+                      const textarea = document.getElementById("callIdsPaste") as HTMLTextAreaElement;
+                      if (textarea) textarea.value = text;
+                    };
+                    reader.readAsText(file);
+                    e.target.value = ""; // reset for re-upload
+                  }}
+                />
+              </label>
+              <button
+                onClick={async () => {
+                  const textarea = document.getElementById("callIdsPaste") as HTMLTextAreaElement;
+                  const text = textarea?.value || "";
+                  const ids = text.split(/[\n,;\s]+/).map(s => s.trim()).filter(s => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(s));
+                  if (ids.length === 0) { alert("No valid conversation IDs found. Expected UUID format."); return; }
+                  if (!confirm(`Import ${ids.length} call(s)? They will be fetched and evaluated in the background.`)) return;
+                  try {
+                    const result = await importByIds(project.id, ids);
+                    setHistoryResult(result);
+                    load();
+                  } catch (err) {
+                    setHistoryResult({ error: (err as Error).message });
+                  }
+                }}
+                style={btnStyle}
+              >
+                Import IDs
+              </button>
+            </div>
           </div>
         </div>
       )}

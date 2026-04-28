@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from "react";
 import { useNavigate } from "react-router-dom";
-import { createProject, fetchAgentPreview, fetchHamsaProjects, importHistory, importHistoryCsv } from "../api/client";
+import { createProject, fetchAgentPreview, fetchHamsaProjects, importHistory, importHistoryCsv, importByIds } from "../api/client";
 import T from "../theme";
 
 const DEFAULT_CRITERIA = [
@@ -60,6 +60,7 @@ export default function NewProject() {
   const [hamsaProjectId, setHamsaProjectId] = useState(""); // Required for CSV pipeline
   const [hamsaProjects, setHamsaProjects] = useState<any[]>([]);
   const [hamsaProjectsLoading, setHamsaProjectsLoading] = useState(false);
+  const [callIdsText, setCallIdsText] = useState(""); // Paste/upload call IDs
 
   // Agent preview state
   const [agentPreview, setAgentPreview] = useState<any>(null);
@@ -162,11 +163,20 @@ export default function NewProject() {
       const project = await createProject(payload);
 
       // Auto-trigger import for HISTORY projects
-      if (projectType === "HISTORY" && startDate && endDate) {
+      if (projectType === "HISTORY") {
         setSavingStage("Starting import…");
         try {
+          // Check if user provided call IDs directly
+          const pastedIds = callIdsText
+            .split(/[\n,;\s]+/)
+            .map(s => s.trim())
+            .filter(s => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(s));
+
           let importResult;
-          if (hamsaProjectId.trim()) {
+          if (pastedIds.length > 0) {
+            // Import by specific call IDs
+            importResult = await importByIds(project.id, pastedIds);
+          } else if (hamsaProjectId.trim()) {
             // Use the async CSV pipeline (dev API)
             importResult = await importHistoryCsv(project.id, {
               hamsaProjectId: hamsaProjectId.trim(),
@@ -174,7 +184,7 @@ export default function NewProject() {
               endDate,
               limit: importLimit,
             });
-          } else {
+          } else if (startDate && endDate) {
             // Use the legacy Excel pipeline (production API)
             importResult = await importHistory(project.id, {
               period: "CUSTOM",
@@ -183,7 +193,7 @@ export default function NewProject() {
               limit: importLimit,
             });
           }
-          if (importResult?.imported === 0 && !importResult?.started) {
+          if (importResult?.imported === 0 && !importResult?.started && importResult?.new === 0) {
             navigate(`/projects/${project.id}?importWarning=noCalls`);
             return;
           }
@@ -416,6 +426,45 @@ export default function NewProject() {
             <p style={{ fontSize: 11, color: T.textSecondary, margin: 0 }}>
               Pulls the oldest {importLimit} call{importLimit !== 1 ? "s" : ""} in the selected range. Import runs in the background — you'll see progress on the project page.
             </p>
+
+            {/* OR: Import by Call IDs */}
+            <div style={{ marginTop: 16, paddingTop: 16, borderTop: `1px solid ${T.border}` }}>
+              <div style={{ fontSize: 12, fontWeight: 600, color: T.textSecondary, marginBottom: 8 }}>
+                Or import by Call IDs
+              </div>
+              <p style={{ fontSize: 11, color: T.textMuted, margin: "0 0 8px" }}>
+                Paste conversation IDs (one per line) or upload a CSV. If provided, these will be used instead of the date range above.
+              </p>
+              <textarea
+                placeholder={"Paste conversation IDs here, one per line:\ne.g.\n890b0210-a7d4-432f-bdc6-264c7848c5e2"}
+                style={{ ...inputStyle, height: 80, resize: "vertical", fontFamily: "monospace", fontSize: 11 }}
+                value={callIdsText}
+                onChange={(e) => setCallIdsText(e.target.value)}
+              />
+              <label style={{
+                display: "inline-flex", alignItems: "center", gap: 4, marginTop: 6,
+                fontSize: 11, color: T.link, cursor: "pointer",
+              }}>
+                Upload CSV
+                <input
+                  type="file"
+                  accept=".csv,.txt"
+                  style={{ display: "none" }}
+                  onChange={(e) => {
+                    const file = e.target.files?.[0];
+                    if (!file) return;
+                    const reader = new FileReader();
+                    reader.onload = (ev) => setCallIdsText(ev.target?.result as string || "");
+                    reader.readAsText(file);
+                    e.target.value = "";
+                  }}
+                />
+              </label>
+              {callIdsText.trim() && (() => {
+                const ids = callIdsText.split(/[\n,;\s]+/).filter(s => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(s.trim()));
+                return <span style={{ fontSize: 11, color: T.success, marginLeft: 8 }}>{ids.length} valid ID{ids.length !== 1 ? "s" : ""} detected</span>;
+              })()}
+            </div>
           </div>
         )}
 

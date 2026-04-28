@@ -57,6 +57,29 @@ router.post("/agent-preview", async (req, res) => {
   }
 });
 
+// Export conversation IDs as CSV
+router.get("/:id/export-call-ids", async (req: AuthRequest, res) => {
+  const p = await prisma.project.findUnique({ where: { id: req.params.id }, select: { userId: true, name: true } });
+  if (!p) return res.status(404).json({ error: "Project not found" });
+  if (p.userId !== null && p.userId !== req.userId) return res.status(403).json({ error: "Access denied" });
+
+  const runs = await prisma.run.findMany({
+    where: { projectId: req.params.id, conversationId: { not: null } },
+    select: { conversationId: true, callDate: true, callOutcome: true, callStatus: true, overallScore: true },
+    orderBy: { callDate: "desc" },
+  });
+
+  const header = "conversation_id,call_date,call_outcome,call_status,score";
+  const rows = runs.map((r) =>
+    `${r.conversationId},${r.callDate?.toISOString() || ""},${r.callOutcome || ""},${r.callStatus || ""},${r.overallScore != null ? (r.overallScore * 100).toFixed(0) + "%" : ""}`
+  );
+  const csv = [header, ...rows].join("\n");
+
+  res.setHeader("Content-Type", "text/csv");
+  res.setHeader("Content-Disposition", `attachment; filename="${p.name.replace(/[^a-zA-Z0-9]/g, "_")}_call_ids.csv"`);
+  res.send(csv);
+});
+
 // Find the Hamsa project that contains a given agent.
 // Fetches all projects for the API key, then checks each for the agent.
 router.post("/hamsa-projects", async (req: AuthRequest, res) => {
