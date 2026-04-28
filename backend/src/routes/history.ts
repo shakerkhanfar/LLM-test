@@ -54,10 +54,12 @@ router.post("/:projectId/import-ids", async (req: AuthRequest, res) => {
     return res.status(400).json({ error: "conversationIds must be a non-empty array" });
   }
 
-  // Validate all IDs are UUIDs
-  const validIds = conversationIds
-    .map((id: unknown) => typeof id === "string" ? id.trim() : "")
-    .filter((id: string) => UUID_RE.test(id));
+  // Validate and deduplicate
+  const validIds = [...new Set(
+    conversationIds
+      .map((id: unknown) => typeof id === "string" ? id.trim() : "")
+      .filter((id: string) => UUID_RE.test(id))
+  )];
 
   if (validIds.length === 0) {
     return res.status(400).json({ error: "No valid conversation IDs found. Expected UUID format." });
@@ -167,7 +169,15 @@ router.post("/:projectId/import-ids", async (req: AuthRequest, res) => {
 
         await new Promise((r) => setTimeout(r, throttleMs));
       } catch (err) {
-        flog(`[ImportIDs] Failed ${convId}: ${(err as Error).message}`);
+        const errMsg = (err as Error).message;
+        flog(`[ImportIDs] Failed ${convId}: ${errMsg}`);
+        // Mark the stub as FAILED so it doesn't stay PENDING forever
+        try {
+          await prisma.run.updateMany({
+            where: { projectId, conversationId: convId, status: "PENDING" },
+            data: { status: "FAILED", errorLog: `Import failed: ${errMsg.slice(0, 500)}` },
+          });
+        } catch {}
         failed++;
         await new Promise((r) => setTimeout(r, 2000));
       }

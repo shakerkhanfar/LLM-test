@@ -69,9 +69,13 @@ router.get("/:id/export-call-ids", async (req: AuthRequest, res) => {
     orderBy: { callDate: "desc" },
   });
 
+  function csvEscape(val: string) {
+    if (/[",\n\r]/.test(val)) return `"${val.replace(/"/g, '""')}"`;
+    return val;
+  }
   const header = "conversation_id,call_date,call_outcome,call_status,score";
   const rows = runs.map((r) =>
-    `${r.conversationId},${r.callDate?.toISOString() || ""},${r.callOutcome || ""},${r.callStatus || ""},${r.overallScore != null ? (r.overallScore * 100).toFixed(0) + "%" : ""}`
+    [r.conversationId, r.callDate?.toISOString() || "", csvEscape(r.callOutcome || ""), csvEscape(r.callStatus || ""), r.overallScore != null ? (r.overallScore * 100).toFixed(0) + "%" : ""].join(",")
   );
   const csv = [header, ...rows].join("\n");
 
@@ -419,6 +423,7 @@ function extractFlowDefinition(workflow: any) {
 // racing on version numbers (both would fetch the same previousVersion, then
 // both try prisma.create with the same version → P2002 unique constraint).
 const analyzingProjects = new Set<string>();
+const rehydratingProjects = new Set<string>();
 
 // Trigger a new analysis version for the project
 router.post("/:id/analyze", async (req: AuthRequest, res) => {
@@ -539,24 +544,24 @@ router.post("/:id/re-evaluate", async (req: AuthRequest, res) => {
   if (p.userId !== null && p.userId !== req.userId) return res.status(403).json({ error: "Access denied" });
 
   try {
-    // Delete existing eval results so they run fresh
-    await prisma.evalResult.deleteMany({
-      where: { run: { projectId } },
-    });
+    // Atomic: delete eval results + reset runs in one transaction
+    const [, result] = await prisma.$transaction([
+      prisma.evalResult.deleteMany({ where: { run: { projectId } } }),
+      prisma.run.updateMany({
+        where: { projectId, status: { in: ["COMPLETE", "FAILED"] } },
+        data: { status: "PENDING", overallScore: null, evalCost: null },
+      }),
+    ]);
 
-    // Reset runs to PENDING
-    const result = await prisma.run.updateMany({
-      where: { projectId, status: { in: ["COMPLETE", "FAILED"] } },
-      data: { status: "PENDING", overallScore: null, evalCost: null },
-    });
-
-    // Trigger evaluation check for each reset run
+    // Trigger evaluation for each reset run (log errors instead of swallowing)
     const runs = await prisma.run.findMany({
       where: { projectId, status: "PENDING" },
       select: { id: true },
     });
     for (const run of runs) {
-      runEvaluationCheck(run.id).catch(() => {});
+      runEvaluationCheck(run.id).catch((err) =>
+        console.error(`[ReEvaluate] Failed to trigger eval for ${run.id}: ${(err as Error).message}`)
+      );
     }
 
     res.json({ ok: true, resetCount: result.count });
@@ -578,6 +583,10 @@ router.post("/:id/re-hydrate", async (req: AuthRequest, res) => {
   if (!project) return res.status(404).json({ error: "Project not found" });
   if (project.userId !== null && project.userId !== req.userId) return res.status(403).json({ error: "Access denied" });
 
+  if (rehydratingProjects.has(projectId)) {
+    return res.status(409).json({ error: "Re-hydration already in progress for this project." });
+  }
+
   const runs = await prisma.run.findMany({
     where: { projectId, conversationId: { not: null } },
     select: { id: true, conversationId: true },
@@ -587,6 +596,8 @@ router.post("/:id/re-hydrate", async (req: AuthRequest, res) => {
   if (runs.length === 0) {
     return res.json({ ok: true, total: 0, message: "No runs with conversation IDs found" });
   }
+
+  rehydratingProjects.add(projectId);
 
   // Respond immediately — hydration runs in background
   res.json({ ok: true, total: runs.length, message: `Re-hydrating ${runs.length} calls in the background (1 at a time with delays).` });
@@ -660,6 +671,7 @@ router.post("/:id/re-hydrate", async (req: AuthRequest, res) => {
     }
   }
 
+  rehydratingProjects.delete(projectId);
   console.log(`[ReHydrate] Done: ${completed} succeeded, ${failed} failed out of ${runs.length}`);
 });
 

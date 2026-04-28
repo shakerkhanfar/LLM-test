@@ -249,8 +249,19 @@ export function importHistoryCsv(
   });
 }
 
-export function exportCallIds(projectId: string) {
-  return `/api/projects/${projectId}/export-call-ids`;
+export async function exportCallIds(projectId: string, projectName: string) {
+  const token = getToken();
+  const res = await fetch(`/api/projects/${projectId}/export-call-ids`, {
+    headers: token ? { Authorization: `Bearer ${token}` } : {},
+  });
+  if (!res.ok) throw new Error(`Export failed: ${res.status}`);
+  const blob = await res.blob();
+  const url = window.URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `${projectName.replace(/[^a-zA-Z0-9]/g, "_")}_call_ids.csv`;
+  a.click();
+  window.URL.revokeObjectURL(url);
 }
 
 export function importByIds(projectId: string, conversationIds: string[]) {

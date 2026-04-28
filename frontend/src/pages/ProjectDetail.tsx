@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useRef } from "react";
 import { useParams, Link, useNavigate, useSearchParams } from "react-router-dom";
 import {
   getProject, createRun, deleteRun, triggerEvaluation, switchModel,
@@ -108,6 +108,7 @@ export default function ProjectDetail() {
   const [hamsaProjectId, setHamsaProjectId] = useState("");
   const [, setHamsaProjects] = useState<any[]>([]);
   const [hamsaProjectsLoaded, setHamsaProjectsLoaded] = useState(false);
+  const callIdsRef = useRef<HTMLTextAreaElement>(null);
 
   const isHistory = project?.projectType === "HISTORY";
   const isWebhook = project?.projectType === "WEBHOOK";
@@ -433,13 +434,14 @@ export default function ProjectDetail() {
           </>
         )}
         {(project.runs?.length ?? 0) > 0 && (
-          <a
-            href={exportCallIds(project.id)}
-            download
-            style={{ ...btnStyle, background: T.cardAlt, color: T.textSecondary, border: `1px solid ${T.border}`, textDecoration: "none", display: "inline-flex", alignItems: "center" }}
+          <button
+            onClick={async () => {
+              try { await exportCallIds(project.id, project.name); } catch (err) { alert("Export failed: " + (err as Error).message); }
+            }}
+            style={{ ...btnStyle, background: T.cardAlt, color: T.textSecondary, border: `1px solid ${T.border}` }}
           >
             Export Call IDs
-          </a>
+          </button>
         )}
       </div>
 
@@ -569,7 +571,7 @@ export default function ProjectDetail() {
               Paste conversation IDs (one per line) or upload a CSV file.
             </p>
             <textarea
-              id="callIdsPaste"
+              ref={callIdsRef}
               placeholder={"Paste conversation IDs here, one per line:\ne.g.\n890b0210-a7d4-432f-bdc6-264c7848c5e2\n35c47330-2101-4e8e-bb5d-c0295c9d55f2"}
               style={{ ...inputStyle, height: 100, resize: "vertical", fontFamily: "monospace", fontSize: 11 }}
             />
@@ -586,8 +588,7 @@ export default function ProjectDetail() {
                     const reader = new FileReader();
                     reader.onload = (ev) => {
                       const text = ev.target?.result as string;
-                      const textarea = document.getElementById("callIdsPaste") as HTMLTextAreaElement;
-                      if (textarea) textarea.value = text;
+                      if (callIdsRef.current) callIdsRef.current.value = text;
                     };
                     reader.readAsText(file);
                     e.target.value = ""; // reset for re-upload
@@ -596,8 +597,7 @@ export default function ProjectDetail() {
               </label>
               <button
                 onClick={async () => {
-                  const textarea = document.getElementById("callIdsPaste") as HTMLTextAreaElement;
-                  const text = textarea?.value || "";
+                  const text = callIdsRef.current?.value || "";
                   const ids = text.split(/[\n,;\s]+/).map(s => s.trim()).filter(s => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(s));
                   if (ids.length === 0) { alert("No valid conversation IDs found. Expected UUID format."); return; }
                   if (!confirm(`Import ${ids.length} call(s)? They will be fetched and evaluated in the background.`)) return;
