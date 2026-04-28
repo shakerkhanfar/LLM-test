@@ -241,10 +241,42 @@ Example: {"keywords": ["hospital location"], "evalIssueTypes": ["hallucination"]
       .filter(Boolean)
       .join(" | ") || "";
 
-    const evalSummaries = run.evalResults.map((er) => {
-      const detail = extractReadableDetail(er.detail, 500);
-      return `[${er.criterion?.label || er.criterion?.key}] score=${er.score} passed=${er.passed} ${detail}`;
-    }).join(" /// ");
+    // Extract structured issues from LAYERED_EVALUATION detail
+    let layeredSummary = "";
+    const leResult = run.evalResults.find((er) => er.criterion?.type === "LAYERED_EVALUATION");
+    if (leResult?.detail) {
+      try {
+        const parsed = JSON.parse(leResult.detail);
+        const issues: string[] = [];
+        // Critical issues from Layer 4
+        if (parsed.criticalIssues?.length) issues.push("Critical: " + parsed.criticalIssues.join("; "));
+        // Navigation issues from Layer 2
+        if (parsed.navigation?.issues?.length) {
+          issues.push("Nav: " + parsed.navigation.issues.map((i: any) => `${i.type}: ${i.detail}`).join("; "));
+        }
+        // Per-node context summaries from Layer 3
+        if (parsed.perNode?.length) {
+          for (const node of parsed.perNode) {
+            if (node.contextSummary) issues.push(`[${node.nodeLabel}] ${node.contextSummary}`);
+            if (node.offTopic?.detected && node.offTopic?.topics?.length) {
+              issues.push(`Out-of-scope topics: ${node.offTopic.topics.join(", ")}`);
+            }
+            if (node.hallucination?.detected) issues.push(`Hallucination: ${node.hallucination.evidence}`);
+            if (node.stuck?.detected) issues.push(`Stuck: ${node.stuck.reasoning}`);
+          }
+        }
+        // Overall summary from Layer 4
+        if (parsed.summary) issues.push("Summary: " + parsed.summary);
+        layeredSummary = issues.join(" | ").slice(0, 800);
+      } catch {}
+    }
+
+    const evalSummaries = run.evalResults
+      .filter((er) => er.criterion?.type !== "LAYERED_EVALUATION") // handled above
+      .map((er) => {
+        const detail = extractReadableDetail(er.detail, 300);
+        return `[${er.criterion?.label || er.criterion?.key}] score=${er.score} passed=${er.passed} ${detail}`;
+      }).join(" /// ");
 
     const outcome = run.callOutcome || "unknown";
     const score = run.overallScore != null ? `${(run.overallScore * 100).toFixed(0)}%` : "N/A";
@@ -258,7 +290,7 @@ Example: {"keywords": ["hospital location"], "evalIssueTypes": ["hallucination"]
       score,
       overallScore: run.overallScore,
       transcriptPreview: transcriptText.slice(0, 500),
-      compact: `[${run.id.slice(0, 8)}] date:${run.callDate?.toISOString().split("T")[0] || "?"} outcome:${outcome} score:${score} dur:${run.callDuration || "?"}s\nTranscript: ${transcriptText.slice(0, 600)}\nEvals: ${evalSummaries.slice(0, 800)}`,
+      compact: `[${run.id.slice(0, 8)}] date:${run.callDate?.toISOString().split("T")[0] || "?"} outcome:${outcome} score:${score} dur:${run.callDuration || "?"}s\nTranscript: ${transcriptText.slice(0, 500)}\n${layeredSummary ? `Layered Analysis: ${layeredSummary.slice(0, 600)}\n` : ""}Evals: ${evalSummaries.slice(0, 400)}`,
     };
   });
 
