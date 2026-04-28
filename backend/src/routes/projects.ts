@@ -131,6 +131,7 @@ router.post("/hamsa-projects", async (req: AuthRequest, res) => {
 
 // Get single project with criteria and runs (most recent 100 runs)
 router.get("/:id", async (req: AuthRequest, res) => {
+  console.log(`[Projects] GET /:id called with id=${req.params.id} userId=${req.userId}`);
   try {
     const project = await prisma.project.findUnique({
       where: { id: req.params.id },
@@ -140,20 +141,20 @@ router.get("/:id", async (req: AuthRequest, res) => {
           orderBy: { createdAt: "desc" },
           take: 200,
           include: {
-            evalResults: {
-              select: { id: true, score: true, passed: true, criterionId: true, metadata: true, criterion: true },
-            },
+            evalResults: { include: { criterion: true } },
           },
         },
       },
     });
     if (!project) return res.status(404).json({ error: "Project not found" });
     if (project.userId && project.userId !== req.userId) {
+      console.log(`[Projects] Access denied: project.userId=${project.userId} req.userId=${req.userId}`);
       return res.status(403).json({ error: "Access denied" });
     }
+    console.log(`[Projects] Returning project ${project.name} with ${project.runs.length} runs`);
     res.json(project);
   } catch (err) {
-    console.error("[Projects] GET /:id error:", (err as Error).message);
+    console.error("[Projects] GET /:id error:", (err as Error).message, (err as Error).stack?.slice(0, 300));
     res.status(500).json({ error: "Failed to fetch project" });
   }
 });
