@@ -109,6 +109,8 @@ export default function ProjectDetail() {
   const [, setHamsaProjects] = useState<any[]>([]);
   const [hamsaProjectsLoaded, setHamsaProjectsLoaded] = useState(false);
   const callIdsRef = useRef<HTMLTextAreaElement>(null);
+  const [sortField, setSortField] = useState<string | null>(null);
+  const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
 
   const isHistory = project?.projectType === "HISTORY";
   const isWebhook = project?.projectType === "WEBHOOK";
@@ -977,13 +979,25 @@ export default function ProjectDetail() {
       <table style={{ width: "100%", borderCollapse: "collapse" }}>
         <thead>
           <tr style={{ borderBottom: `1px solid ${T.border}`, textAlign: "left" }}>
+            {(() => {
+              const sortTh = (label: string, field: string, extraStyle?: React.CSSProperties) => (
+                <th
+                  key={field}
+                  style={{ ...thStyle, cursor: "pointer", userSelect: "none", ...extraStyle }}
+                  onClick={() => { if (sortField === field) { setSortDir(sortDir === "asc" ? "desc" : "asc"); } else { setSortField(field); setSortDir("desc"); } }}
+                >
+                  {label} {sortField === field ? (sortDir === "asc" ? "▲" : "▼") : ""}
+                </th>
+              );
+              return null;
+            })()}
             {(isHistory || isWebhook) ? (
               <>
-                <th style={thStyle}>Date</th>
+                <th style={{ ...thStyle, cursor: "pointer", userSelect: "none" }} onClick={() => { if (sortField === "date") setSortDir(d => d === "asc" ? "desc" : "asc"); else { setSortField("date"); setSortDir("desc"); } }}>Date {sortField === "date" ? (sortDir === "asc" ? "▲" : "▼") : ""}</th>
                 <th style={thStyle}>Channel</th>
-                <th style={thStyle}>Duration</th>
+                <th style={{ ...thStyle, cursor: "pointer", userSelect: "none" }} onClick={() => { if (sortField === "duration") setSortDir(d => d === "asc" ? "desc" : "asc"); else { setSortField("duration"); setSortDir("desc"); } }}>Duration {sortField === "duration" ? (sortDir === "asc" ? "▲" : "▼") : ""}</th>
                 <th style={thStyle}>Call Status</th>
-                <th style={thStyle}>Call Outcome</th>
+                <th style={{ ...thStyle, cursor: "pointer", userSelect: "none" }} onClick={() => { if (sortField === "outcome") setSortDir(d => d === "asc" ? "desc" : "asc"); else { setSortField("outcome"); setSortDir("desc"); } }}>Call Outcome {sortField === "outcome" ? (sortDir === "asc" ? "▲" : "▼") : ""}</th>
                 <th style={{ ...thStyle, minWidth: 220 }}>Conversation ID</th>
               </>
             ) : (
@@ -992,9 +1006,9 @@ export default function ProjectDetail() {
             {activeTab === "evaluation" ? (
               <>
                 <th style={thStyle}>Goal</th>
-                <th style={thStyle}>Status</th>
-                <th style={thStyle}>Score</th>
-                <th style={{ ...thStyle, fontSize: 11 }}>Cost</th>
+                <th style={{ ...thStyle, cursor: "pointer", userSelect: "none" }} onClick={() => { if (sortField === "status") setSortDir(d => d === "asc" ? "desc" : "asc"); else { setSortField("status"); setSortDir("desc"); } }}>Status {sortField === "status" ? (sortDir === "asc" ? "▲" : "▼") : ""}</th>
+                <th style={{ ...thStyle, cursor: "pointer", userSelect: "none" }} onClick={() => { if (sortField === "score") setSortDir(d => d === "asc" ? "desc" : "asc"); else { setSortField("score"); setSortDir("desc"); } }}>Score {sortField === "score" ? (sortDir === "asc" ? "▲" : "▼") : ""}</th>
+                <th style={{ ...thStyle, fontSize: 11, cursor: "pointer", userSelect: "none" }} onClick={() => { if (sortField === "cost") setSortDir(d => d === "asc" ? "desc" : "asc"); else { setSortField("cost"); setSortDir("desc"); } }}>Cost {sortField === "cost" ? (sortDir === "asc" ? "▲" : "▼") : ""}</th>
                 {project.criteria?.map((c: any) => (
                   <th key={c.id} style={{ ...thStyle, fontSize: 11 }}>{c.label || c.key}</th>
                 ))}
@@ -1012,15 +1026,31 @@ export default function ProjectDetail() {
           </tr>
         </thead>
         <tbody>
-          {/* History/webhook runs sorted latest-first for display; live runs keep server order (newest first) */}
-          {((isHistory || isWebhook)
-            ? [...(project.runs ?? [])].sort((a: any, b: any) => {
+          {(() => {
+            // Sort runs
+            const runs = [...(project.runs ?? [])];
+            if (sortField) {
+              runs.sort((a: any, b: any) => {
+                let va: any, vb: any;
+                if (sortField === "date") { va = new Date(a.callDate || a.createdAt).getTime(); vb = new Date(b.callDate || b.createdAt).getTime(); }
+                else if (sortField === "duration") { va = a.callDuration ?? 0; vb = b.callDuration ?? 0; }
+                else if (sortField === "score") { va = a.overallScore ?? -1; vb = b.overallScore ?? -1; }
+                else if (sortField === "cost") { va = a.evalCost ?? 0; vb = b.evalCost ?? 0; }
+                else if (sortField === "outcome") { va = a.callOutcome || ""; vb = b.callOutcome || ""; }
+                else if (sortField === "status") { va = a.status || ""; vb = b.status || ""; }
+                else { va = 0; vb = 0; }
+                if (typeof va === "string") return sortDir === "asc" ? va.localeCompare(vb) : vb.localeCompare(va);
+                return sortDir === "asc" ? va - vb : vb - va;
+              });
+            } else if (isHistory || isWebhook) {
+              runs.sort((a: any, b: any) => {
                 const da = new Date(a.callDate || a.createdAt).getTime();
                 const db = new Date(b.callDate || b.createdAt).getTime();
-                return db - da;   // newest → oldest
-              })
-            : (project.runs ?? [])
-          ).filter((run: any) => {
+                return db - da;
+              });
+            }
+            return runs;
+          })().filter((run: any) => {
             // Channel filter
             if (channelFilter) {
               const ch = getChannel(run.webhookData);
