@@ -710,12 +710,12 @@ router.post("/:id/ask", async (req: AuthRequest, res) => {
   if (!project) return res.status(404).json({ error: "Project not found" });
   if (project.userId !== null && project.userId !== req.userId) return res.status(403).json({ error: "Access denied" });
 
-  // 30s timeout — two LLM calls + DB query can take time
+  // 90s timeout — two LLM calls with enriched context + DB query
   const timeout = setTimeout(() => {
     if (!res.headersSent) {
       res.status(504).json({ error: "Search timed out. Try a more specific question." });
     }
-  }, 30_000);
+  }, 90_000);
 
   try {
     const result = await searchRuns(project.id, question.trim(), project.agentSummary || "");
