@@ -138,9 +138,11 @@ router.get("/:id", async (req: AuthRequest, res) => {
         criteria: true,
         runs: {
           orderBy: { createdAt: "desc" },
-          take: 100,
+          take: 200,
           include: {
-            evalResults: { include: { criterion: true } },
+            evalResults: {
+              select: { id: true, score: true, passed: true, criterionId: true, metadata: true, criterion: true },
+            },
           },
         },
       },
@@ -151,6 +153,7 @@ router.get("/:id", async (req: AuthRequest, res) => {
     }
     res.json(project);
   } catch (err) {
+    console.error("[Projects] GET /:id error:", (err as Error).message);
     res.status(500).json({ error: "Failed to fetch project" });
   }
 });
