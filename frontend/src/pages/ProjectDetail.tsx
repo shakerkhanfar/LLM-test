@@ -371,7 +371,11 @@ export default function ProjectDetail() {
             <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
             {runs.length === 0
               ? "Importing calls from Hamsa… This may take a minute."
-              : `Processing: ${complete} evaluated · ${evaluating} evaluating · ${pending} pending${failed ? ` · ${failed} failed` : ""}`}
+              : (() => {
+                  const remaining = pending + evaluating;
+                  const estMinLeft = Math.ceil(remaining * 40 / 60);
+                  return `Processing: ${complete} evaluated · ${evaluating} evaluating · ${pending} pending${failed ? ` · ${failed} failed` : ""}${remaining > 0 ? ` · ~${estMinLeft} min remaining` : ""}`;
+                })()}
           </div>
         );
       })()}
@@ -430,10 +434,12 @@ export default function ProjectDetail() {
           <>
             <button
               onClick={async () => {
-                if (!confirm(`Re-fetch conversation details and re-evaluate all ${project.runs?.length ?? 0} calls? This processes one call at a time with delays to avoid rate limits.`)) return;
+                const count = project.runs?.length ?? 0;
+                const estMinutes = Math.ceil(count * 45 / 60); // ~45s per call (fetch + eval)
+                if (!confirm(`Re-fetch and re-evaluate all ${count} calls?\n\nEstimated time: ~${estMinutes} minutes\n(~45 seconds per call: fetch from Hamsa + 8-12 LLM evaluation calls)\n\nThe process runs in the background — you can close this page.`)) return;
                 try {
                   const result = await reHydrateProject(project.id);
-                  alert(`${result.message}`);
+                  alert(`${result.message}\n\nEstimated completion: ~${estMinutes} minutes.`);
                   load();
                 } catch (err) {
                   alert("Failed: " + (err as Error).message);
@@ -445,10 +451,12 @@ export default function ProjectDetail() {
             </button>
             <button
               onClick={async () => {
-                if (!confirm(`Re-evaluate all ${project.runs?.length ?? 0} calls? This will clear existing scores and run all criteria fresh.`)) return;
+                const count = project.runs?.length ?? 0;
+                const estMinutes = Math.ceil(count * 35 / 60); // ~35s per call (eval only, no fetch)
+                if (!confirm(`Re-evaluate all ${count} calls?\n\nEstimated time: ~${estMinutes} minutes\n(~35 seconds per call: 8-12 LLM evaluation calls)\n\nExisting scores will be cleared. The process runs in the background.`)) return;
                 try {
                   const result = await reEvaluateProject(project.id);
-                  alert(`Reset ${result.resetCount} calls for re-evaluation. They will process in the background.`);
+                  alert(`Reset ${result.resetCount} calls for re-evaluation.\n\nEstimated completion: ~${estMinutes} minutes.`);
                   load();
                 } catch (err) {
                   alert("Failed: " + (err as Error).message);
@@ -627,7 +635,8 @@ export default function ProjectDetail() {
                   const text = callIdsRef.current?.value || "";
                   const ids = text.split(/[\n,;\s]+/).map(s => s.trim()).filter(s => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(s));
                   if (ids.length === 0) { alert("No valid conversation IDs found. Expected UUID format."); return; }
-                  if (!confirm(`Import ${ids.length} call(s)? They will be fetched and evaluated in the background.`)) return;
+                  const estMin = Math.ceil(ids.length * 45 / 60);
+                  if (!confirm(`Import ${ids.length} call(s)?\n\nEstimated time: ~${estMin} minutes\n(~45 seconds per call: fetch + evaluate)\n\nRuns in the background — you can close this page.`)) return;
                   try {
                     const result = await importByIds(project.id, ids);
                     setHistoryResult(result);
