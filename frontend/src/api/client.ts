@@ -257,6 +257,10 @@ export function reEvaluateProject(projectId: string) {
   return request<any>(`/projects/${projectId}/re-evaluate`, { method: "POST" });
 }
 
+export function reHydrateProject(projectId: string) {
+  return request<any>(`/projects/${projectId}/re-hydrate`, { method: "POST" });
+}
+
 // ─── Ask (natural language search) ───────────────────────────────
 
 export function askProject(projectId: string, question: string) {

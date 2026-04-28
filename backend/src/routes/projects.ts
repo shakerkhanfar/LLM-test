@@ -543,6 +543,104 @@ router.post("/:id/re-evaluate", async (req: AuthRequest, res) => {
 });
 
 /**
+ * POST /api/projects/:id/re-hydrate
+ *
+ * Re-fetches conversation details for all runs that have a conversationId,
+ * then re-evaluates them. Processes one at a time with a delay to avoid
+ * hitting Hamsa/OpenAI rate limits.
+ */
+router.post("/:id/re-hydrate", async (req: AuthRequest, res) => {
+  const projectId = req.params.id;
+  const project = await prisma.project.findUnique({ where: { id: projectId } });
+  if (!project) return res.status(404).json({ error: "Project not found" });
+  if (project.userId !== null && project.userId !== req.userId) return res.status(403).json({ error: "Access denied" });
+
+  const runs = await prisma.run.findMany({
+    where: { projectId, conversationId: { not: null } },
+    select: { id: true, conversationId: true },
+    orderBy: { createdAt: "asc" },
+  });
+
+  if (runs.length === 0) {
+    return res.json({ ok: true, total: 0, message: "No runs with conversation IDs found" });
+  }
+
+  // Respond immediately — hydration runs in background
+  res.json({ ok: true, total: runs.length, message: `Re-hydrating ${runs.length} calls in the background (1 at a time with delays).` });
+
+  // Background: fetch conversation details one by one, then evaluate
+  const apiKey = project.hamsaApiKey || process.env.HAMSA_API_KEY;
+  const { fetchConversation, extractTranscriptFromConversation, fetchCallLog, extractJobIdFromConversation } = await import("../services/hamsaApi");
+
+  let completed = 0;
+  let failed = 0;
+
+  for (const run of runs) {
+    try {
+      console.log(`[ReHydrate] ${completed + failed + 1}/${runs.length} Fetching conv ${run.conversationId}`);
+
+      const conv = await fetchConversation(run.conversationId!, apiKey);
+      const transcript = extractTranscriptFromConversation(conv);
+      const callLog = Array.isArray(conv?.logs) && conv.logs.length > 0 ? conv.logs : null;
+      const callStatus = conv?.status || null;
+      const callDuration = typeof conv?.callDuration === "number" ? conv.callDuration : null;
+      const callDate = conv?.createdAt ? new Date(conv.createdAt) : null;
+      const outcomeResult = conv?.jobResponse?.outcomeResult ?? null;
+      const callOutcome: string | null = outcomeResult?.call_outcome ?? null;
+      const jobId = extractJobIdFromConversation(conv);
+      const modelUsed = conv?.agentDetails?.llm?.model || conv?.voiceAgent?.llm?.model || conv?.model || null;
+
+      // Update run with fresh data
+      await prisma.run.update({
+        where: { id: run.id },
+        data: {
+          transcript: transcript as any,
+          callLog: callLog as any,
+          callStatus,
+          callDuration,
+          callDate,
+          callOutcome,
+          outcomeResult: outcomeResult as any,
+          hamsaCallId: jobId,
+          modelUsed,
+          webhookData: conv as any,
+          status: "PENDING",
+          overallScore: null,
+          evalCost: null,
+        },
+      });
+
+      // Also try supplemental logs via jobId
+      if (jobId) {
+        try {
+          const logs = await fetchCallLog(jobId, apiKey);
+          if (Array.isArray(logs) && logs.length > (callLog?.length ?? 0)) {
+            await prisma.run.update({ where: { id: run.id }, data: { callLog: logs as any } });
+          }
+        } catch {}
+      }
+
+      // Delete old eval results for this run
+      await prisma.evalResult.deleteMany({ where: { runId: run.id } });
+
+      // Trigger evaluation
+      await runEvaluationCheck(run.id);
+      completed++;
+
+      // Wait 3 seconds between calls to avoid rate limits
+      await new Promise((r) => setTimeout(r, 3000));
+    } catch (err) {
+      console.error(`[ReHydrate] Failed run ${run.id}:`, (err as Error).message);
+      failed++;
+      // Still wait before next call
+      await new Promise((r) => setTimeout(r, 2000));
+    }
+  }
+
+  console.log(`[ReHydrate] Done: ${completed} succeeded, ${failed} failed out of ${runs.length}`);
+});
+
+/**
  * POST /api/projects/:id/ask
  *
  * Natural language search across evaluated runs.

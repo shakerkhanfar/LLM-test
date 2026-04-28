@@ -3,7 +3,7 @@ import { useParams, Link, useNavigate, useSearchParams } from "react-router-dom"
 import {
   getProject, createRun, deleteRun, triggerEvaluation, switchModel,
   attachCallLog, attachTranscript, importHistory, importHistoryCsv, refreshAgent,
-  askProject, fetchHamsaProjects, reEvaluateProject,
+  askProject, fetchHamsaProjects, reEvaluateProject, reHydrateProject,
 } from "../api/client";
 import CallAgent from "../components/CallAgent";
 import T from "../theme";
@@ -398,21 +398,38 @@ export default function ProjectDetail() {
           </button>
         )}
         {(project.runs?.length ?? 0) > 0 && (
-          <button
-            onClick={async () => {
-              if (!confirm(`Re-evaluate all ${project.runs?.length ?? 0} calls? This will clear existing scores and run all criteria fresh.`)) return;
-              try {
-                const result = await reEvaluateProject(project.id);
-                alert(`Reset ${result.resetCount} calls for re-evaluation. They will process in the background.`);
-                load();
-              } catch (err) {
-                alert("Failed: " + (err as Error).message);
-              }
-            }}
-            style={{ ...btnStyle, background: T.warning }}
-          >
-            Re-evaluate All
-          </button>
+          <>
+            <button
+              onClick={async () => {
+                if (!confirm(`Re-fetch conversation details and re-evaluate all ${project.runs?.length ?? 0} calls? This processes one call at a time with delays to avoid rate limits.`)) return;
+                try {
+                  const result = await reHydrateProject(project.id);
+                  alert(`${result.message}`);
+                  load();
+                } catch (err) {
+                  alert("Failed: " + (err as Error).message);
+                }
+              }}
+              style={{ ...btnStyle, background: T.info }}
+            >
+              Re-fetch & Evaluate
+            </button>
+            <button
+              onClick={async () => {
+                if (!confirm(`Re-evaluate all ${project.runs?.length ?? 0} calls? This will clear existing scores and run all criteria fresh.`)) return;
+                try {
+                  const result = await reEvaluateProject(project.id);
+                  alert(`Reset ${result.resetCount} calls for re-evaluation. They will process in the background.`);
+                  load();
+                } catch (err) {
+                  alert("Failed: " + (err as Error).message);
+                }
+              }}
+              style={{ ...btnStyle, background: T.warning }}
+            >
+              Re-evaluate All
+            </button>
+          </>
         )}
       </div>
 
