@@ -244,7 +244,7 @@ Example: {"keywords": ["hospital location"], "evalIssueTypes": ["hallucination"]
     // Extract structured issues from LAYERED_EVALUATION detail
     let layeredSummary = "";
     const leResult = run.evalResults.find((er) => er.criterion?.type === "LAYERED_EVALUATION");
-    if (leResult?.detail) {
+    if (leResult?.detail && leResult.detail.trim().startsWith("{")) {
       try {
         const parsed = JSON.parse(leResult.detail);
         const issues: string[] = [];

@@ -98,6 +98,8 @@ export interface Layer4Result {
   overallScore: number;             // 0-10
   objectiveAchieved: boolean | null;
   callerSentiment: string;
+  outOfScopeHandled: boolean | null;
+  outOfScopeTopics: string[];
   efficiency: { score: number; reasoning: string };
   criticalIssues: string[];
   improvements: string[];
@@ -870,6 +872,8 @@ Based on these pre-evaluated results, provide a final JSON assessment:
         overallScore: num(parsed.overall_score, 5),
         objectiveAchieved: parsed.objective_achieved ?? null,
         callerSentiment: parsed.caller_sentiment ?? "unknown",
+        outOfScopeHandled: parsed.out_of_scope_handled ?? null,
+        outOfScopeTopics: parsed.out_of_scope_topics ?? [],
         efficiency: {
           score: num(parsed.efficiency?.score, 5),
           reasoning: parsed.efficiency?.reasoning ?? "",
@@ -886,6 +890,8 @@ Based on these pre-evaluated results, provide a final JSON assessment:
         overallScore: 5,
         objectiveAchieved: null,
         callerSentiment: "unknown",
+        outOfScopeHandled: null,
+        outOfScopeTopics: [],
         efficiency: { score: 5, reasoning: "" },
         criticalIssues: ["Failed to parse aggregation response"],
         improvements: [],

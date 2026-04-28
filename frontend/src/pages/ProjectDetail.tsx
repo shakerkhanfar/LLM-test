@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback, useRef } from "react";
+import { useEffect, useState, useCallback, useRef, useMemo } from "react";
 import { useParams, Link, useNavigate, useSearchParams } from "react-router-dom";
 import {
   getProject, createRun, deleteRun, triggerEvaluation, switchModel,
@@ -111,6 +111,31 @@ export default function ProjectDetail() {
   const callIdsRef = useRef<HTMLTextAreaElement>(null);
   const [sortField, setSortField] = useState<string | null>(null);
   const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
+
+  const sortedRuns = useMemo(() => {
+    const runs = [...(project?.runs ?? [])];
+    if (sortField) {
+      runs.sort((a: any, b: any) => {
+        let va: any, vb: any;
+        if (sortField === "date") { va = new Date(a.callDate || a.createdAt).getTime(); vb = new Date(b.callDate || b.createdAt).getTime(); }
+        else if (sortField === "duration") { va = a.callDuration ?? 0; vb = b.callDuration ?? 0; }
+        else if (sortField === "score") { va = a.overallScore ?? -1; vb = b.overallScore ?? -1; }
+        else if (sortField === "cost") { va = a.evalCost ?? 0; vb = b.evalCost ?? 0; }
+        else if (sortField === "outcome") { va = a.callOutcome || ""; vb = b.callOutcome || ""; }
+        else if (sortField === "status") { va = a.status || ""; vb = b.status || ""; }
+        else { va = 0; vb = 0; }
+        if (typeof va === "string") return sortDir === "asc" ? va.localeCompare(vb) : vb.localeCompare(va);
+        return sortDir === "asc" ? va - vb : vb - va;
+      });
+    } else if (project?.projectType === "HISTORY" || project?.projectType === "WEBHOOK") {
+      runs.sort((a: any, b: any) => {
+        const da = new Date(a.callDate || a.createdAt).getTime();
+        const db = new Date(b.callDate || b.createdAt).getTime();
+        return db - da;
+      });
+    }
+    return runs;
+  }, [project?.runs, project?.projectType, sortField, sortDir]);
 
   const isHistory = project?.projectType === "HISTORY";
   const isWebhook = project?.projectType === "WEBHOOK";
@@ -979,18 +1004,7 @@ export default function ProjectDetail() {
       <table style={{ width: "100%", borderCollapse: "collapse" }}>
         <thead>
           <tr style={{ borderBottom: `1px solid ${T.border}`, textAlign: "left" }}>
-            {(() => {
-              const sortTh = (label: string, field: string, extraStyle?: React.CSSProperties) => (
-                <th
-                  key={field}
-                  style={{ ...thStyle, cursor: "pointer", userSelect: "none", ...extraStyle }}
-                  onClick={() => { if (sortField === field) { setSortDir(sortDir === "asc" ? "desc" : "asc"); } else { setSortField(field); setSortDir("desc"); } }}
-                >
-                  {label} {sortField === field ? (sortDir === "asc" ? "▲" : "▼") : ""}
-                </th>
-              );
-              return null;
-            })()}
+            {/* Sort headers */}
             {(isHistory || isWebhook) ? (
               <>
                 <th style={{ ...thStyle, cursor: "pointer", userSelect: "none" }} onClick={() => { if (sortField === "date") setSortDir(d => d === "asc" ? "desc" : "asc"); else { setSortField("date"); setSortDir("desc"); } }}>Date {sortField === "date" ? (sortDir === "asc" ? "▲" : "▼") : ""}</th>
@@ -1026,31 +1040,7 @@ export default function ProjectDetail() {
           </tr>
         </thead>
         <tbody>
-          {(() => {
-            // Sort runs
-            const runs = [...(project.runs ?? [])];
-            if (sortField) {
-              runs.sort((a: any, b: any) => {
-                let va: any, vb: any;
-                if (sortField === "date") { va = new Date(a.callDate || a.createdAt).getTime(); vb = new Date(b.callDate || b.createdAt).getTime(); }
-                else if (sortField === "duration") { va = a.callDuration ?? 0; vb = b.callDuration ?? 0; }
-                else if (sortField === "score") { va = a.overallScore ?? -1; vb = b.overallScore ?? -1; }
-                else if (sortField === "cost") { va = a.evalCost ?? 0; vb = b.evalCost ?? 0; }
-                else if (sortField === "outcome") { va = a.callOutcome || ""; vb = b.callOutcome || ""; }
-                else if (sortField === "status") { va = a.status || ""; vb = b.status || ""; }
-                else { va = 0; vb = 0; }
-                if (typeof va === "string") return sortDir === "asc" ? va.localeCompare(vb) : vb.localeCompare(va);
-                return sortDir === "asc" ? va - vb : vb - va;
-              });
-            } else if (isHistory || isWebhook) {
-              runs.sort((a: any, b: any) => {
-                const da = new Date(a.callDate || a.createdAt).getTime();
-                const db = new Date(b.callDate || b.createdAt).getTime();
-                return db - da;
-              });
-            }
-            return runs;
-          })().filter((run: any) => {
+          {sortedRuns.filter((run: any) => {
             // Channel filter
             if (channelFilter) {
               const ch = getChannel(run.webhookData);
