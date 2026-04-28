@@ -232,74 +232,98 @@ export function mapNodeVisits(
     segments.push(currentSegment);
   }
 
-  // Pass 3: Identify which node each segment belongs to using multiple strategies
+  // Pass 3: Identify which node each segment belongs to.
+  // KEY PRINCIPLE: Nodes CAN be revisited (loops are common). Don't exclude already-matched IDs.
+  // Priority: TRANSITION events > exact message match > graph traversal > fuzzy match > start node.
+
   for (let si = 0; si < segments.length; si++) {
     const seg = segments[si];
-    if (seg.node) continue; // Already matched
-
-    // Strategy 1: TRANSITION event — a previous segment's transition points to this node
-    // Find the most recent transition that happened before or at this segment's entry
-    for (const tt of transitionTargets) {
-      const ttMs = new Date(tt.timestamp).getTime();
-      const segMs = new Date(seg.entryTimestamp).getTime();
-      if (Math.abs(ttMs - segMs) <= 1000 && tt.idx < seg.entryIdx) {
-        const targetNode = nodeById.get(tt.nodeId);
-        if (targetNode) { seg.node = targetNode; break; }
-      }
-    }
     if (seg.node) continue;
 
-    // Strategy 2: Exact message match
+    // Strategy 1: TRANSITION event — find the transition that led to this segment.
+    // Look for the most recent TRANSITION before this segment's entry.
+    let bestTransition: { nodeId: string; idx: number } | null = null;
+    for (const tt of transitionTargets) {
+      if (tt.idx <= seg.entryIdx && (!bestTransition || tt.idx > bestTransition.idx)) {
+        bestTransition = tt;
+      }
+    }
+    if (bestTransition) {
+      const targetNode = nodeById.get(bestTransition.nodeId);
+      if (targetNode) { seg.node = targetNode; continue; }
+    }
+
+    // Strategy 2: Start node — first segment is always the start node
+    if (si === 0) {
+      const startNode = nodes.find((n: any) => n.type === "start");
+      if (startNode) { seg.node = startNode; continue; }
+    }
+
+    // Strategy 3: Exact message match (node prompt text matches played message)
     if (seg.promptMessage) {
       const key = seg.promptMessage.trim().replace(/\s+/g, " ").toLowerCase();
       if (nodeByMessage.has(key)) { seg.node = nodeByMessage.get(key); continue; }
     }
 
-    // Strategy 3: Fuzzy match — compare static parts of node templates
+    // Strategy 4: Graph traversal from previous matched node
+    // Follow edges from the previous node. Allow revisiting the same node (loops).
+    if (si > 0) {
+      const prevNode = segments[si - 1]?.node;
+      if (prevNode) {
+        // Get all reachable nodes (including self-loops back to the same node)
+        const reachable = edges
+          .filter((e: any) => e.source === prevNode.id)
+          .map((e: any) => nodeById.get(e.target))
+          .filter((n: any) => n);
+
+        if (reachable.length === 1) {
+          seg.node = reachable[0];
+        } else if (reachable.length > 1) {
+          // Try to narrow by type: tool segment → tool node, prompt segment → conversation node
+          let match: any = null;
+          if (seg.toolsCalled.length > 0) {
+            match = reachable.find((n: any) => n.type === "tool");
+          } else if (seg.promptMessage) {
+            // Fuzzy match the prompt against reachable conversation nodes
+            const msgLower = seg.promptMessage.trim().replace(/\s+/g, " ").toLowerCase();
+            let bestScore = 0;
+            for (const node of reachable) {
+              if (!node.message) continue;
+              const template = node.message.replace(/\{\{[^}]+\}\}/g, "").trim().replace(/\s+/g, " ").toLowerCase();
+              const staticWords = template.slice(0, 300).split(/\s+/).filter((w: string) => w.length > 2);
+              if (staticWords.length < 2) continue;
+              const matchCount = staticWords.filter((w: string) => msgLower.includes(w)).length;
+              const ratio = matchCount / staticWords.length;
+              if (ratio > bestScore && ratio >= 0.3) { bestScore = ratio; match = node; }
+            }
+            // If no fuzzy match, try conversation type
+            if (!match) match = reachable.find((n: any) => n.type === "conversation");
+          }
+          if (match) seg.node = match;
+          // If still nothing, could be a self-loop (same node again)
+          if (!seg.node && prevNode) seg.node = prevNode;
+        }
+        if (seg.node) continue;
+      }
+    }
+
+    // Strategy 5: Fuzzy match against ALL nodes (no exclusion of already-visited)
     if (seg.promptMessage && !seg.node) {
       let bestMatch: any = null;
       let bestScore = 0;
-      const usedIds = new Set(segments.filter(s => s.node).map(s => s.node.id));
       const msgLower = seg.promptMessage.trim().replace(/\s+/g, " ").toLowerCase();
 
       for (const node of nodes) {
-        if (!node.message || usedIds.has(node.id)) continue;
+        if (!node.message) continue;
         const template = node.message.replace(/\{\{[^}]+\}\}/g, "").trim().replace(/\s+/g, " ").toLowerCase();
         if (template.length < 10) continue;
-        // Use first 200 chars of static parts for comparison
-        const staticWords = template.slice(0, 200).split(/\s+/).filter((w: string) => w.length > 2);
-        if (staticWords.length < 3) continue;
+        const staticWords = template.slice(0, 300).split(/\s+/).filter((w: string) => w.length > 2);
+        if (staticWords.length < 2) continue;
         const matchCount = staticWords.filter((w: string) => msgLower.includes(w)).length;
         const ratio = matchCount / staticWords.length;
         if (ratio > bestScore && ratio >= 0.4) { bestScore = ratio; bestMatch = node; }
       }
       if (bestMatch) { seg.node = bestMatch; continue; }
-    }
-
-    // Strategy 4: Start node is always the first conversation segment
-    if (si === 0 && seg.promptMessage) {
-      const startNode = nodes.find((n: any) => n.type === "start");
-      if (startNode) { seg.node = startNode; continue; }
-    }
-
-    // Strategy 5: Graph traversal from previous matched node
-    if (si > 0) {
-      const prevNode = segments[si - 1]?.node;
-      if (prevNode) {
-        const usedIds = new Set(segments.filter(s => s.node).map(s => s.node.id));
-        const reachable = edges
-          .filter((e: any) => e.source === prevNode.id)
-          .map((e: any) => nodeById.get(e.target))
-          .filter((n: any) => n && !usedIds.has(n.id));
-        // If exactly one reachable, use it. If multiple, try to match by type.
-        if (reachable.length === 1) { seg.node = reachable[0]; }
-        else if (reachable.length > 1) {
-          const byType = seg.toolsCalled.length > 0 ? reachable.find((n: any) => n.type === "tool")
-            : seg.promptMessage ? reachable.find((n: any) => n.type === "conversation" || n.type === "start")
-            : reachable[0];
-          if (byType) seg.node = byType;
-        }
-      }
     }
   }
 
