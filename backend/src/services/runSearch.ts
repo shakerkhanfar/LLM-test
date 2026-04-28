@@ -26,7 +26,21 @@ interface SearchFilters {
   limit?: number;
 }
 
+interface SearchIssue {
+  title: string;
+  description: string;
+  severity: "critical" | "high" | "medium" | "low";
+  calls: Array<{
+    id: string;
+    conversationId: string | null;
+    callDate: string | null;
+    callOutcome: string | null;
+    overallScore: number | null;
+  }>;
+}
+
 interface SearchResult {
+  issues: SearchIssue[];
   runs: Array<{
     id: string;
     conversationId: string | null;
@@ -206,6 +220,7 @@ Example: {"keywords": ["hospital location"], "evalIssueTypes": ["hallucination"]
 
   if (candidates.length === 0) {
     return {
+      issues: [],
       runs: [],
       summary: "No completed runs found matching the filters.",
       totalMatched: 0,
@@ -254,6 +269,7 @@ Example: {"keywords": ["hospital location"], "evalIssueTypes": ["hallucination"]
   if (!needsContentSearch) {
     const topResults = candidateSummaries.slice(0, filters.limit);
     return {
+      issues: [],
       runs: topResults.map((r) => ({
         id: r.id,
         conversationId: r.convId,
@@ -281,7 +297,35 @@ Example: {"keywords": ["hospital location"], "evalIssueTypes": ["hallucination"]
     messages: [
       {
         role: "system",
-        content: `You are searching through voice AI call evaluations to answer a user's question. For each candidate call that matches, include it in results with a brief explanation. Return JSON: {"matches":[{"index":<0-based>,"reason":"<why>"}],"summary":"<2-3 sentences>"}. Rules: only include genuine matches, order by relevance, max ${filters.limit} matches.`,
+        content: `You are an expert analyst for voice AI call evaluations. Analyze the provided calls and identify distinct ISSUES — patterns, bugs, failures, or problems across calls.
+
+For each issue, provide:
+- title: Short issue name (e.g. "Agent stuck on national ID collection", "Out of scope question not handled")
+- description: What's happening, based on transcripts, eval results, flow data, and tool calls
+- severity: "critical" | "high" | "medium" | "low"
+- callIndices: 0-based indices of calls exhibiting this issue
+
+Look for:
+- Where users get stuck or frustrated
+- Agent hallucinations (saying things not in its instructions/knowledge)
+- Going out of scope (discussing topics outside the agent's purpose)
+- Flow issues (wrong transitions, dead ends, loops, backward jumps)
+- Tool call failures or incorrect tool usage
+- Language/gender detection errors
+- Repeated patterns across multiple calls
+
+Return JSON:
+{
+  "issues": [{"title":"...","description":"...","severity":"high","callIndices":[0,3,5]}],
+  "summary": "2-3 sentence overview of findings"
+}
+
+Rules:
+- Group similar problems into single issues (don't list the same problem per-call)
+- A call can appear in multiple issues
+- Order issues by severity (critical first)
+- Be specific — cite what the agent said or did wrong
+- Max 15 issues`,
       },
       {
         role: "user",
@@ -297,46 +341,65 @@ Example: {"keywords": ["hospital location"], "evalIssueTypes": ["hallucination"]
       + (rankTokens.completion_tokens / 1_000_000) * costs.output;
   }
 
-  let rankResult: { matches: Array<{ index: number; reason: string }>; summary: string };
+  let rankResult: {
+    issues: Array<{ title: string; description: string; severity: string; callIndices: number[] }>;
+    summary: string;
+  };
   try {
-    rankResult = JSON.parse(rankResponse.choices[0].message.content || '{"matches":[],"summary":"No results"}');
+    rankResult = JSON.parse(rankResponse.choices[0].message.content || '{"issues":[],"summary":"No results"}');
   } catch {
-    rankResult = { matches: [], summary: "Failed to parse search results" };
+    rankResult = { issues: [], summary: "Failed to parse search results" };
   }
 
-  // Deduplicate and validate indices
-  // Detect if LLM used 1-based indexing: if any returned index === llmCandidates.length
-  // (one past the last 0-based index), they're likely all 1-based
-  const likely1Based = rankResult.matches.some((m) => m.index === llmCandidates.length)
-    || (rankResult.matches.length > 0 && rankResult.matches.every((m) => m.index >= 1));
-  const indexOffset = likely1Based && !rankResult.matches.some((m) => m.index === 0) ? 1 : 0;
+  // Detect 1-based indexing
+  const allIndices = rankResult.issues.flatMap((iss) => iss.callIndices || []);
+  const likely1Based = allIndices.some((i) => i === llmCandidates.length)
+    || (allIndices.length > 0 && allIndices.every((i) => i >= 1) && !allIndices.includes(0));
+  const indexOffset = likely1Based ? 1 : 0;
 
-  const seenIndices = new Set<number>();
-  const matchedRuns = rankResult.matches
-    .filter((m) => {
-      const idx = m.index - indexOffset;
-      m.index = idx;
-      if (idx < 0 || idx >= llmCandidates.length) return false;
-      if (seenIndices.has(idx)) return false;
-      seenIndices.add(idx);
-      return true;
-    })
-    .slice(0, filters.limit)
-    .map((m) => {
-      const c = llmCandidates[m.index];
+  // Map issues to real call data
+  const issues: SearchIssue[] = rankResult.issues
+    .filter((iss) => iss.title && iss.callIndices?.length > 0)
+    .map((iss) => {
+      const validIndices = [...new Set(iss.callIndices)]
+        .map((i) => i - indexOffset)
+        .filter((i) => i >= 0 && i < llmCandidates.length);
       return {
-        id: c.id,
-        conversationId: c.convId,
-        callDate: c.date,
-        callDuration: c.duration,
-        callOutcome: c.outcome,
-        overallScore: c.overallScore,
-        matchReason: m.reason,
-        transcriptPreview: c.transcriptPreview,
+        title: iss.title,
+        description: iss.description || "",
+        severity: (["critical", "high", "medium", "low"].includes(iss.severity) ? iss.severity : "medium") as SearchIssue["severity"],
+        calls: validIndices.map((i) => {
+          const c = llmCandidates[i];
+          return {
+            id: c.id,
+            conversationId: c.convId,
+            callDate: c.date,
+            callOutcome: c.outcome,
+            overallScore: c.overallScore,
+          };
+        }),
       };
     });
 
+  // Also build a flat runs list (all unique calls across all issues) for backward compatibility
+  const seenRunIds = new Set<string>();
+  const matchedRuns = issues.flatMap((iss) => iss.calls).filter((c) => {
+    if (seenRunIds.has(c.id)) return false;
+    seenRunIds.add(c.id);
+    return true;
+  }).map((c) => ({
+    id: c.id,
+    conversationId: c.conversationId,
+    callDate: c.callDate,
+    callDuration: null as number | null,
+    callOutcome: c.callOutcome,
+    overallScore: c.overallScore,
+    matchReason: issues.filter((iss) => iss.calls.some((ic) => ic.id === c.id)).map((iss) => iss.title).join("; "),
+    transcriptPreview: "",
+  }));
+
   return {
+    issues,
     runs: matchedRuns,
     summary: rankResult.summary,
     totalMatched: matchedRuns.length,

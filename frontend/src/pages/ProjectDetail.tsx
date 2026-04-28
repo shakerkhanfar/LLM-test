@@ -667,13 +667,72 @@ export default function ProjectDetail() {
               }}>
                 {askResult.summary}
                 <span style={{ fontSize: 10, color: T.textMuted, marginLeft: 8 }}>
-                  ({askResult.totalMatched} match{askResult.totalMatched !== 1 ? "es" : ""}
+                  ({askResult.totalMatched} call{askResult.totalMatched !== 1 ? "s" : ""} affected
                   {askResult.costUsd > 0 ? ` / $${askResult.costUsd.toFixed(4)}` : ""})
                 </span>
               </div>
 
-              {/* Matching runs */}
-              {askResult.runs?.length > 0 && (
+              {/* Issues table */}
+              {askResult.issues?.length > 0 && (
+                <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+                  <thead>
+                    <tr style={{ borderBottom: `2px solid ${T.border}`, textAlign: "left" }}>
+                      <th style={{ padding: "8px 10px", color: T.textSecondary, fontWeight: 600, width: 30 }}>#</th>
+                      <th style={{ padding: "8px 10px", color: T.textSecondary, fontWeight: 600, width: 70 }}>Severity</th>
+                      <th style={{ padding: "8px 10px", color: T.textSecondary, fontWeight: 600 }}>Issue</th>
+                      <th style={{ padding: "8px 10px", color: T.textSecondary, fontWeight: 600, width: 200 }}>Affected Calls</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {askResult.issues.map((issue: any, i: number) => {
+                      const sevColor = issue.severity === "critical" ? T.error
+                        : issue.severity === "high" ? "#f59e0b"
+                        : issue.severity === "medium" ? T.info : T.textMuted;
+                      const sevBg = issue.severity === "critical" ? T.errorBg
+                        : issue.severity === "high" ? T.warningBg
+                        : issue.severity === "medium" ? T.infoBg : T.cardAlt;
+                      return (
+                        <tr key={i} style={{ borderBottom: `1px solid ${T.borderLight}` }}>
+                          <td style={{ padding: "10px 10px", color: T.textMuted, verticalAlign: "top" }}>{i + 1}</td>
+                          <td style={{ padding: "10px 10px", verticalAlign: "top" }}>
+                            <span style={{
+                              fontSize: 10, padding: "2px 8px", borderRadius: 3, fontWeight: 600, textTransform: "uppercase",
+                              background: sevBg, color: sevColor, border: `1px solid ${sevColor}33`,
+                            }}>
+                              {issue.severity}
+                            </span>
+                          </td>
+                          <td style={{ padding: "10px 10px", verticalAlign: "top" }}>
+                            <div style={{ fontWeight: 600, color: T.text, marginBottom: 3 }}>{issue.title}</div>
+                            <div style={{ color: T.textSecondary, fontSize: 12, lineHeight: 1.5 }}>{issue.description}</div>
+                          </td>
+                          <td style={{ padding: "10px 10px", verticalAlign: "top" }}>
+                            <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
+                              {issue.calls?.map((call: any) => (
+                                <Link
+                                  key={call.id}
+                                  to={`/projects/${project.id}/runs/${call.id}`}
+                                  style={{
+                                    fontSize: 10, padding: "2px 6px", borderRadius: 3, textDecoration: "none",
+                                    background: T.cardAlt, color: T.link, border: `1px solid ${T.border}`,
+                                    fontFamily: "monospace",
+                                  }}
+                                  title={`${call.callDate || "?"} · ${call.callOutcome || "?"} · ${call.overallScore != null ? (call.overallScore * 100).toFixed(0) + "%" : "?"}`}
+                                >
+                                  {call.conversationId?.slice(0, 8) || call.id.slice(0, 8)}
+                                </Link>
+                              ))}
+                            </div>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              )}
+
+              {/* Fallback: flat run list if no issues returned (filter-only queries) */}
+              {(!askResult.issues || askResult.issues.length === 0) && askResult.runs?.length > 0 && (
                 <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
                   {askResult.runs.map((run: any) => (
                     <Link
@@ -689,7 +748,6 @@ export default function ProjectDetail() {
                         onMouseEnter={(e) => (e.currentTarget.style.borderColor = T.borderDark)}
                         onMouseLeave={(e) => (e.currentTarget.style.borderColor = T.border)}
                       >
-                        {/* Score */}
                         <div style={{
                           width: 36, height: 36, borderRadius: "50%", flexShrink: 0,
                           display: "flex", alignItems: "center", justifyContent: "center",
@@ -703,8 +761,6 @@ export default function ProjectDetail() {
                         }}>
                           {run.overallScore != null ? `${(run.overallScore * 100).toFixed(0)}%` : "?"}
                         </div>
-
-                        {/* Info */}
                         <div style={{ flex: 1, minWidth: 0 }}>
                           <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 3 }}>
                             <span style={{ fontSize: 12, color: T.textSecondary }}>{run.callDate || "?"}</span>
