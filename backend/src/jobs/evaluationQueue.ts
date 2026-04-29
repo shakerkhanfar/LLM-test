@@ -33,6 +33,19 @@ export async function queueCallLogFetch(runId: string, callId: string) {
   });
 }
 
+// ─── Startup recovery ─────────────────────────────────────────────
+// Runs left stuck in EVALUATING after a crash/restart are reset to PENDING
+// so the queue can pick them up again on the next poll cycle.
+export async function recoverStuckRuns() {
+  const stuck = await prisma.run.updateMany({
+    where: { status: "EVALUATING" },
+    data: { status: "PENDING" },
+  });
+  if (stuck.count > 0) {
+    console.log(`[Worker] Recovered ${stuck.count} stuck EVALUATING run(s) → PENDING`);
+  }
+}
+
 // ─── Worker ────────────────────────────────────────────────────────
 
 export function startWorker() {
@@ -77,13 +90,16 @@ export function startWorker() {
           return;
         }
 
-        // We can evaluate with whatever data we have
-        // (some criteria need callLog, some need transcript)
-        if (run.status !== "EVALUATING" && run.status !== "COMPLETE") {
-          await prisma.run.update({
-            where: { id: runId },
-            data: { status: "EVALUATING" },
-          });
+        // Atomically claim this run for evaluation — only proceeds if status is
+        // still PENDING/AWAITING_DATA/FAILED. If another worker already claimed it
+        // (status became EVALUATING or COMPLETE), count === 0 and we skip.
+        const claimed = await prisma.run.updateMany({
+          where: { id: runId, status: { notIn: ["EVALUATING", "COMPLETE"] } },
+          data: { status: "EVALUATING" },
+        });
+        if (claimed.count === 0) {
+          console.log(`[Worker] Run ${runId} already claimed or complete, skipping`);
+          return;
         }
 
         try {

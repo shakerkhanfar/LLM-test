@@ -14,6 +14,21 @@ const MODEL_COSTS: Record<string, { input: number; output: number }> = {
 /** Max candidates to send to the ranking LLM in one call */
 const MAX_CANDIDATES_FOR_LLM = 40;
 
+/**
+ * Parse JSON from an LLM response that may be wrapped in markdown fences.
+ * Strips ``` json ... ``` or ``` ... ``` before parsing.
+ */
+function parseLLMJson<T>(raw: string | null | undefined, fallback: T): T {
+  if (!raw) return fallback;
+  // Strip markdown code fences
+  const stripped = raw.replace(/^```(?:json)?\s*/i, "").replace(/\s*```\s*$/, "").trim();
+  try {
+    return JSON.parse(stripped) as T;
+  } catch {
+    return fallback;
+  }
+}
+
 interface SearchFilters {
   scoreMin?: number;
   scoreMax?: number;
@@ -134,12 +149,10 @@ Example: {"keywords": ["hospital location"], "evalIssueTypes": ["hallucination"]
       + (filterTokens.completion_tokens / 1_000_000) * costs.output;
   }
 
-  let filters: SearchFilters;
-  try {
-    filters = JSON.parse(filterResponse.choices[0].message.content || "{}");
-  } catch {
-    filters = { keywords: [sanitizedQuestion], limit: 20 };
-  }
+  const filters: SearchFilters = parseLLMJson<SearchFilters>(
+    filterResponse.choices[0].message.content,
+    { keywords: [sanitizedQuestion], limit: 20 }
+  );
 
   // Sanitize filter values
   filters.limit = Math.min(Math.max(1, filters.limit || 20), 50);
@@ -373,15 +386,13 @@ Rules:
       + (rankTokens.completion_tokens / 1_000_000) * costs.output;
   }
 
-  let rankResult: {
+  const rankResult: {
     issues: Array<{ title: string; description: string; severity: string; callIndices: number[] }>;
     summary: string;
-  };
-  try {
-    rankResult = JSON.parse(rankResponse.choices[0].message.content || '{"issues":[],"summary":"No results"}');
-  } catch {
-    rankResult = { issues: [], summary: "Failed to parse search results" };
-  }
+  } = parseLLMJson(
+    rankResponse.choices[0].message.content,
+    { issues: [] as Array<{ title: string; description: string; severity: string; callIndices: number[] }>, summary: "Failed to parse search results" }
+  );
 
   // Detect 1-based indexing
   const allIndices = rankResult.issues.flatMap((iss) => iss.callIndices || []);

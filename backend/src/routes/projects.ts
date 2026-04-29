@@ -158,7 +158,10 @@ router.get("/:id", async (req: AuthRequest, res) => {
       const wd = run.webhookData as any;
       const lightWebhookData = wd ? {
         caller_info: wd.caller_info ? { call_type: wd.caller_info.call_type } : undefined,
-        channelType: wd.channelType,
+        channelType: wd.channelType,                   // history runs: top-level
+        channel: wd.channel,                           // history runs: alternate field
+        callType: wd.callType,                         // history runs: alternate field
+        data: wd.data ? { channelType: wd.data.channelType } : undefined, // webhook runs
       } : undefined;
       return {
         ...run,

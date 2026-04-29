@@ -28,6 +28,7 @@ export async function initQueue() {
     await testConn.quit();
 
     queueModule = await import("../jobs/evaluationQueue");
+    await queueModule.recoverStuckRuns();
     queueModule.startWorker();
     useQueue = true;
     console.log("[Eval] Using BullMQ queue for evaluations");

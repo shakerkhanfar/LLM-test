@@ -501,10 +501,12 @@ export function evaluateNavigation(visits: NodeVisit[], totalNodesInGraph: numbe
         }
       }
 
-      // User giving piecemeal input: short user turns (1-3 words each) indicate the user
-      // is providing data incrementally, not the agent failing
-      const shortUserTurns = userTurns.filter(t => t.split(/\s+/).length <= 3).length;
-      const userCausingDelay = shortUserTurns > userTurns.length * 0.5;
+      // User giving piecemeal input: short user turns (1-3 non-empty words each) indicate
+      // the user is providing data incrementally, not the agent failing.
+      // Filter out empty/whitespace-only turns before counting.
+      const nonEmptyUserTurns = userTurns.filter(t => t.trim().length > 0);
+      const shortUserTurns = nonEmptyUserTurns.filter(t => t.trim().split(/\s+/).filter(Boolean).length <= 3).length;
+      const userCausingDelay = nonEmptyUserTurns.length > 0 && shortUserTurns > nonEmptyUserTurns.length * 0.5;
 
       // Adjust thresholds based on who's causing the extra turns
       const effectiveTurns = userCausingDelay ? Math.ceil(v.turnsSpent * 0.6) : v.turnsSpent;

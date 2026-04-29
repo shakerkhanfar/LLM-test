@@ -148,6 +148,9 @@ export default function ProjectDetail() {
 
   useEffect(() => { load(); }, [load]);
 
+  // Track when we first saw this project with 0 runs — stop polling after 2 min
+  const emptyHistoryFirstSeenRef = useRef<number | null>(null);
+
   // Poll while there are in-progress runs, webhook projects, or recently-created
   // history projects (background CSV import may not have created stubs yet).
   useEffect(() => {
@@ -156,8 +159,17 @@ export default function ProjectDetail() {
       ["PENDING", "AWAITING_DATA", "EVALUATING"].includes(r.status)
     );
     const isWebhookProject = project.projectType === "WEBHOOK";
-    // History projects with 0 runs may have a background import in flight
-    const isHistoryAwaiting = project.projectType === "HISTORY" && (!project.runs || project.runs.length === 0);
+    // History projects with 0 runs may have a background import in flight —
+    // but stop polling after 2 minutes to avoid infinite spin on failed imports.
+    const isEmptyHistory = project.projectType === "HISTORY" && (!project.runs || project.runs.length === 0);
+    if (isEmptyHistory) {
+      if (emptyHistoryFirstSeenRef.current === null) emptyHistoryFirstSeenRef.current = Date.now();
+      const elapsed = Date.now() - emptyHistoryFirstSeenRef.current;
+      if (elapsed > 120_000) return; // give up after 2 min
+    } else {
+      emptyHistoryFirstSeenRef.current = null; // reset if runs appear
+    }
+    const isHistoryAwaiting = isEmptyHistory;
     if (!hasActive && !isWebhookProject && !isHistoryAwaiting) return;
     // Poll faster when runs are in-progress, slower for idle webhook/history polling
     const interval = hasActive ? 4000 : 10000;
