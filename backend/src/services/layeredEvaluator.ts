@@ -480,16 +480,50 @@ export function evaluateNavigation(visits: NodeVisit[], totalNodesInGraph: numbe
   const nodeSequence = visits.map(v => v.nodeLabel);
 
   // Check 1: Stuck detection — too many turns on a single node
+  // Important: distinguish between the AGENT being stuck (repeating same prompt, not progressing)
+  // and the USER causing extra turns (giving info piecemeal, correcting themselves, asking clarifications).
+  // Only flag as stuck when the agent is genuinely not making progress.
   for (const v of visits) {
     if (v.nodeType === "conversation" || v.nodeType === "start") {
-      if (v.turnsSpent > 8) {
+      // Analyze transcript to detect user-caused vs agent-caused repetition
+      const agentTurns = v.transcriptTurns.filter(t => t.speaker === "Agent").map(t => t.text.trim().toLowerCase());
+      const userTurns = v.transcriptTurns.filter(t => t.speaker === "User").map(t => t.text.trim().toLowerCase());
+
+      // Check if agent is repeating itself (same/similar prompt multiple times)
+      let agentRepeats = 0;
+      for (let i = 1; i < agentTurns.length; i++) {
+        // Simple similarity: if >60% of words overlap, it's a repeat
+        const prev = new Set(agentTurns[i - 1].split(/\s+/).filter(w => w.length > 2));
+        const curr = agentTurns[i].split(/\s+/).filter(w => w.length > 2);
+        if (prev.size > 0 && curr.length > 0) {
+          const overlap = curr.filter(w => prev.has(w)).length / Math.max(curr.length, 1);
+          if (overlap > 0.6) agentRepeats++;
+        }
+      }
+
+      // User giving piecemeal input: short user turns (1-3 words each) indicate the user
+      // is providing data incrementally, not the agent failing
+      const shortUserTurns = userTurns.filter(t => t.split(/\s+/).length <= 3).length;
+      const userCausingDelay = shortUserTurns > userTurns.length * 0.5;
+
+      // Adjust thresholds based on who's causing the extra turns
+      const effectiveTurns = userCausingDelay ? Math.ceil(v.turnsSpent * 0.6) : v.turnsSpent;
+
+      if (agentRepeats >= 3 && effectiveTurns > 6) {
         issues.push({
           type: "stuck",
           nodeLabel: v.nodeLabel,
-          detail: `Agent spent ${v.turnsSpent} turns on "${v.nodeLabel}" — likely stuck or asking unnecessary questions.`,
+          detail: `Agent repeated itself ${agentRepeats} times over ${v.turnsSpent} turns on "${v.nodeLabel}" — likely stuck.`,
           severity: "critical",
         });
-      } else if (v.turnsSpent > 5) {
+      } else if (effectiveTurns > 10) {
+        issues.push({
+          type: "stuck",
+          nodeLabel: v.nodeLabel,
+          detail: `Agent spent ${v.turnsSpent} turns on "${v.nodeLabel}" — may be over-asking.${userCausingDelay ? " (Note: user was providing input piecemeal, which inflated turn count)" : ""}`,
+          severity: "warning",
+        });
+      } else if (effectiveTurns > 7 && !userCausingDelay) {
         issues.push({
           type: "stuck",
           nodeLabel: v.nodeLabel,
@@ -501,23 +535,33 @@ export function evaluateNavigation(visits: NodeVisit[], totalNodesInGraph: numbe
   }
 
   // Check 2: Loop detection — same node visited more than once
+  // Note: Revisiting a node is normal in many workflows (e.g., user corrects input,
+  // agent asks for confirmation then returns to collection). Only flag as a loop when
+  // the revisit pattern is excessive (>3 times) or clearly unproductive.
   const visitCounts = new Map<string, number>();
   for (const v of visits) {
     visitCounts.set(v.nodeLabel, (visitCounts.get(v.nodeLabel) || 0) + 1);
   }
   for (const [label, count] of visitCounts) {
-    if (count > 2) {
+    if (count > 3) {
       issues.push({
         type: "loop",
         nodeLabel: label,
-        detail: `Node "${label}" was visited ${count} times — possible loop.`,
+        detail: `Node "${label}" was visited ${count} times — likely an unproductive loop.`,
         severity: "critical",
+      });
+    } else if (count === 3) {
+      issues.push({
+        type: "loop",
+        nodeLabel: label,
+        detail: `Node "${label}" was visited 3 times — may indicate a retry loop.`,
+        severity: "warning",
       });
     } else if (count === 2) {
       issues.push({
         type: "loop",
         nodeLabel: label,
-        detail: `Node "${label}" was visited twice — may indicate a retry or correction.`,
+        detail: `Node "${label}" was visited twice — likely a retry or correction flow.`,
         severity: "info",
       });
     }
@@ -552,10 +596,10 @@ export function evaluateNavigation(visits: NodeVisit[], totalNodesInGraph: numbe
     });
   }
 
-  // Compute score
+  // Compute score — info issues don't deduct, warnings deduct 1, critical deducts 2
   const criticalCount = issues.filter(i => i.severity === "critical").length;
   const warningCount = issues.filter(i => i.severity === "warning").length;
-  let score = Math.max(0, 10 - criticalCount * 3 - warningCount * 1);
+  let score = Math.max(0, 10 - criticalCount * 2 - warningCount * 1);
   // No node visits at all = navigation failed completely
   if (visits.length === 0) score = 0;
 
@@ -741,6 +785,12 @@ export async function evaluateNodeBehavior(
 
   const prompt = `You are evaluating ONE specific node of a voice AI agent call. You see ONLY this node's data — do NOT speculate about other parts of the call.
 
+IMPORTANT EVALUATION GUIDELINES:
+- Distinguish between USER-CAUSED delays and AGENT-CAUSED problems. If the user is giving information piecemeal (e.g., dictating a national ID one digit at a time, correcting themselves, asking clarifications), that is NOT the agent being stuck — the agent is correctly waiting for complete input.
+- "Stuck" means the agent is repeating the same prompt without making progress despite the user providing the requested information. If the user hasn't provided the info yet, the agent asking again is CORRECT behavior.
+- Many turns ≠ stuck. A node with 10+ turns where the user is slowly providing digits is working correctly. A node with 6 turns where the agent asks the same question 3 times despite getting an answer IS stuck.
+- Score the AGENT's behavior, not the user's cooperation level.
+
 AGENT CONTEXT:
 ${agentSummary ? safeTruncate(agentSummary, 500) : "No agent summary available."}
 
@@ -879,8 +929,10 @@ export async function evaluateOverall(
 IMPORTANT SCORING RULES:
 - If the user asks about something OUTSIDE the agent's scope (e.g., reports, insurance details, billing) and the agent CORRECTLY handles it (politely says it can't help, offers to transfer to a call center, stays on track), this is a SUCCESS — score it HIGH, not low. The agent performed correctly by recognizing its limitations.
 - A call should only be scored low if the agent exhibited actual problems: hallucinating information, getting stuck in loops, ignoring user input, providing wrong information, or failing to follow its instructions.
-- "Stuck" calls where the agent keeps repeating the same prompt without progress ARE genuine failures.
-- Calls with outcome "stuck" but where the agent properly handled an out-of-scope request should be re-assessed — the "stuck" outcome may be misleading if the agent was actually performing correctly within its scope.
+- "Stuck" means the agent repeats the same prompt without progress DESPITE the user providing information. If the user is giving data piecemeal (e.g., dictating an ID digit by digit, correcting themselves), the agent correctly waiting is NOT stuck.
+- HIGH TURN COUNT ≠ BAD CALL. A call with many turns where the user is slowly cooperating and the agent successfully collects all data and achieves the objective is a GOOD call, even if it took longer than ideal. Score based on OUTCOME and agent behavior quality, not call length.
+- Calls with outcome "stuck" or "timeout" but where the agent properly completed its objective should be re-assessed — the outcome label may be misleading if the call actually succeeded.
+- If the per-node analyses show high scores but the navigation flagged "stuck" or "loops", weigh the per-node analyses more heavily — they have transcript-level detail.
 
 AGENT CONTEXT:
 ${agentSummary ? safeTruncate(agentSummary, 400) : "No agent summary."}
