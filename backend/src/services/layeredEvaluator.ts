@@ -733,7 +733,8 @@ export async function evaluateNodeBehavior(
   visit: NodeVisit,
   agentSummary: string,
   /** Recent transcript turns BEFORE this node — for tool nodes to verify parameters */
-  precedingTurns: Array<{ speaker: string; text: string }> = []
+  precedingTurns: Array<{ speaker: string; text: string }> = [],
+  evalContext: string | null = null
 ): Promise<{ result: Layer3NodeResult; costUsd: number }> {
   // Router/variable nodes — structural only, no LLM needed
   if (["router", "set_local_variables", "end_call"].includes(visit.nodeType)) {
@@ -785,6 +786,10 @@ export async function evaluateNodeBehavior(
     ? visit.allowedTransitions.map(t => `  → "${t.targetLabel}" when: ${t.condition}`).join("\n")
     : "  (no explicit transitions defined)";
 
+  const evalContextBlock = evalContext?.trim()
+    ? `\nPROJECT EVALUATION RULES (always apply these when scoring):\n${evalContext.trim()}\n`
+    : "";
+
   const prompt = `You are evaluating ONE specific node of a voice AI agent call. You see ONLY this node's data — do NOT speculate about other parts of the call.
 
 IMPORTANT EVALUATION GUIDELINES:
@@ -792,6 +797,7 @@ IMPORTANT EVALUATION GUIDELINES:
 - "Stuck" means the agent is repeating the same prompt without making progress despite the user providing the requested information. If the user hasn't provided the info yet, the agent asking again is CORRECT behavior.
 - Many turns ≠ stuck. A node with 10+ turns where the user is slowly providing digits is working correctly. A node with 6 turns where the agent asks the same question 3 times despite getting an answer IS stuck.
 - Score the AGENT's behavior, not the user's cooperation level.
+- AGENT INSTRUCTION ADHERENCE IS PRIMARY: If the agent followed its node instructions correctly, the node should score HIGH — even if the call's overall objective was not met. A correctly-handled out-of-scope transfer, a correct escalation, or a proper "I can't help with that" response are all 9-10/10 scores.${evalContextBlock}
 
 AGENT CONTEXT:
 ${agentSummary ? safeTruncate(agentSummary, 500) : "No agent summary available."}
@@ -907,7 +913,8 @@ export async function evaluateOverall(
   layer3: Layer3NodeResult[],
   agentSummary: string,
   callOutcome: string | null,
-  callDuration: number | null
+  callDuration: number | null,
+  evalContext: string | null = null
 ): Promise<{ result: Layer4Result; costUsd: number }> {
   // Build summaries from layers 2-3 (NOT raw data)
   const navSummary = `Navigation: ${layer2.summary}` +
@@ -926,15 +933,20 @@ export async function evaluateOverall(
       return `  "${n.nodeLabel}": ${n.overallNodeScore}/10${problems.length ? " — " + problems.join("; ").slice(0, 200) : ""}`;
     }).join("\n").slice(0, 2000);
 
+  const evalContextBlock = evalContext?.trim()
+    ? `\nPROJECT-SPECIFIC EVALUATION RULES (highest priority — override defaults if they conflict):\n${evalContext.trim()}\n`
+    : "";
+
   const prompt = `You are producing the final evaluation summary for a voice AI agent call. You receive pre-evaluated summaries from structural and per-node analyses — do NOT re-evaluate the raw data.
 
 IMPORTANT SCORING RULES:
-- If the user asks about something OUTSIDE the agent's scope (e.g., reports, insurance details, billing) and the agent CORRECTLY handles it (politely says it can't help, offers to transfer to a call center, stays on track), this is a SUCCESS — score it HIGH, not low. The agent performed correctly by recognizing its limitations.
-- A call should only be scored low if the agent exhibited actual problems: hallucinating information, getting stuck in loops, ignoring user input, providing wrong information, or failing to follow its instructions.
+- AGENT INSTRUCTION ADHERENCE IS THE PRIMARY METRIC. If the agent followed its prompts correctly at every node, the call scores HIGH — even if the caller's personal objective was not ultimately met. A correctly-handled out-of-scope transfer, escalation, or "I can't help with that" response is a SUCCESSFUL call, not a failure.
+- If the user asks about something OUTSIDE the agent's scope and the agent CORRECTLY handles it (politely redirects, transfers to call center, stays on track), this is a SUCCESS — score it HIGH, not low.
+- A call should only be scored low if the agent itself made mistakes: hallucinating information, getting stuck in loops, ignoring user input, providing wrong information, or failing to follow its instructions.
 - "Stuck" means the agent repeats the same prompt without progress DESPITE the user providing information. If the user is giving data piecemeal (e.g., dictating an ID digit by digit, correcting themselves), the agent correctly waiting is NOT stuck.
-- HIGH TURN COUNT ≠ BAD CALL. A call with many turns where the user is slowly cooperating and the agent successfully collects all data and achieves the objective is a GOOD call, even if it took longer than ideal. Score based on OUTCOME and agent behavior quality, not call length.
-- Calls with outcome "stuck" or "timeout" but where the agent properly completed its objective should be re-assessed — the outcome label may be misleading if the call actually succeeded.
-- If the per-node analyses show high scores but the navigation flagged "stuck" or "loops", weigh the per-node analyses more heavily — they have transcript-level detail.
+- HIGH TURN COUNT ≠ BAD CALL. A call with many turns where the user is slowly cooperating and the agent successfully collects all data is a GOOD call.
+- Calls with outcome "stuck" or "timeout" but where the agent properly completed its instructions should be re-assessed — the outcome label may be misleading.
+- If the per-node analyses show high scores but the navigation flagged "stuck" or "loops", weigh the per-node analyses more heavily — they have transcript-level detail.${evalContextBlock}
 
 AGENT CONTEXT:
 ${agentSummary ? safeTruncate(agentSummary, 400) : "No agent summary."}
@@ -1012,7 +1024,8 @@ export async function runLayeredEvaluation(
   agentStructure: any,
   agentSummary: string,
   callOutcome: string | null,
-  callDuration: number | null
+  callDuration: number | null,
+  evalContext: string | null = null
 ): Promise<LayeredEvalResult> {
   const nodes = agentStructure?.workflow?.nodes ?? [];
   const edges = agentStructure?.workflow?.edges ?? [];
@@ -1028,26 +1041,20 @@ export async function runLayeredEvaluation(
   console.log(`[LayeredEval] Layer 2 score: ${layer2.score}/10, issues: ${layer2.issues.length}`);
 
   // Step 3: Layer 3 — per-node behavior evaluation (focused LLM calls)
-  // Evaluate conversation nodes AND tool nodes (with preceding context for parameter checking)
   const layer3: Layer3NodeResult[] = [];
   const evaluableVisits = visits.filter(v =>
     ((v.nodeType === "conversation" || v.nodeType === "start") && v.transcriptTurns.length > 0)
     || (v.nodeType === "tool" && v.toolsCalled.length > 0)
   );
 
-  // Collect all preceding transcript turns for tool node context
   const allTurnsSoFar: Array<{ speaker: string; text: string }> = [];
 
   for (const visit of evaluableVisits) {
-    // Build preceding turns from all prior visited conversation nodes
     const precedingTurns = [...allTurnsSoFar];
-
-    const { result, costUsd } = await evaluateNodeBehavior(visit, agentSummary, precedingTurns);
+    const { result, costUsd } = await evaluateNodeBehavior(visit, agentSummary, precedingTurns, evalContext);
     layer3.push(result);
     totalCostUsd += costUsd;
     console.log(`[LayeredEval] Node "${visit.nodeLabel}" (${visit.nodeType}): ${result.overallNodeScore}/10`);
-
-    // Add this node's turns to the running context
     for (const t of visit.transcriptTurns) {
       allTurnsSoFar.push({ speaker: t.speaker, text: t.text });
     }
@@ -1055,7 +1062,7 @@ export async function runLayeredEvaluation(
 
   // Step 4: Layer 4 — overall quality aggregation (one LLM call on summaries only)
   const { result: layer4, costUsd: layer4Cost } = await evaluateOverall(
-    layer2, layer3, agentSummary, callOutcome, callDuration
+    layer2, layer3, agentSummary, callOutcome, callDuration, evalContext
   );
   totalCostUsd += layer4Cost;
   console.log(`[LayeredEval] Layer 4 overall: ${layer4.overallScore}/10`);

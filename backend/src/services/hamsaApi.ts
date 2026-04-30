@@ -111,6 +111,39 @@ export async function updateAgentModel(
 }
 
 /**
+ * Apply updated node prompts to a Hamsa agent's workflow.
+ * Sends the full updated nodes array via PATCH /v2/voice-agents/:agentId.
+ * Only the nodes array is sent — Hamsa merges it with existing config.
+ */
+export async function updateAgentWorkflow(
+  agentId: string,
+  updatedNodes: Array<{ id: string; message: string; [key: string]: any }>,
+  apiKey?: string
+) {
+  const url = `${HAMSA_API_BASE}/v2/voice-agents/${agentId}`;
+
+  const body = {
+    workflow: {
+      nodes: updatedNodes,
+    },
+  };
+
+  const res = await fetchWithTimeout(url, {
+    method: "PATCH",
+    headers: headers(apiKey),
+    body: JSON.stringify(body),
+    timeoutMs: 30_000,
+  });
+
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`Failed to update agent workflow: ${res.status} — ${text}`);
+  }
+
+  return res.json();
+}
+
+/**
  * Fetch the call log for a completed call.
  * Endpoint: GET /v1/agent-analytics/logs?jobId={callId}
  */

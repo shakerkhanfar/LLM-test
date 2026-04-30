@@ -6,6 +6,8 @@ import { generateAgentSummary } from "../services/llmJudge";
 import { analyzeProject, compareAnalyses } from "../services/projectAnalyzer";
 import { searchRuns } from "../services/runSearch";
 import { runEvaluationCheck } from "../services/evaluationRunner";
+import { auditAgentPrompts } from "../services/promptAuditor";
+import { updateAgentWorkflow } from "../services/hamsaApi";
 import { AuthRequest } from "../middleware/auth";
 
 const router = Router();
@@ -736,6 +738,123 @@ router.post("/:id/ask", async (req: AuthRequest, res) => {
     clearTimeout(timeout);
     console.error("[Ask] Search failed:", err);
     if (!res.headersSent) res.status(500).json({ error: (err as Error).message });
+  }
+});
+
+// ─── Eval Context (per-project evaluation rules) ──────────────────
+
+// GET  /:id/eval-context  — return current context
+router.get("/:id/eval-context", async (req: AuthRequest, res) => {
+  try {
+    const project = await prisma.project.findUnique({
+      where: { id: req.params.id },
+      select: { userId: true, evalContext: true },
+    });
+    if (!project) return res.status(404).json({ error: "Project not found" });
+    if (project.userId !== null && project.userId !== req.userId) return res.status(403).json({ error: "Access denied" });
+    res.json({ evalContext: project.evalContext ?? "" });
+  } catch (err) {
+    res.status(500).json({ error: (err as Error).message });
+  }
+});
+
+// PATCH /:id/eval-context  — save context
+router.patch("/:id/eval-context", async (req: AuthRequest, res) => {
+  const { evalContext } = req.body as { evalContext?: string };
+  if (typeof evalContext !== "string") return res.status(400).json({ error: "evalContext must be a string" });
+  try {
+    const project = await prisma.project.findUnique({
+      where: { id: req.params.id },
+      select: { userId: true },
+    });
+    if (!project) return res.status(404).json({ error: "Project not found" });
+    if (project.userId !== null && project.userId !== req.userId) return res.status(403).json({ error: "Access denied" });
+    const updated = await prisma.project.update({
+      where: { id: req.params.id },
+      data: { evalContext: evalContext.trim() || null },
+      select: { evalContext: true },
+    });
+    res.json({ evalContext: updated.evalContext ?? "" });
+  } catch (err) {
+    res.status(500).json({ error: (err as Error).message });
+  }
+});
+
+// ─── Prompt Audit ──────────────────────────────────────────────────
+
+// POST /:id/prompt-audit
+// Body: { instructions?: string }
+// Audits all workflow node prompts using the project's evalContext + optional
+// one-off instructions. Returns per-node findings and suggested rewrites.
+router.post("/:id/prompt-audit", async (req: AuthRequest, res) => {
+  const { instructions } = req.body as { instructions?: string };
+  try {
+    const project = await prisma.project.findUnique({
+      where: { id: req.params.id },
+      select: { userId: true, agentSummary: true, agentStructure: true, evalContext: true },
+    });
+    if (!project) return res.status(404).json({ error: "Project not found" });
+    if (project.userId !== null && project.userId !== req.userId) return res.status(403).json({ error: "Access denied" });
+    if (!project.agentStructure) return res.status(400).json({ error: "Agent structure not loaded. Refresh the agent first." });
+
+    const result = await auditAgentPrompts(
+      project.agentSummary ?? null,
+      project.agentStructure,
+      project.evalContext ?? null,
+      instructions?.trim() || null
+    );
+
+    res.json(result);
+  } catch (err) {
+    console.error("[PromptAudit] Failed:", err);
+    res.status(500).json({ error: (err as Error).message });
+  }
+});
+
+// POST /:id/prompt-audit/apply
+// Body: { nodeId: string, prompt: string }
+// Applies a single approved rewrite to the live Hamsa agent.
+router.post("/:id/prompt-audit/apply", async (req: AuthRequest, res) => {
+  const { nodeId, prompt } = req.body as { nodeId?: string; prompt?: string };
+  if (!nodeId || typeof prompt !== "string" || !prompt.trim()) {
+    return res.status(400).json({ error: "nodeId and prompt are required" });
+  }
+  try {
+    const project = await prisma.project.findUnique({
+      where: { id: req.params.id },
+      select: { userId: true, agentId: true, hamsaApiKey: true, agentStructure: true },
+    });
+    if (!project) return res.status(404).json({ error: "Project not found" });
+    if (project.userId !== null && project.userId !== req.userId) return res.status(403).json({ error: "Access denied" });
+    if (!project.agentStructure) return res.status(400).json({ error: "Agent structure not loaded." });
+
+    const structure = project.agentStructure as any;
+    const nodes: any[] = structure?.workflow?.nodes ?? [];
+    const node = nodes.find((n: any) => n.id === nodeId);
+    if (!node) return res.status(404).json({ error: `Node ${nodeId} not found in agent structure` });
+
+    // Build the updated nodes array (only the target node's message changes)
+    const updatedNodes = nodes.map((n: any) =>
+      n.id === nodeId ? { ...n, message: prompt.trim() } : n
+    );
+
+    // Push to Hamsa
+    await updateAgentWorkflow(project.agentId, updatedNodes, project.hamsaApiKey ?? undefined);
+
+    // Update our local copy of agentStructure so future audits see the new prompt
+    const updatedStructure = {
+      ...structure,
+      workflow: { ...structure.workflow, nodes: updatedNodes },
+    };
+    await prisma.project.update({
+      where: { id: req.params.id },
+      data: { agentStructure: updatedStructure },
+    });
+
+    res.json({ ok: true, nodeId, nodeLabel: node.label });
+  } catch (err) {
+    console.error("[PromptAudit] Apply failed:", err);
+    res.status(500).json({ error: (err as Error).message });
   }
 });
 

@@ -920,6 +920,7 @@ async function evaluateLayered(_criterion: Criterion, run: any) {
   const transcript = resolveTranscript(run);
   const agentStructure = run.project?.agentStructure;
   const agentSummary: string = run.project?.agentSummary ?? "";
+  const evalContext: string | null = run.project?.evalContext ?? null;
 
   if (!agentStructure?.workflow?.nodes?.length) {
     return { passed: null, score: null, detail: "No agent workflow nodes available for layered evaluation" };
@@ -940,6 +941,7 @@ async function evaluateLayered(_criterion: Criterion, run: any) {
       agentSummary,
       run.callOutcome || null,
       run.callDuration || null,
+      evalContext,
     );
   } catch (err) {
     return { passed: null, score: null, detail: `Layered evaluation failed: ${(err as Error).message}` };

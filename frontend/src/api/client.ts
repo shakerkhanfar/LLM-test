@@ -291,3 +291,30 @@ export function askProject(projectId: string, question: string) {
     body: JSON.stringify({ question }),
   });
 }
+
+// ─── Eval Context & Prompt Audit ────────────────────────────────────
+
+export function getEvalContext(projectId: string) {
+  return request<{ evalContext: string }>(`/projects/${projectId}/eval-context`);
+}
+
+export function saveEvalContext(projectId: string, evalContext: string) {
+  return request<{ evalContext: string }>(`/projects/${projectId}/eval-context`, {
+    method: "PATCH",
+    body: JSON.stringify({ evalContext }),
+  });
+}
+
+export function runPromptAudit(projectId: string, instructions?: string) {
+  return request<any>(`/projects/${projectId}/prompt-audit`, {
+    method: "POST",
+    body: JSON.stringify({ instructions: instructions || "" }),
+  });
+}
+
+export function applyPromptFix(projectId: string, nodeId: string, prompt: string) {
+  return request<{ ok: boolean; nodeId: string; nodeLabel: string }>(
+    `/projects/${projectId}/prompt-audit/apply`,
+    { method: "POST", body: JSON.stringify({ nodeId, prompt }) }
+  );
+}

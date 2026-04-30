@@ -5,6 +5,7 @@ import {
   attachCallLog, attachTranscript, importHistory, importHistoryCsv, refreshAgent,
   askProject, fetchHamsaProjects, reEvaluateProject, reHydrateProject,
   exportCallIds, importByIds,
+  getEvalContext, saveEvalContext, runPromptAudit, applyPromptFix,
 } from "../api/client";
 import CallAgent from "../components/CallAgent";
 import T from "../theme";
@@ -330,6 +331,9 @@ export default function ProjectDetail() {
       {(agentStruct || project.agentSummary) && (
         <AgentIntelligencePanel agentStruct={agentStruct} agentSummary={project.agentSummary} />
       )}
+
+      {/* Prompt Audit & Eval Rules */}
+      <PromptAuditPanel projectId={project.id} agentStruct={agentStruct} />
 
       {/* Summary cards */}
       <div style={{ display: "flex", gap: 16, marginBottom: 24, flexWrap: "wrap" }}>
@@ -1914,6 +1918,322 @@ function WebhookUrlBar({ url }: { url: string }) {
       >
         {copied ? "Copied!" : "Copy"}
       </button>
+    </div>
+  );
+}
+
+// ─── Prompt Audit Panel ───────────────────────────────────────────
+
+function PromptAuditPanel({ projectId, agentStruct }: { projectId: string; agentStruct: any }) {
+  const [open, setOpen] = useState(false);
+  const [evalContext, setEvalContext] = useState("");
+  const [savedContext, setSavedContext] = useState("");
+  const [savingCtx, setSavingCtx] = useState(false);
+  const [instructions, setInstructions] = useState("");
+  const [auditLoading, setAuditLoading] = useState(false);
+  const [auditResult, setAuditResult] = useState<any>(null);
+  const [auditError, setAuditError] = useState<string | null>(null);
+  const [applying, setApplying] = useState<string | null>(null); // nodeId being applied
+  const [applied, setApplied] = useState<Set<string>>(new Set());
+  const [dismissed, setDismissed] = useState<Set<string>>(new Set());
+
+  // Load saved context on open
+  useEffect(() => {
+    if (!open) return;
+    getEvalContext(projectId)
+      .then(r => { setEvalContext(r.evalContext || ""); setSavedContext(r.evalContext || ""); })
+      .catch(() => {});
+  }, [open, projectId]);
+
+  const contextDirty = evalContext !== savedContext;
+
+  async function handleSaveContext() {
+    setSavingCtx(true);
+    try {
+      const r = await saveEvalContext(projectId, evalContext);
+      setSavedContext(r.evalContext || "");
+    } catch (e: any) {
+      alert("Failed to save: " + e.message);
+    } finally {
+      setSavingCtx(false);
+    }
+  }
+
+  async function handleRunAudit() {
+    setAuditLoading(true);
+    setAuditError(null);
+    setAuditResult(null);
+    setApplied(new Set());
+    setDismissed(new Set());
+    try {
+      const result = await runPromptAudit(projectId, instructions.trim() || undefined);
+      setAuditResult(result);
+    } catch (e: any) {
+      setAuditError(e.message);
+    } finally {
+      setAuditLoading(false);
+    }
+  }
+
+  async function handleApply(nodeId: string, prompt: string, label: string) {
+    if (!confirm(`Apply suggested rewrite to "${label}" in the live agent?\n\nThis will update the prompt on Hamsa immediately.`)) return;
+    setApplying(nodeId);
+    try {
+      await applyPromptFix(projectId, nodeId, prompt);
+      setApplied(prev => new Set([...prev, nodeId]));
+    } catch (e: any) {
+      alert("Failed to apply: " + e.message);
+    } finally {
+      setApplying(null);
+    }
+  }
+
+  const hasNodes = (agentStruct?.workflow?.nodes ?? []).filter((n: any) => n.message).length > 0;
+
+  const sectionStyle: React.CSSProperties = {
+    background: T.card, border: `1px solid ${T.border}`, borderRadius: 10,
+    boxShadow: T.shadow, marginBottom: 24, overflow: "hidden",
+  };
+  const headerStyle: React.CSSProperties = {
+    padding: "12px 18px", cursor: "pointer",
+    display: "flex", alignItems: "center", gap: 12,
+    borderBottom: open ? `1px solid ${T.border}` : "none",
+  };
+  const labelStyle: React.CSSProperties = {
+    fontSize: 11, fontWeight: 700, padding: "2px 8px", borderRadius: 4,
+    letterSpacing: 0.4, textTransform: "uppercase" as const,
+  };
+  const textareaStyle: React.CSSProperties = {
+    width: "100%", background: T.inputBg, border: `1px solid ${T.inputBorder}`,
+    borderRadius: 7, color: T.text, padding: "10px 12px", fontSize: 13,
+    resize: "vertical" as const, fontFamily: "inherit", lineHeight: 1.5,
+    outline: "none",
+  };
+  const btnPrimary: React.CSSProperties = {
+    background: T.primary, color: "#fff", border: "none", borderRadius: 7,
+    padding: "8px 16px", fontSize: 13, fontWeight: 600, cursor: "pointer",
+  };
+  const btnOutline: React.CSSProperties = {
+    background: "transparent", color: T.primary, border: `1px solid ${T.primary}`,
+    borderRadius: 7, padding: "6px 14px", fontSize: 12, fontWeight: 600, cursor: "pointer",
+  };
+  const btnGhost: React.CSSProperties = {
+    background: "transparent", color: T.textSecondary, border: `1px solid ${T.border}`,
+    borderRadius: 7, padding: "6px 12px", fontSize: 12, cursor: "pointer",
+  };
+
+  const severityColor = (s: string) =>
+    s === "critical" ? "#ef4444" : s === "warning" ? "#f59e0b" : "#6b7280";
+
+  return (
+    <div style={sectionStyle}>
+      <div style={headerStyle} onClick={() => setOpen(v => !v)}>
+        <span style={{ fontSize: 18 }}>🔍</span>
+        <div style={{ flex: 1 }}>
+          <div style={{ fontWeight: 600, fontSize: 15 }}>Prompt Audit & Eval Rules</div>
+          <div style={{ fontSize: 12, color: T.textSecondary, marginTop: 2 }}>
+            Set evaluation rules for this project · Audit and improve agent node prompts
+          </div>
+        </div>
+        {savedContext && (
+          <span style={{ ...labelStyle, background: "#f0fdf4", color: "#15803d" }}>Rules saved</span>
+        )}
+        <span style={{ color: T.textFaint, fontSize: 14 }}>{open ? "▲" : "▼"}</span>
+      </div>
+
+      {open && (
+        <div style={{ padding: "20px 20px 24px" }}>
+
+          {/* ── Eval Context ── */}
+          <div style={{ marginBottom: 24 }}>
+            <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 4 }}>
+              Evaluation Rules
+            </div>
+            <div style={{ fontSize: 12, color: T.textSecondary, marginBottom: 10 }}>
+              These rules are injected into every evaluation for this project. The LLM judge will always follow them when scoring calls.
+              For example: <em>"Callers forwarded to the call center for out-of-scope topics should be marked as successful — the agent handled it correctly."</em>
+            </div>
+            <textarea
+              value={evalContext}
+              onChange={e => setEvalContext(e.target.value)}
+              rows={5}
+              placeholder={"Examples:\n• Transfers to the call center for OOS requests = success, not failure\n• Agent is only responsible for booking appointments — cannot answer medical questions\n• Calls where the patient books with any doctor in their specialty = objective met"}
+              style={textareaStyle}
+            />
+            <div style={{ display: "flex", gap: 8, marginTop: 8, alignItems: "center" }}>
+              <button
+                onClick={handleSaveContext}
+                disabled={savingCtx || !contextDirty}
+                style={{ ...btnPrimary, opacity: !contextDirty || savingCtx ? 0.5 : 1 }}
+              >
+                {savingCtx ? "Saving…" : contextDirty ? "Save Rules" : "Saved"}
+              </button>
+              {contextDirty && (
+                <span style={{ fontSize: 12, color: T.textSecondary }}>Unsaved changes</span>
+              )}
+            </div>
+          </div>
+
+          {/* ── Divider ── */}
+          <div style={{ borderTop: `1px solid ${T.border}`, margin: "0 -20px 20px", padding: "0 20px" }} />
+
+          {/* ── Prompt Audit ── */}
+          <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 4 }}>
+            Agent Prompt Audit
+          </div>
+          <div style={{ fontSize: 12, color: T.textSecondary, marginBottom: 12 }}>
+            The LLM will review every node prompt in the agent workflow and suggest improvements based on your eval rules.
+            {!hasNodes && <span style={{ color: "#f59e0b", marginLeft: 6 }}>⚠ No workflow nodes found — refresh the agent first.</span>}
+          </div>
+
+          <div style={{ marginBottom: 12 }}>
+            <div style={{ fontSize: 12, fontWeight: 600, color: T.textSecondary, marginBottom: 6 }}>
+              Additional instructions for this audit (optional)
+            </div>
+            <textarea
+              value={instructions}
+              onChange={e => setInstructions(e.target.value)}
+              rows={2}
+              placeholder="e.g. Focus on how the agent handles ID collection. Make sure the confirmation node clearly summarises the booked slot."
+              style={{ ...textareaStyle, fontSize: 12 }}
+            />
+          </div>
+
+          <button
+            onClick={handleRunAudit}
+            disabled={auditLoading || !hasNodes}
+            style={{ ...btnPrimary, opacity: auditLoading || !hasNodes ? 0.5 : 1 }}
+          >
+            {auditLoading ? "Auditing… (may take 30–60s)" : "Run Audit"}
+          </button>
+
+          {auditError && (
+            <div style={{ marginTop: 12, padding: "10px 14px", background: "#fef2f2", border: "1px solid #fecaca", borderRadius: 7, fontSize: 13, color: "#dc2626" }}>
+              {auditError}
+            </div>
+          )}
+
+          {/* ── Results ── */}
+          {auditResult && (
+            <div style={{ marginTop: 20 }}>
+              {/* Overall findings */}
+              {auditResult.overallFindings?.length > 0 && (
+                <div style={{ background: T.cardAlt || T.bg, border: `1px solid ${T.border}`, borderRadius: 8, padding: "12px 16px", marginBottom: 16 }}>
+                  <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 8 }}>Overall Findings</div>
+                  <ul style={{ margin: 0, paddingLeft: 18 }}>
+                    {auditResult.overallFindings.map((f: string, i: number) => (
+                      <li key={i} style={{ fontSize: 12, color: T.textSecondary, marginBottom: 4 }}>{f}</li>
+                    ))}
+                  </ul>
+                  {auditResult.summary && (
+                    <div style={{ fontSize: 12, color: T.text, marginTop: 8, paddingTop: 8, borderTop: `1px solid ${T.border}` }}>
+                      {auditResult.summary}
+                    </div>
+                  )}
+                  <div style={{ fontSize: 11, color: T.textFaint, marginTop: 6 }}>
+                    Cost: ${(auditResult.totalCostUsd ?? 0).toFixed(4)}
+                  </div>
+                </div>
+              )}
+
+              {/* Per-node results */}
+              <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+                {(auditResult.nodeAudits ?? [])
+                  .filter((n: any) => !dismissed.has(n.nodeId))
+                  .map((node: any) => {
+                    const isApplied = applied.has(node.nodeId);
+                    const isApplying = applying === node.nodeId;
+                    const criticals = node.issues?.filter((i: any) => i.severity === "critical") ?? [];
+                    const warnings = node.issues?.filter((i: any) => i.severity === "warning") ?? [];
+
+                    return (
+                      <div key={node.nodeId} style={{
+                        border: `1px solid ${node.changed ? T.primary : T.border}`,
+                        borderRadius: 8, overflow: "hidden",
+                        opacity: isApplied ? 0.6 : 1,
+                      }}>
+                        {/* Node header */}
+                        <div style={{
+                          padding: "10px 14px", background: node.changed ? "#f0fdf4" : T.bg,
+                          display: "flex", alignItems: "center", gap: 10,
+                        }}>
+                          <div style={{ flex: 1 }}>
+                            <span style={{ fontWeight: 600, fontSize: 13 }}>{node.nodeLabel}</span>
+                            <span style={{ fontSize: 11, color: T.textFaint, marginLeft: 8 }}>{node.nodeType}</span>
+                          </div>
+                          {criticals.length > 0 && (
+                            <span style={{ ...labelStyle, background: "#fef2f2", color: "#dc2626" }}>
+                              {criticals.length} critical
+                            </span>
+                          )}
+                          {warnings.length > 0 && (
+                            <span style={{ ...labelStyle, background: "#fffbeb", color: "#d97706" }}>
+                              {warnings.length} warning
+                            </span>
+                          )}
+                          {!node.changed && (
+                            <span style={{ ...labelStyle, background: "#f0fdf4", color: "#15803d" }}>No changes needed</span>
+                          )}
+                          {isApplied && (
+                            <span style={{ ...labelStyle, background: "#f0fdf4", color: "#15803d" }}>✓ Applied</span>
+                          )}
+                          <button onClick={() => setDismissed(prev => new Set([...prev, node.nodeId]))} style={btnGhost}>
+                            Dismiss
+                          </button>
+                        </div>
+
+                        {/* Issues */}
+                        {node.issues?.length > 0 && (
+                          <div style={{ padding: "8px 14px", borderTop: `1px solid ${T.border}` }}>
+                            {node.issues.map((issue: any, i: number) => (
+                              <div key={i} style={{ display: "flex", gap: 8, alignItems: "flex-start", marginBottom: 4 }}>
+                                <span style={{ fontSize: 10, fontWeight: 700, color: severityColor(issue.severity), textTransform: "uppercase", marginTop: 2, flexShrink: 0 }}>
+                                  {issue.severity}
+                                </span>
+                                <span style={{ fontSize: 12, color: T.textSecondary }}>{issue.description}</span>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+
+                        {/* Suggested rewrite */}
+                        {node.suggestedPrompt && !isApplied && (
+                          <div style={{ padding: "10px 14px", borderTop: `1px solid ${T.border}`, background: T.card }}>
+                            <div style={{ fontSize: 11, fontWeight: 600, color: T.textSecondary, marginBottom: 6 }}>
+                              SUGGESTED REWRITE — {node.reasoning}
+                            </div>
+                            <pre style={{
+                              margin: 0, fontFamily: "inherit", fontSize: 12, color: T.text,
+                              background: T.bg, border: `1px solid ${T.border}`, borderRadius: 6,
+                              padding: "10px 12px", whiteSpace: "pre-wrap", wordBreak: "break-word",
+                            }}>
+                              {node.suggestedPrompt}
+                            </pre>
+                            <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
+                              <button
+                                onClick={() => handleApply(node.nodeId, node.suggestedPrompt, node.nodeLabel)}
+                                disabled={isApplying}
+                                style={{ ...btnPrimary, fontSize: 12, padding: "6px 14px", opacity: isApplying ? 0.6 : 1 }}
+                              >
+                                {isApplying ? "Applying…" : "Apply to Agent"}
+                              </button>
+                              <button
+                                onClick={() => navigator.clipboard.writeText(node.suggestedPrompt).catch(() => {})}
+                                style={btnGhost}
+                              >
+                                Copy
+                              </button>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }

@@ -26,6 +26,7 @@ model Project {
   agentStructure  Json?       // Full agent JSON (workflow nodes, edges, tools)
   flowDefinition  Json?       // Extracted expected node sequence + tool calls
   agentSummary    String?     // LLM-generated plain-text analysis: purpose, scenarios, success criteria
+  evalContext     String?     // User-defined evaluation rules injected into every eval for this project
   projectType     ProjectType @default(LIVE)
   historyStartDate DateTime?  // For HISTORY projects: start of date range
   historyEndDate   DateTime?  // For HISTORY projects: end of date range
