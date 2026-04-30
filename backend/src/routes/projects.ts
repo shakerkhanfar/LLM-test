@@ -337,6 +337,7 @@ router.get("/:id/dashboard", async (req: AuthRequest, res) => {
             severity,
             count: runIds.length,
             pct: Math.round((runIds.length / total) * 100),
+            runIds,
           }))
           .sort((a, b) => b.count - a.count)
           .slice(0, 4);

@@ -14,7 +14,7 @@ interface DashData {
   topIssues: Array<{ text: string; severity: string; count: number; runIds: string[] }>;
   achievedRunIds: string[];
   notAchievedRunIds: string[];
-  outcomeBreakdown: Array<{ outcome: string; total: number; issues: Array<{ text: string; severity: string; count: number; pct: number }> }>;
+  outcomeBreakdown: Array<{ outcome: string; total: number; issues: Array<{ text: string; severity: string; count: number; pct: number; runIds: string[] }> }>;
 }
 
 interface Props {
@@ -141,6 +141,7 @@ export default function ProjectDashboard({ project }: Props) {
   const [objectiveFilter, setObjectiveFilter] = useState<"achieved" | "not_achieved" | null>(null);
   const [scoreFilter, setScoreFilter] = useState<{ min: number; max: number; label: string } | null>(null);
   const [nodeFilter, setNodeFilter] = useState<{ label: string; runIds: string[] } | null>(null);
+  const [issueFilter, setIssueFilter] = useState<{ text: string; outcome: string; runIds: string[] } | null>(null);
   const tableRef = useRef<HTMLDivElement>(null);
 
   function selectOutcome(name: string) {
@@ -148,6 +149,7 @@ export default function ProjectDashboard({ project }: Props) {
     setObjectiveFilter(null);
     setScoreFilter(null);
     setNodeFilter(null);
+    setIssueFilter(null);
     setTableSearch("");
     setTimeout(() => tableRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }), 50);
   }
@@ -157,6 +159,7 @@ export default function ProjectDashboard({ project }: Props) {
     setSelectedOutcome(null);
     setScoreFilter(null);
     setNodeFilter(null);
+    setIssueFilter(null);
     setTableSearch("");
     setTimeout(() => tableRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }), 50);
   }
@@ -166,6 +169,7 @@ export default function ProjectDashboard({ project }: Props) {
     setSelectedOutcome(null);
     setObjectiveFilter(null);
     setNodeFilter(null);
+    setIssueFilter(null);
     setTableSearch("");
     setTimeout(() => tableRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }), 50);
   }
@@ -175,6 +179,17 @@ export default function ProjectDashboard({ project }: Props) {
     setSelectedOutcome(null);
     setObjectiveFilter(null);
     setScoreFilter(null);
+    setIssueFilter(null);
+    setTableSearch("");
+    setTimeout(() => tableRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }), 50);
+  }
+
+  function selectIssue(text: string, outcome: string, runIds: string[]) {
+    setIssueFilter(prev => (prev?.text === text && prev?.outcome === outcome ? null : { text, outcome, runIds }));
+    setSelectedOutcome(null);
+    setObjectiveFilter(null);
+    setScoreFilter(null);
+    setNodeFilter(null);
     setTableSearch("");
     setTimeout(() => tableRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }), 50);
   }
@@ -337,6 +352,9 @@ export default function ProjectDashboard({ project }: Props) {
     if (nodeFilter) {
       sorted = sorted.filter((r: any) => nodeFilter.runIds.includes(r.id));
     }
+    if (issueFilter) {
+      sorted = sorted.filter((r: any) => issueFilter.runIds.includes(r.id));
+    }
     if (!tableSearch.trim()) return sorted;
     const q = tableSearch.toLowerCase();
     return sorted.filter((r: any) => {
@@ -350,7 +368,7 @@ export default function ProjectDashboard({ project }: Props) {
         outcomeColumns.some((k) => String((r.outcomeResult || {})[k] || "").toLowerCase().includes(q))
       );
     });
-  }, [project.runs, tableSearch, outcomeColumns, selectedOutcome, objectiveFilter, scoreFilter, nodeFilter, dashData]);
+  }, [project.runs, tableSearch, outcomeColumns, selectedOutcome, objectiveFilter, scoreFilter, nodeFilter, issueFilter, dashData]);
 
   function exportCsv() {
     const headers = ["Conv ID", "Date", "Call Outcome", "Score", "Duration", ...outcomeColumns];
@@ -882,13 +900,26 @@ export default function ProjectDashboard({ project }: Props) {
                     </span>
                   </div>
                   <div style={{ padding: "8px 12px", display: "flex", flexDirection: "column", gap: 6 }}>
-                    {issues.map((issue, i) => (
-                      <div key={i}>
+                    {issues.map((issue, i) => {
+                      const isActive = issueFilter?.text === issue.text && issueFilter?.outcome === outcome;
+                      return (
+                      <div
+                        key={i}
+                        onClick={() => selectIssue(issue.text, outcome, issue.runIds)}
+                        title={`View ${issue.count} call${issue.count !== 1 ? "s" : ""} with this issue`}
+                        style={{
+                          cursor: "pointer", borderRadius: 6, padding: "4px 6px", margin: "0 -6px",
+                          background: isActive ? color + "22" : "none",
+                          border: isActive ? `1px solid ${color}55` : "1px solid transparent",
+                          transition: "background 0.15s",
+                        }}
+                      >
                         <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 2 }}>
                           <SeverityBadge severity={issue.severity} />
-                          <span style={{ flex: 1, fontSize: 11, color: T.text, lineHeight: 1.3, overflow: "hidden", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical" }}>
+                          <span style={{ flex: 1, fontSize: 11, color: isActive ? T.text : T.text, fontWeight: isActive ? 600 : 400, lineHeight: 1.3, overflow: "hidden", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical" }}>
                             {issue.text}
                           </span>
+                          <span style={{ fontSize: 10, fontWeight: 700, color, flexShrink: 0 }}>{issue.count}</span>
                         </div>
                         <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
                           <div style={{ flex: 1, height: 3, background: T.cardAlt, borderRadius: 99, overflow: "hidden" }}>
@@ -897,7 +928,8 @@ export default function ProjectDashboard({ project }: Props) {
                           <span style={{ fontSize: 10, color: T.textMuted, flexShrink: 0 }}>{issue.pct}% of these calls</span>
                         </div>
                       </div>
-                    ))}
+                      );
+                    })}
                   </div>
                 </div>
               );
@@ -1050,6 +1082,21 @@ export default function ProjectDashboard({ project }: Props) {
                   Node: {nodeFilter.label}
                 </span>
                 <button onClick={() => setNodeFilter(null)} style={{ background: "none", border: "none", cursor: "pointer", padding: 0, fontSize: 12, color: "inherit", lineHeight: 1, flexShrink: 0 }}>×</button>
+              </span>
+            )}
+            {issueFilter && (
+              <span style={{
+                display: "inline-flex", alignItems: "center", gap: 5,
+                fontSize: 11, fontWeight: 600,
+                color: getOutcomeColor(issueFilter.outcome),
+                background: getOutcomeColor(issueFilter.outcome) + "18",
+                border: `1px solid ${getOutcomeColor(issueFilter.outcome)}44`,
+                borderRadius: 20, padding: "2px 10px", maxWidth: 260,
+              }}>
+                <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                  Issue ({issueFilter.outcome.replace(/_/g, " ")}): {issueFilter.text.length > 40 ? issueFilter.text.slice(0, 40) + "…" : issueFilter.text}
+                </span>
+                <button onClick={() => setIssueFilter(null)} style={{ background: "none", border: "none", cursor: "pointer", padding: 0, fontSize: 12, color: "inherit", lineHeight: 1, flexShrink: 0 }}>×</button>
               </span>
             )}
           </div>
