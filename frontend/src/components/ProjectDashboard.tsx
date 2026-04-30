@@ -11,7 +11,7 @@ interface DashData {
   sentiment: Record<string, number>;
   objectiveRate: number | null;
   nodePerformance: Array<{ label: string; avg: number; count: number }>;
-  topIssues: Array<{ text: string; severity: string; count: number }>;
+  topIssues: Array<{ text: string; severity: string; count: number; runIds: string[] }>;
 }
 
 interface Props {
@@ -96,6 +96,7 @@ export default function ProjectDashboard({ project }: Props) {
   const [dashData, setDashData] = useState<DashData | null>(null);
   const [dashError, setDashError] = useState<string | null>(null);
   const [tableSearch, setTableSearch] = useState("");
+  const [expandedIssue, setExpandedIssue] = useState<number | null>(null);
 
   useEffect(() => {
     getProjectDashboard(project.id)
@@ -418,19 +419,83 @@ export default function ProjectDashboard({ project }: Props) {
           ) : dashData.topIssues.length === 0 ? (
             <div style={{ color: T.textMuted, fontSize: 12 }}>No issues found</div>
           ) : (
-            <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-              {dashData.topIssues.map((issue, idx) => (
-                <div key={idx} style={{ display: "flex", alignItems: "flex-start", gap: 8, fontSize: 12 }}>
-                  <SeverityBadge severity={issue.severity} />
-                  <span style={{ flex: 1, color: T.text, lineHeight: 1.3 }}>{issue.text}</span>
-                  <span style={{
-                    flexShrink: 0, fontSize: 11, fontWeight: 700, color: T.textMuted,
-                    background: T.cardAlt, borderRadius: 10, padding: "1px 7px",
-                  }}>
-                    {issue.count}
-                  </span>
-                </div>
-              ))}
+            <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+              {dashData.topIssues.map((issue, idx) => {
+                const isOpen = expandedIssue === idx;
+                const affectedRuns = (project.runs ?? []).filter((r: any) => issue.runIds.includes(r.id));
+                return (
+                  <div key={idx}>
+                    <div style={{ display: "flex", alignItems: "flex-start", gap: 8, fontSize: 12, padding: "4px 0" }}>
+                      <SeverityBadge severity={issue.severity} />
+                      <span style={{ flex: 1, color: T.text, lineHeight: 1.4 }}>{issue.text}</span>
+                      <button
+                        onClick={() => setExpandedIssue(isOpen ? null : idx)}
+                        title="View affected calls"
+                        style={{
+                          flexShrink: 0, fontSize: 11, fontWeight: 700,
+                          color: isOpen ? "#fff" : T.primary,
+                          background: isOpen ? T.primary : T.primary + "18",
+                          border: "none", borderRadius: 10, padding: "1px 9px",
+                          cursor: "pointer", lineHeight: "20px",
+                        }}
+                      >
+                        {issue.count}
+                      </button>
+                    </div>
+                    {isOpen && (
+                      <div style={{
+                        margin: "2px 0 6px 0", borderRadius: 7,
+                        border: `1px solid ${T.border}`, overflow: "hidden",
+                      }}>
+                        {affectedRuns.length === 0 ? (
+                          <div style={{ padding: "8px 12px", fontSize: 12, color: T.textMuted }}>
+                            Run details not available in current view.
+                          </div>
+                        ) : (
+                          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11 }}>
+                            <thead>
+                              <tr style={{ background: T.cardAlt }}>
+                                {["Conv ID", "Date", "Score", "Outcome"].map(h => (
+                                  <th key={h} style={{ padding: "5px 10px", textAlign: "left", fontWeight: 600, color: T.textMuted, letterSpacing: 0.3 }}>{h}</th>
+                                ))}
+                                <th style={{ padding: "5px 10px" }} />
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {affectedRuns.map((r: any, ri: number) => (
+                                <tr key={r.id} style={{ borderTop: ri > 0 ? `1px solid ${T.border}` : "none" }}>
+                                  <td style={{ padding: "6px 10px", fontFamily: "monospace", color: T.textMuted }}>
+                                    {(r.conversationId || r.id || "—").slice(0, 13)}
+                                  </td>
+                                  <td style={{ padding: "6px 10px", color: T.textSecondary }}>
+                                    {r.callDate ? new Date(r.callDate).toLocaleDateString() : "—"}
+                                  </td>
+                                  <td style={{ padding: "6px 10px" }}>
+                                    {r.overallScore != null
+                                      ? <ScorePill score={r.overallScore * 10} />
+                                      : <span style={{ color: T.textMuted }}>—</span>}
+                                  </td>
+                                  <td style={{ padding: "6px 10px", color: T.textSecondary, textTransform: "capitalize" }}>
+                                    {(r.callOutcome || "—").replace(/_/g, " ")}
+                                  </td>
+                                  <td style={{ padding: "6px 10px", textAlign: "right" }}>
+                                    <a
+                                      href={`/projects/${project.id}/runs/${r.id}`}
+                                      style={{ color: T.primary, fontSize: 11, fontWeight: 500, textDecoration: "none" }}
+                                    >
+                                      View →
+                                    </a>
+                                  </td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
             </div>
           )}
         </div>

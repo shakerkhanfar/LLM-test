@@ -217,7 +217,7 @@ router.get("/:id/dashboard", async (req: AuthRequest, res) => {
 
     const sentimentCounts: Record<string, number> = { positive: 0, neutral: 0, negative: 0, unknown: 0 };
     const nodeScores: Record<string, number[]> = {};
-    const issueCounts: Record<string, { severity: string; count: number }> = {};
+    const issueCounts: Record<string, { severity: string; count: number; runIds: string[] }> = {};
     let objectiveCount = 0;
     let objectiveTotal = 0;
 
@@ -262,9 +262,10 @@ router.get("/:id/dashboard", async (req: AuthRequest, res) => {
           const text = rawText.trim().toLowerCase();  // normalize for dedup
           const severity: string = (typeof issue === "object" && issue.severity) ? issue.severity : "critical";
           if (!issueCounts[text]) {
-            issueCounts[text] = { severity, count: 0 };
+            issueCounts[text] = { severity, count: 0, runIds: [] };
           }
           issueCounts[text].count++;
+          issueCounts[text].runIds.push(run.id);
         }
       }
 
@@ -286,9 +287,9 @@ router.get("/:id/dashboard", async (req: AuthRequest, res) => {
       .sort((a, b) => b.avg - a.avg);
 
     const topIssues = Object.entries(issueCounts)
-      .map(([text, { severity, count }]) => ({
-        text: text.charAt(0).toUpperCase() + text.slice(1),  // restore sentence case
-        severity, count,
+      .map(([text, { severity, count, runIds }]) => ({
+        text: text.charAt(0).toUpperCase() + text.slice(1),
+        severity, count, runIds,
       }))
       .sort((a, b) => b.count - a.count)
       .slice(0, 8);
