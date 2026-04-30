@@ -2005,7 +2005,7 @@ function PromptAuditPanel({ projectId, agentStruct, onRefresh }: { projectId: st
     letterSpacing: 0.4, textTransform: "uppercase" as const,
   };
   const textareaStyle: React.CSSProperties = {
-    width: "100%", background: T.inputBg, border: `1px solid ${T.inputBorder}`,
+    width: "100%", background: T.input, border: `1px solid ${T.border}`,
     borderRadius: 7, color: T.text, padding: "10px 12px", fontSize: 13,
     resize: "vertical" as const, fontFamily: "inherit", lineHeight: 1.5,
     outline: "none",
@@ -2013,10 +2013,6 @@ function PromptAuditPanel({ projectId, agentStruct, onRefresh }: { projectId: st
   const btnPrimary: React.CSSProperties = {
     background: T.primary, color: "#fff", border: "none", borderRadius: 7,
     padding: "8px 16px", fontSize: 13, fontWeight: 600, cursor: "pointer",
-  };
-  const btnOutline: React.CSSProperties = {
-    background: "transparent", color: T.primary, border: `1px solid ${T.primary}`,
-    borderRadius: 7, padding: "6px 14px", fontSize: 12, fontWeight: 600, cursor: "pointer",
   };
   const btnGhost: React.CSSProperties = {
     background: "transparent", color: T.textSecondary, border: `1px solid ${T.border}`,
