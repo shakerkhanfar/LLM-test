@@ -97,6 +97,14 @@ export default function ProjectDashboard({ project }: Props) {
   const [dashError, setDashError] = useState<string | null>(null);
   const [tableSearch, setTableSearch] = useState("");
   const [expandedIssue, setExpandedIssue] = useState<number | null>(null);
+  const [copiedId, setCopiedId] = useState<string | null>(null);
+
+  function copyToClipboard(text: string, key: string) {
+    navigator.clipboard.writeText(text).then(() => {
+      setCopiedId(key);
+      setTimeout(() => setCopiedId(prev => prev === key ? null : prev), 1500);
+    });
+  }
 
   useEffect(() => {
     getProjectDashboard(project.id)
@@ -647,7 +655,7 @@ export default function ProjectDashboard({ project }: Props) {
           <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
             <thead>
               <tr style={{ borderBottom: `1px solid ${T.border}` }}>
-                {["Conv ID", "Date", "Call Outcome", "Score", "Duration", ...outcomeColumns].map((col) => (
+                {["Conv ID", "Date", "Call Outcome", "Score", "Duration", ...outcomeColumns, ""].map((col) => (
                   <th key={col} style={{
                     padding: "6px 10px", textAlign: "left", fontWeight: 600,
                     color: T.textMuted, fontSize: 11, whiteSpace: "nowrap",
@@ -659,10 +667,37 @@ export default function ProjectDashboard({ project }: Props) {
               </tr>
             </thead>
             <tbody>
-              {tableRuns.map((run: any) => (
+              {tableRuns.map((run: any) => {
+                const rowKey = `row-${run.id}`;
+                const convKey = `conv-${run.id}`;
+                const rowCopied = copiedId === rowKey;
+                const convCopied = copiedId === convKey;
+
+                function copyRow() {
+                  const vals = [
+                    run.conversationId || "",
+                    run.callDate ? new Date(run.callDate).toLocaleDateString() : "",
+                    run.callOutcome || "",
+                    run.overallScore != null ? Math.round(run.overallScore * 100) + "%" : "",
+                    run.callDuration ? fmtDuration(run.callDuration) : "",
+                    ...outcomeColumns.map(k => {
+                      const v = (run.outcomeResult || {})[k];
+                      return v == null ? "" : typeof v === "object" ? JSON.stringify(v) : String(v);
+                    }),
+                  ];
+                  copyToClipboard(vals.join("\t"), rowKey);
+                }
+
+                return (
                 <tr key={run.id} style={{ borderBottom: `1px solid ${T.borderLight}` }}>
-                  <td style={{ padding: "6px 10px", color: T.textMuted, fontFamily: "monospace", fontSize: 11, maxWidth: 140, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                    {run.conversationId ? run.conversationId.slice(0, 16) + (run.conversationId.length > 16 ? "…" : "") : "—"}
+                  <td style={{ padding: "6px 10px", fontFamily: "monospace", fontSize: 11, maxWidth: 140, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                    <span
+                      onClick={() => run.conversationId && copyToClipboard(run.conversationId, convKey)}
+                      title={run.conversationId ? (convCopied ? "Copied!" : "Click to copy full ID") : undefined}
+                      style={{ color: convCopied ? T.primary : T.textMuted, cursor: run.conversationId ? "pointer" : "default" }}
+                    >
+                      {convCopied ? "✓ Copied" : (run.conversationId ? run.conversationId.slice(0, 16) + (run.conversationId.length > 16 ? "…" : "") : "—")}
+                    </span>
                   </td>
                   <td style={{ padding: "6px 10px", color: T.textSecondary, whiteSpace: "nowrap" }}>
                     {run.callDate ? new Date(run.callDate).toLocaleDateString() : "—"}
@@ -690,8 +725,23 @@ export default function ProjectDashboard({ project }: Props) {
                       {String((run.outcomeResult || {})[key] ?? "—")}
                     </td>
                   ))}
+                  <td style={{ padding: "6px 8px", textAlign: "right", whiteSpace: "nowrap" }}>
+                    <button
+                      onClick={copyRow}
+                      title="Copy row as tab-separated values"
+                      style={{
+                        background: "none", border: "none", cursor: "pointer", padding: "2px 6px",
+                        fontSize: 11, color: rowCopied ? T.primary : T.textMuted,
+                        borderRadius: 4,
+                      }}
+                    >
+                      {rowCopied ? "✓" : "⎘"}
+                    </button>
+                    <a href={`/projects/${project.id}/runs/${run.id}`} style={{ color: T.primary, fontSize: 11, fontWeight: 500, textDecoration: "none", marginLeft: 4 }}>→</a>
+                  </td>
                 </tr>
-              ))}
+                );
+              })}
               {tableRuns.length === 0 && (
                 <tr>
                   <td colSpan={5 + outcomeColumns.length} style={{ padding: "20px 10px", textAlign: "center", color: T.textMuted }}>
