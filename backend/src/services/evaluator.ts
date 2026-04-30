@@ -134,6 +134,8 @@ async function evaluateCriterion(criterion: Criterion, run: any) {
       return evaluateFlowProgression(criterion, run);
     case "ACTION_CONSISTENCY":
       return evaluateActionConsistency(criterion, run);
+    case "ACTION_HALLUCINATION":
+      return evaluateActionHallucination(criterion, run);
     case "LAYERED_EVALUATION":
       return evaluateLayered(criterion, run);
     default:
@@ -909,6 +911,166 @@ Respond with JSON only:
       recommendations: parsedAnalysis?.recommendations || [],
       total_agent_turns: parsedAnalysis?.total_agent_turns || 0,
       turns_with_errors: parsedAnalysis?.turns_with_errors || 0,
+    } as any,
+  };
+}
+
+// ─── ACTION_HALLUCINATION — Claimed Action vs Tool & Outcome Verification ─────
+// Finds every verbal claim of action completion ("I've booked", "done, I've
+// updated your info") and verifies it against:
+//   1. The tool execution log — was the tool called? Did it succeed?
+//   2. The outcomeResult variables — does the recorded outcome match the claim?
+// Much more focused than ACTION_CONSISTENCY: this criterion is purely about
+// "did the agent lie about completing something?"
+
+async function evaluateActionHallucination(_criterion: Criterion, run: any) {
+  const callLog = Array.isArray(run.callLog) ? run.callLog : null;
+  const transcript = resolveTranscript(run);
+
+  if (!transcript || transcript.length === 0) {
+    return { passed: null, score: null, detail: "No transcript available" };
+  }
+
+  // ── Tool execution log (ground truth for what the system actually did) ──
+  let toolResultsSection = "";
+  if (callLog && callLog.length > 0) {
+    const toolItems: string[] = [];
+    for (const e of callLog) {
+      if (e.category === "TOOLS" && e.message === "Executing Tool") {
+        toolItems.push(`→ CALLED: "${e.payload?.toolName || "unknown"}" (node: ${e.node_id || "?"})`);
+      }
+      if (e.category === "TOOLS" && e.message === "Tool Success") {
+        const toolName = e.payload?.toolName || "unknown";
+        const httpOk = e.payload?.response?.ok;
+        const statusCode = e.payload?.response?.status;
+        const responseSnippet = JSON.stringify(e.payload?.response ?? {}).slice(0, 400);
+        const failed = httpOk === false || (typeof statusCode === "number" && statusCode >= 400);
+        toolItems.push(`→ RESULT: "${toolName}" ${failed ? "FAILED (HTTP error)" : "succeeded"} — ${responseSnippet}`);
+      }
+      if (e.category === "TOOLS" && (e.message === "Tool Error" || e.message === "Tool Failed")) {
+        const toolName = e.payload?.toolName || "unknown";
+        const errDetail = e.payload?.error || e.payload?.message || "unknown error";
+        toolItems.push(`→ ERROR: "${toolName}" failed — ${errDetail}`);
+      }
+    }
+    if (toolItems.length > 0) {
+      toolResultsSection =
+        "TOOL EXECUTION LOG (what the system actually executed):\n" +
+        toolItems.join("\n") + "\n\n";
+    } else {
+      toolResultsSection =
+        "TOOL EXECUTION LOG: No tool calls were made during this call.\n\n";
+    }
+  } else {
+    toolResultsSection =
+      "TOOL EXECUTION LOG: No call log available — tool verification limited.\n\n";
+  }
+
+  // ── Outcome result variables (structured system output) ──
+  let outcomeSection = "";
+  if (run.outcomeResult) {
+    const SKIP_KEYS = new Set(["summary", "language", "default_params"]);
+    const outcomeData = run.outcomeResult as Record<string, any>;
+    const varLines = Object.entries(outcomeData)
+      .filter(([k]) => !SKIP_KEYS.has(k))
+      .map(([k, v]) => `  ${k} = ${typeof v === "object" ? JSON.stringify(v) : v}`)
+      .join("\n");
+    outcomeSection =
+      "OUTCOME RESULT (structured variables recorded by the system after the call):\n" +
+      (varLines || "  (no outcome variables)") + "\n\n";
+  }
+
+  // ── Transcript ──
+  let transcriptSection = "CONVERSATION TRANSCRIPT:\n";
+  for (const t of transcript) {
+    if (t.Agent) transcriptSection += `[Agent]: ${t.Agent}\n`;
+    if (t.User) transcriptSection += `[User]: ${t.User}\n`;
+  }
+
+  const agentSummary: string = run.project?.agentSummary ?? "";
+
+  const prompt = `You are a precision QA evaluator checking for ACTION HALLUCINATION in a voice AI agent.
+
+ACTION HALLUCINATION is when the agent verbally claims it completed an action (booking, cancellation, transfer, update, registration, payment, appointment, etc.) but the system evidence — tool execution logs and/or outcome variables — does NOT confirm the action actually succeeded.
+
+${agentSummary ? `AGENT CONTEXT:\n${agentSummary}\n\n` : ""}${toolResultsSection}${outcomeSection}${transcriptSection}
+
+EVALUATION TASK:
+
+Step 1 — Find every agent statement that CLAIMS an action was completed. These are explicit verbal commitments like:
+  • "I have booked your appointment"
+  • "I've cancelled the reservation"
+  • "Your information has been updated"
+  • "I've transferred your call"
+  • "Done, I've registered you"
+  • "The payment has been processed"
+  • "I've sent you a confirmation"
+  • Any phrasing that implies a system transaction or state change was completed
+
+Step 2 — For each claimed action, verify using these sources IN ORDER:
+  a. TOOL EXECUTION LOG: Was the corresponding tool called? Did it return success (not error/failed)?
+  b. OUTCOME RESULT: Do the outcome variables confirm the action was completed?
+
+Step 3 — Classify each claimed action:
+  • HALLUCINATION — Agent claimed to do X but no tool was called at all (phantom action)
+  • MISREPRESENTATION — Tool was called but FAILED; agent still told the caller it succeeded
+  • OUTCOME_MISMATCH — Tool ran and succeeded, but outcome variables show the opposite result
+  • VERIFIED — Tool called successfully AND/OR outcome variables confirm the action
+
+IMPORTANT:
+- If NO action completion claims appear in the transcript, return passed=null (not applicable).
+- Be precise: only flag as hallucination if you have concrete evidence the claim is unsupported.
+- Do NOT flag general statements like "I'll help you" or "I understand" — only explicit completion claims.
+- Quote the exact agent phrase as evidence.
+
+Respond with JSON only:
+{
+  "passed": true | false | null,
+  "score": 0.0 to 1.0 | null,
+  "total_action_claims": number,
+  "hallucinated_actions": [
+    {
+      "what_agent_said": "exact quote from transcript",
+      "claimed_action": "brief label, e.g. 'booked appointment'",
+      "error_type": "HALLUCINATION" | "MISREPRESENTATION" | "OUTCOME_MISMATCH",
+      "evidence": "what the tool log or outcome variables show (or confirm is absent)",
+      "severity": "critical" | "major" | "minor"
+    }
+  ],
+  "verified_actions": [
+    {
+      "what_agent_said": "exact quote",
+      "claimed_action": "brief label",
+      "verified_by": "tool name that succeeded, or outcome variable that confirms it"
+    }
+  ],
+  "detail": "2-3 sentence summary: how many actions were claimed, how many hallucinated, and what the impact on the caller experience was"
+}`;
+
+  const result = await evaluateWithLLMJudge(prompt, "", true);
+
+  let parsed: any = null;
+  if (result.detail) {
+    try { parsed = JSON.parse(result.detail); } catch {}
+  }
+
+  const hallucinated: number = parsed?.hallucinated_actions?.length ?? 0;
+  const total: number = parsed?.total_action_claims ?? 0;
+  const computedScore =
+    total > 0
+      ? Math.max(0, (total - hallucinated) / total)
+      : (parsed?.passed === null ? null : 1.0);
+
+  return {
+    passed: parsed?.passed ?? result.passed,
+    score: parsed?.score ?? computedScore ?? result.score,
+    detail: result.detail,
+    costUsd: result.costUsd,
+    metadata: {
+      type: "ACTION_HALLUCINATION",
+      total_action_claims: total,
+      hallucinated_actions: parsed?.hallucinated_actions || [],
+      verified_actions: parsed?.verified_actions || [],
     } as any,
   };
 }

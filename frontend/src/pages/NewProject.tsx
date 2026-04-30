@@ -8,6 +8,7 @@ const DEFAULT_CRITERIA = [
   { key: "language_switching", label: "Language Switching", type: "LLM_JUDGE", expectedValue: { rule: "Evaluate language consistency: The agent should maintain the primary language chosen by the user throughout the conversation. If the user speaks Arabic, the agent should respond in Arabic even if the user mixes in English words (like plate numbers, names, etc). Mixing in technical terms or data in English is NOT an error. Only flag if the agent switches its primary response language without being asked to, or if the user explicitly requests a language switch and the agent fails to comply. If no language switch was requested and the agent stayed consistent, return passed=null and score=null (not applicable)." }, weight: 1 },
   { key: "gender_detection", label: "Gender Detection", type: "LLM_JUDGE", expectedValue: { rule: "Agent must use gender-appropriate Arabic grammar matching the detected customer gender" }, weight: 1 },
   { key: "word_accuracy", label: "Word Accuracy", type: "WORD_ACCURACY", expectedValue: { threshold: 0.95 }, weight: 1 },
+  { key: "action_hallucination", label: "Action Hallucination Check", type: "ACTION_HALLUCINATION", expectedValue: {}, weight: 2 },
 ];
 
 const QUICK_PRESETS = [

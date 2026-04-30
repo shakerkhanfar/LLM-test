@@ -832,6 +832,143 @@ export default function RunDetail() {
         );
       })()}
 
+      {/* Action Hallucination Analysis (from ACTION_HALLUCINATION) */}
+      {(() => {
+        const ahResult = evalResults.find((er: any) => er.criterion?.type === "ACTION_HALLUCINATION");
+        if (!ahResult) return null;
+
+        let parsed: any = null;
+        if (ahResult.detail) {
+          try { parsed = JSON.parse(ahResult.detail); } catch {}
+        }
+        const meta = ahResult.metadata || {};
+        const hallucinated: any[] = parsed?.hallucinated_actions || meta.hallucinated_actions || [];
+        const verified: any[] = parsed?.verified_actions || meta.verified_actions || [];
+        const totalClaims: number = parsed?.total_action_claims ?? meta.total_action_claims ?? (hallucinated.length + verified.length);
+
+        const errorTypeColors: Record<string, string> = {
+          HALLUCINATION: "#ef4444",
+          MISREPRESENTATION: "#f59e0b",
+          OUTCOME_MISMATCH: "#f97316",
+        };
+        const errorTypeLabels: Record<string, string> = {
+          HALLUCINATION: "Phantom Action",
+          MISREPRESENTATION: "Told caller it succeeded (it failed)",
+          OUTCOME_MISMATCH: "Outcome variables contradict claim",
+        };
+        const severityColors: Record<string, string> = { critical: "#ef4444", major: "#f59e0b", minor: "#9ca3af" };
+
+        return (
+          <div style={{ marginBottom: 32 }}>
+            <h2 style={{ fontSize: 16, marginBottom: 12 }}>Action Hallucination Check</h2>
+
+            {/* Summary bar */}
+            <div style={{ display: "flex", gap: 12, marginBottom: 16, flexWrap: "wrap" }}>
+              <div style={{ background: T.card, padding: "8px 14px", borderRadius: 6, border: `1px solid ${T.border}`, fontSize: 13 }}>
+                <span style={{ color: T.textSecondary }}>Score: </span>
+                <strong style={{ color: ahResult.score == null ? T.textSecondary : ahResult.score >= 0.8 ? "#22c55e" : ahResult.score >= 0.5 ? "#f59e0b" : "#ef4444" }}>
+                  {ahResult.score != null ? `${(ahResult.score * 100).toFixed(0)}%` : "—"}
+                </strong>
+              </div>
+              <div style={{ background: T.card, padding: "8px 14px", borderRadius: 6, border: `1px solid ${T.border}`, fontSize: 13 }}>
+                <span style={{ color: T.textSecondary }}>Action claims: </span>
+                <strong>{totalClaims}</strong>
+              </div>
+              {hallucinated.length > 0 && (
+                <div style={{ background: T.errorBg, padding: "8px 14px", borderRadius: 6, border: `1px solid #ef444433`, fontSize: 13 }}>
+                  <span style={{ color: "#ef4444" }}>{hallucinated.length} hallucinated</span>
+                </div>
+              )}
+              {verified.length > 0 && (
+                <div style={{ background: T.successBg, padding: "8px 14px", borderRadius: 6, border: `1px solid #22c55e33`, fontSize: 13 }}>
+                  <span style={{ color: "#22c55e" }}>{verified.length} verified</span>
+                </div>
+              )}
+            </div>
+
+            {/* Hallucinated actions */}
+            {hallucinated.length > 0 && (
+              <CollapsibleSection title={`Hallucinated / Misrepresented Actions (${hallucinated.length})`} defaultOpen={true}>
+                {hallucinated.map((item: any, i: number) => (
+                  <div key={i} style={{
+                    background: T.cardAlt, padding: 14, borderRadius: 6, marginBottom: 8,
+                    borderLeft: `3px solid ${errorTypeColors[item.error_type] || "#ef4444"}`,
+                    border: `1px solid ${(errorTypeColors[item.error_type] || "#ef4444")}33`,
+                  }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+                      <span style={{ fontSize: 11, color: errorTypeColors[item.error_type] || "#ef4444", textTransform: "uppercase", fontWeight: 600 }}>
+                        {item.error_type?.replace(/_/g, " ")}
+                        {item.severity && <span style={{ color: severityColors[item.severity], marginLeft: 8 }}>· {item.severity}</span>}
+                      </span>
+                      {item.claimed_action && (
+                        <span style={{ fontSize: 11, color: T.textSecondary }}>{item.claimed_action}</span>
+                      )}
+                    </div>
+                    {item.error_type && (
+                      <div style={{ fontSize: 11, color: T.textMuted, marginBottom: 6 }}>
+                        {errorTypeLabels[item.error_type]}
+                      </div>
+                    )}
+                    {item.what_agent_said && (
+                      <div style={{ fontSize: 12, marginBottom: 6, padding: "6px 10px", background: T.card, borderRadius: 4, borderLeft: `2px solid #3b82f6` }}>
+                        <span style={{ color: "#3b82f6", fontWeight: 600 }}>Agent said: </span>
+                        <span style={{ color: T.text }}>"{item.what_agent_said}"</span>
+                      </div>
+                    )}
+                    {item.evidence && (
+                      <div style={{ fontSize: 12, color: T.textSecondary, marginTop: 4 }}>
+                        <span style={{ color: T.text, fontWeight: 600 }}>Evidence: </span>
+                        {item.evidence}
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </CollapsibleSection>
+            )}
+
+            {/* Verified actions */}
+            {verified.length > 0 && (
+              <CollapsibleSection title={`Verified Actions (${verified.length})`} defaultOpen={false}>
+                {verified.map((item: any, i: number) => (
+                  <div key={i} style={{
+                    display: "flex", justifyContent: "space-between", alignItems: "flex-start",
+                    fontSize: 12, padding: "8px 12px", marginBottom: 4,
+                    background: T.successBg, borderRadius: 4, border: `1px solid #22c55e22`,
+                  }}>
+                    <div>
+                      <span style={{ color: "#22c55e", marginRight: 8 }}>✓</span>
+                      <span style={{ color: T.text }}>"{item.what_agent_said}"</span>
+                    </div>
+                    {item.verified_by && (
+                      <span style={{ color: T.textMuted, fontSize: 11, marginLeft: 12, whiteSpace: "nowrap" }}>
+                        via {item.verified_by}
+                      </span>
+                    )}
+                  </div>
+                ))}
+              </CollapsibleSection>
+            )}
+
+            {/* Executive summary */}
+            {parsed?.detail && (
+              <div style={{
+                marginTop: 12, padding: 14, background: T.card, borderRadius: 8,
+                border: `1px solid ${T.border}`, fontSize: 13, color: T.textSecondary, lineHeight: 1.6, boxShadow: T.shadow,
+              }}>
+                {parsed.detail}
+              </div>
+            )}
+
+            {/* Not applicable notice */}
+            {ahResult.passed === null && !hallucinated.length && !verified.length && (
+              <div style={{ fontSize: 13, color: T.textMuted, padding: "10px 14px", background: T.card, borderRadius: 6, border: `1px solid ${T.border}` }}>
+                No action completion claims detected in this call — criterion not applicable.
+              </div>
+            )}
+          </div>
+        );
+      })()}
+
       {/* Layered Node Evaluation Breakdown */}
       {(() => {
         const leResult = evalResults.find((er: any) => er.criterion?.type === "LAYERED_EVALUATION");
@@ -1332,6 +1469,7 @@ export default function RunDetail() {
 const CRITERION_TYPE_COLORS: Record<string, string> = {
   FLOW_PROGRESSION: "#3b82f6",
   ACTION_CONSISTENCY: "#a855f7",
+  ACTION_HALLUCINATION: "#dc2626",
   LAYERED_EVALUATION: "#06b6d4",
   LATENCY: "#f59e0b",
   DETERMINISTIC: "#22c55e",
@@ -1349,7 +1487,7 @@ function CriterionCard({ er }: { er: any }) {
 
   // Parse detail for structured types — extract the human-readable narrative field
   let parsedNarrative: string | null = null;
-  if (er.detail && (type === "FLOW_PROGRESSION" || type === "ACTION_CONSISTENCY")) {
+  if (er.detail && (type === "FLOW_PROGRESSION" || type === "ACTION_CONSISTENCY" || type === "ACTION_HALLUCINATION")) {
     try {
       const p = JSON.parse(er.detail);
       parsedNarrative = typeof p.detail === "string" ? p.detail : null;
@@ -1365,7 +1503,7 @@ function CriterionCard({ er }: { er: any }) {
   // Summary: always shown inline (collapsed state)
   const summary = (() => {
     // Structured types — show the LLM narrative, or a generic fallback
-    if (type === "FLOW_PROGRESSION" || type === "ACTION_CONSISTENCY" || type === "LAYERED_EVALUATION") {
+    if (type === "FLOW_PROGRESSION" || type === "ACTION_CONSISTENCY" || type === "ACTION_HALLUCINATION" || type === "LAYERED_EVALUATION") {
       return parsedNarrative || "See detailed analysis below ↓";
     }
     if (!er.detail) return null;
@@ -1385,7 +1523,7 @@ function CriterionCard({ er }: { er: any }) {
 
   // Whether clicking expand reveals additional content beyond the summary
   const hasExpandableContent = (() => {
-    if (type === "FLOW_PROGRESSION" || type === "ACTION_CONSISTENCY" || type === "LAYERED_EVALUATION") return false; // detailed sections already rendered below
+    if (type === "FLOW_PROGRESSION" || type === "ACTION_CONSISTENCY" || type === "ACTION_HALLUCINATION" || type === "LAYERED_EVALUATION") return false; // detailed sections already rendered below
     if (!er.detail) return false;
     return er.detail.length > 160; // only expandable if content was truncated
   })();
