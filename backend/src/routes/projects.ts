@@ -216,12 +216,22 @@ router.get("/:id/dashboard", async (req: AuthRequest, res) => {
     });
 
     const sentimentCounts: Record<string, number> = { positive: 0, neutral: 0, negative: 0, unknown: 0 };
-    const nodeScores: Record<string, number[]> = {};
+    const nodeScores: Record<string, { scores: number[]; runIds: string[] }> = {};
     const issueCounts: Record<string, { severity: string; count: number; runIds: string[] }> = {};
+    // outcome → issue text → {severity, runIds}
+    const outcomeIssueMap: Record<string, Record<string, { severity: string; runIds: string[] }>> = {};
+    // outcome → total run count (for all runs, not just evaluated ones)
+    const outcomeTotals: Record<string, number> = {};
     let objectiveCount = 0;
     let objectiveTotal = 0;
     const achievedRunIds: string[] = [];
     const notAchievedRunIds: string[] = [];
+
+    // Count all outcome totals first (including runs without eval results)
+    for (const run of runs) {
+      const outcome = (run.callOutcome || "unknown");
+      outcomeTotals[outcome] = (outcomeTotals[outcome] || 0) + 1;
+    }
 
     for (const run of runs) {
       const layered = run.evalResults.find((er: any) => er.criterion?.type === "LAYERED_EVALUATION");
@@ -251,23 +261,39 @@ router.get("/:id/dashboard", async (req: AuthRequest, res) => {
           const label: string = node.nodeLabel || node.label || node.node || "Unknown";
           const score: number | undefined = node.overallNodeScore ?? node.score;
           if (score != null) {
-            if (!nodeScores[label]) nodeScores[label] = [];
-            nodeScores[label].push(score);
+            if (!nodeScores[label]) nodeScores[label] = { scores: [], runIds: [] };
+            nodeScores[label].scores.push(score);
+            if (!nodeScores[label].runIds.includes(run.id)) nodeScores[label].runIds.push(run.id);
           }
         }
       }
 
-      // Issues
+      // Issues + per-outcome issue tracking
       if (Array.isArray(detail.criticalIssues)) {
+        const outcome = (run.callOutcome || "unknown");
+        if (!outcomeIssueMap[outcome]) outcomeIssueMap[outcome] = {};
+
         for (const issue of detail.criticalIssues) {
           const rawText: string = typeof issue === "string" ? issue : (issue.text || String(issue));
           const text = rawText.trim().toLowerCase();  // normalize for dedup
           const severity: string = (typeof issue === "object" && issue.severity) ? issue.severity : "critical";
+
+          // Global issue counts — count per run (not per occurrence within a run)
           if (!issueCounts[text]) {
             issueCounts[text] = { severity, count: 0, runIds: [] };
           }
-          issueCounts[text].count++;
-          issueCounts[text].runIds.push(run.id);
+          if (!issueCounts[text].runIds.includes(run.id)) {
+            issueCounts[text].count++;
+            issueCounts[text].runIds.push(run.id);
+          }
+
+          // Per-outcome issue tracking (deduplicate per run)
+          if (!outcomeIssueMap[outcome][text]) {
+            outcomeIssueMap[outcome][text] = { severity, runIds: [] };
+          }
+          if (!outcomeIssueMap[outcome][text].runIds.includes(run.id)) {
+            outcomeIssueMap[outcome][text].runIds.push(run.id);
+          }
         }
       }
 
@@ -284,10 +310,11 @@ router.get("/:id/dashboard", async (req: AuthRequest, res) => {
     }
 
     const nodePerformance = Object.entries(nodeScores)
-      .map(([label, scores]) => ({
+      .map(([label, { scores, runIds }]) => ({
         label,
-        avg: Math.round((scores.reduce((a, b) => a + b, 0) / scores.length) * 10) / 10,
+        avg: Math.round((scores.reduce((a: number, b: number) => a + b, 0) / scores.length) * 10) / 10,
         count: scores.length,
+        runIds,
       }))
       .sort((a, b) => b.avg - a.avg);
 
@@ -299,6 +326,24 @@ router.get("/:id/dashboard", async (req: AuthRequest, res) => {
       .sort((a, b) => b.count - a.count)
       .slice(0, 8);
 
+    // Build outcome breakdown: for each outcome, top issues sorted by how many of those calls had the issue
+    const outcomeBreakdown = Object.entries(outcomeTotals)
+      .sort((a, b) => b[1] - a[1])
+      .map(([outcome, total]) => {
+        const issueMap = outcomeIssueMap[outcome] ?? {};
+        const issues = Object.entries(issueMap)
+          .map(([text, { severity, runIds }]) => ({
+            text: text.charAt(0).toUpperCase() + text.slice(1),
+            severity,
+            count: runIds.length,
+            pct: Math.round((runIds.length / total) * 100),
+          }))
+          .sort((a, b) => b.count - a.count)
+          .slice(0, 4);
+        return { outcome, total, issues };
+      })
+      .filter(b => b.issues.length > 0);
+
     res.json({
       totalRuns: runs.length,
       sentiment: sentimentCounts,
@@ -307,6 +352,7 @@ router.get("/:id/dashboard", async (req: AuthRequest, res) => {
       notAchievedRunIds,
       nodePerformance,
       topIssues,
+      outcomeBreakdown,
     });
   } catch (err) {
     console.error("[Projects] GET /:id/dashboard error:", (err as Error).message);

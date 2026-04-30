@@ -10,10 +10,11 @@ interface DashData {
   totalRuns: number;
   sentiment: Record<string, number>;
   objectiveRate: number | null;
-  nodePerformance: Array<{ label: string; avg: number; count: number }>;
+  nodePerformance: Array<{ label: string; avg: number; count: number; runIds: string[] }>;
   topIssues: Array<{ text: string; severity: string; count: number; runIds: string[] }>;
   achievedRunIds: string[];
   notAchievedRunIds: string[];
+  outcomeBreakdown: Array<{ outcome: string; total: number; issues: Array<{ text: string; severity: string; count: number; pct: number }> }>;
 }
 
 interface Props {
@@ -138,11 +139,15 @@ export default function ProjectDashboard({ project }: Props) {
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [selectedOutcome, setSelectedOutcome] = useState<string | null>(null);
   const [objectiveFilter, setObjectiveFilter] = useState<"achieved" | "not_achieved" | null>(null);
+  const [scoreFilter, setScoreFilter] = useState<{ min: number; max: number; label: string } | null>(null);
+  const [nodeFilter, setNodeFilter] = useState<{ label: string; runIds: string[] } | null>(null);
   const tableRef = useRef<HTMLDivElement>(null);
 
   function selectOutcome(name: string) {
     setSelectedOutcome(prev => prev === name ? null : name);
     setObjectiveFilter(null);
+    setScoreFilter(null);
+    setNodeFilter(null);
     setTableSearch("");
     setTimeout(() => tableRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }), 50);
   }
@@ -150,14 +155,56 @@ export default function ProjectDashboard({ project }: Props) {
   function selectObjective(filter: "achieved" | "not_achieved") {
     setObjectiveFilter(prev => prev === filter ? null : filter);
     setSelectedOutcome(null);
+    setScoreFilter(null);
+    setNodeFilter(null);
+    setTableSearch("");
+    setTimeout(() => tableRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }), 50);
+  }
+
+  function selectScoreRange(min: number, max: number, label: string) {
+    setScoreFilter(prev => (prev?.label === label ? null : { min, max, label }));
+    setSelectedOutcome(null);
+    setObjectiveFilter(null);
+    setNodeFilter(null);
+    setTableSearch("");
+    setTimeout(() => tableRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }), 50);
+  }
+
+  function selectNode(node: { label: string; runIds: string[] }) {
+    setNodeFilter(prev => (prev?.label === node.label ? null : node));
+    setSelectedOutcome(null);
+    setObjectiveFilter(null);
+    setScoreFilter(null);
     setTableSearch("");
     setTimeout(() => tableRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }), 50);
   }
 
   function copyToClipboard(text: string, key: string) {
+    if (!navigator.clipboard) {
+      // Fallback for non-secure contexts or unsupported browsers
+      try {
+        const el = document.createElement("textarea");
+        el.value = text;
+        el.style.position = "fixed";
+        el.style.opacity = "0";
+        document.body.appendChild(el);
+        el.select();
+        document.execCommand("copy");
+        document.body.removeChild(el);
+        setCopiedId(key);
+        setTimeout(() => setCopiedId(prev => prev === key ? null : prev), 1500);
+      } catch {
+        setCopiedId(`err-${key}`);
+        setTimeout(() => setCopiedId(prev => prev === `err-${key}` ? null : prev), 2000);
+      }
+      return;
+    }
     navigator.clipboard.writeText(text).then(() => {
       setCopiedId(key);
       setTimeout(() => setCopiedId(prev => prev === key ? null : prev), 1500);
+    }).catch(() => {
+      setCopiedId(`err-${key}`);
+      setTimeout(() => setCopiedId(prev => prev === `err-${key}` ? null : prev), 2000);
     });
   }
 
@@ -280,6 +327,16 @@ export default function ProjectDashboard({ project }: Props) {
     } else if (objectiveFilter === "not_achieved") {
       sorted = sorted.filter((r: any) => dashData?.notAchievedRunIds?.includes(r.id));
     }
+    if (scoreFilter) {
+      sorted = sorted.filter((r: any) => {
+        if (r.overallScore == null) return false;
+        const pct = r.overallScore * 100;
+        return pct >= scoreFilter.min && pct < scoreFilter.max;
+      });
+    }
+    if (nodeFilter) {
+      sorted = sorted.filter((r: any) => nodeFilter.runIds.includes(r.id));
+    }
     if (!tableSearch.trim()) return sorted;
     const q = tableSearch.toLowerCase();
     return sorted.filter((r: any) => {
@@ -293,7 +350,7 @@ export default function ProjectDashboard({ project }: Props) {
         outcomeColumns.some((k) => String((r.outcomeResult || {})[k] || "").toLowerCase().includes(q))
       );
     });
-  }, [project.runs, tableSearch, outcomeColumns, selectedOutcome, objectiveFilter, dashData]);
+  }, [project.runs, tableSearch, outcomeColumns, selectedOutcome, objectiveFilter, scoreFilter, nodeFilter, dashData]);
 
   function exportCsv() {
     const headers = ["Conv ID", "Date", "Call Outcome", "Score", "Duration", ...outcomeColumns];
@@ -326,8 +383,11 @@ export default function ProjectDashboard({ project }: Props) {
 
   function getOutcomeColor(outcome: string): string {
     const key = (outcome || "").toLowerCase();
+    // Exact match first
+    if (OUTCOME_COLORS[key]) return OUTCOME_COLORS[key];
+    // Suffix match: "appointment_booked" → "booked", "partial_booked" → "booked"
     for (const [k, v] of Object.entries(OUTCOME_COLORS)) {
-      if (key === k || key.includes(k)) return v;
+      if (key.endsWith("_" + k) || key.startsWith(k + "_")) return v;
     }
     return "#9ca3af";
   }
@@ -692,34 +752,61 @@ export default function ProjectDashboard({ project }: Props) {
           ) : (
             <>
               <ResponsiveContainer width="100%" height={150}>
-                <BarChart data={scoreDistData} margin={{ top: 4, right: 0, bottom: 0, left: -28 }} barCategoryGap="20%">
+                <BarChart
+                  data={scoreDistData}
+                  margin={{ top: 4, right: 0, bottom: 0, left: -28 }}
+                  barCategoryGap="20%"
+                  style={{ cursor: "pointer" }}
+                  onClick={(data: any) => {
+                    if (!data?.activePayload?.[0]) return;
+                    const { range, fill } = data.activePayload[0].payload;
+                    const [minStr] = range.split("-");
+                    const min = parseInt(minStr, 10);
+                    const max = min + 10;
+                    // use the fill color to set a human label
+                    const lbl = fill === "#17B26A" ? `Pass (${range}%)` : fill === "#f59e0b" ? `Warn (${range}%)` : `Fail (${range}%)`;
+                    selectScoreRange(min, max, lbl);
+                  }}
+                >
                   <XAxis dataKey="range" tick={{ fontSize: 9, fill: T.textMuted }} tickLine={false} axisLine={false} />
                   <YAxis tick={{ fontSize: 9, fill: T.textMuted }} tickLine={false} axisLine={false} />
                   <Tooltip
                     contentStyle={{ background: T.card, border: `1px solid ${T.border}`, borderRadius: 6, fontSize: 11 }}
                     formatter={(value: any) => [value, "Runs"]}
+                    cursor={{ fill: "rgba(0,0,0,0.05)" }}
                   />
                   <Bar dataKey="count" radius={[2, 2, 0, 0]}>
-                    {scoreDistData.map((entry, idx) => (
-                      <Cell key={idx} fill={entry.fill} />
-                    ))}
+                    {scoreDistData.map((entry, idx) => {
+                      const isSelected = scoreFilter?.label.includes(entry.range);
+                      return (
+                        <Cell key={idx} fill={entry.fill} opacity={scoreFilter && !isSelected ? 0.35 : 1} />
+                      );
+                    })}
                   </Bar>
                 </BarChart>
               </ResponsiveContainer>
               <div style={{ display: "flex", gap: 6, marginTop: 8 }}>
                 {[
-                  { label: "Pass ≥70%", count: passCount, color: "#17B26A" },
-                  { label: "Warn 50-69%", count: warnCount, color: "#f59e0b" },
-                  { label: "Fail <50%", count: failCount, color: "#ef4444" },
-                ].map(({ label, count, color }) => (
-                  <div key={label} style={{
-                    flex: 1, background: color + "18", borderRadius: 6, padding: "6px 8px", textAlign: "center",
-                    border: `1px solid ${color}44`,
-                  }}>
+                  { label: "Pass ≥70%", count: passCount, color: "#17B26A", min: 70, max: 100 },
+                  { label: "Warn 50-69%", count: warnCount, color: "#f59e0b", min: 50, max: 70 },
+                  { label: "Fail <50%", count: failCount, color: "#ef4444", min: 0, max: 50 },
+                ].map(({ label, count, color, min, max }) => {
+                  const isActive = scoreFilter && scoreFilter.min >= min && scoreFilter.max <= max;
+                  return (
+                  <div
+                    key={label}
+                    onClick={() => selectScoreRange(min, max, label)}
+                    style={{
+                      flex: 1, background: isActive ? color + "33" : color + "18", borderRadius: 6, padding: "6px 8px", textAlign: "center",
+                      border: `1px solid ${isActive ? color : color + "44"}`,
+                      cursor: "pointer", transition: "background 0.15s",
+                    }}
+                  >
                     <div style={{ fontSize: 16, fontWeight: 700, color }}>{count}</div>
                     <div style={{ fontSize: 10, color, fontWeight: 600 }}>{label}</div>
                   </div>
-                ))}
+                  );
+                })}
               </div>
             </>
           )}
@@ -734,10 +821,18 @@ export default function ProjectDashboard({ project }: Props) {
             <div style={{ color: T.textMuted, fontSize: 12 }}>No node data</div>
           ) : (
             <div style={{ display: "flex", flexDirection: "column", gap: 7, maxHeight: 220, overflowY: "auto" }}>
-              {dashData.nodePerformance.map((node, idx) => (
-                <div key={idx} style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              {dashData.nodePerformance.map((node, idx) => {
+                const isSelected = nodeFilter?.label === node.label;
+                const isDimmed = nodeFilter && !isSelected;
+                return (
+                <div
+                  key={idx}
+                  onClick={() => selectNode(node)}
+                  title={`Click to filter calls that visited: ${node.label}`}
+                  style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", borderRadius: 6, padding: "3px 4px", background: isSelected ? "#17B26A18" : "none", opacity: isDimmed ? 0.45 : 1, transition: "background 0.15s, opacity 0.15s" }}
+                >
                   <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{ fontSize: 11, color: T.text, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", marginBottom: 2 }}>
+                    <div style={{ fontSize: 11, color: isSelected ? T.primary : T.text, fontWeight: isSelected ? 600 : 400, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", marginBottom: 2 }}>
                       {node.label}
                     </div>
                     <div style={{ height: 4, borderRadius: 2, background: T.cardAlt, overflow: "hidden" }}>
@@ -753,24 +848,76 @@ export default function ProjectDashboard({ project }: Props) {
                   <ScorePill score={node.avg} />
                   <span style={{ fontSize: 10, color: T.textMuted, flexShrink: 0 }}>×{node.count}</span>
                 </div>
-              ))}
+                );
+              })}
             </div>
           )}
         </div>
       </div>
+
+      {/* Outcome → Issues Breakdown */}
+      {dashData && (dashData.outcomeBreakdown?.length ?? 0) > 0 && (
+        <div style={CARD_STYLE}>
+          <div style={{ ...SECTION_LABEL_STYLE, display: "flex", alignItems: "center", marginBottom: 14 }}>
+            Issues by Outcome
+            <InfoTip text="For each call outcome, the most common issues found in those calls. Percentages show how many calls with that outcome had each issue." />
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(240px, 1fr))", gap: 12 }}>
+            {dashData.outcomeBreakdown.map(({ outcome, total, issues }) => {
+              const color = getOutcomeColor(outcome);
+              return (
+                <div key={outcome} style={{ border: `1px solid ${color}44`, borderRadius: 8, overflow: "hidden" }}>
+                  <div
+                    onClick={() => selectOutcome(outcome)}
+                    style={{
+                      display: "flex", alignItems: "center", justifyContent: "space-between",
+                      padding: "8px 12px", background: color + "18", cursor: "pointer",
+                    }}
+                  >
+                    <span style={{ fontSize: 12, fontWeight: 700, color, textTransform: "capitalize" }}>
+                      {outcome.replace(/_/g, " ")}
+                    </span>
+                    <span style={{ fontSize: 11, color: T.textSecondary }}>
+                      {total} call{total !== 1 ? "s" : ""}
+                    </span>
+                  </div>
+                  <div style={{ padding: "8px 12px", display: "flex", flexDirection: "column", gap: 6 }}>
+                    {issues.map((issue, i) => (
+                      <div key={i}>
+                        <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 2 }}>
+                          <SeverityBadge severity={issue.severity} />
+                          <span style={{ flex: 1, fontSize: 11, color: T.text, lineHeight: 1.3, overflow: "hidden", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical" }}>
+                            {issue.text}
+                          </span>
+                        </div>
+                        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                          <div style={{ flex: 1, height: 3, background: T.cardAlt, borderRadius: 99, overflow: "hidden" }}>
+                            <div style={{ width: `${issue.pct}%`, height: "100%", background: color, borderRadius: 99 }} />
+                          </div>
+                          <span style={{ fontSize: 10, color: T.textMuted, flexShrink: 0 }}>{issue.pct}% of these calls</span>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
 
       {/* Not-achieved analysis panel */}
       {objectiveFilter === "not_achieved" && dashData && (() => {
         const ids = new Set(dashData.notAchievedRunIds);
         const failedRuns = ((project.runs ?? []) as any[]).filter((r: any) => ids.has(r.id));
 
-        // Outcome breakdown for not-achieved calls
-        const outcomeCounts: Record<string, number> = {};
+        // Outcome breakdown for not-achieved calls (renamed to avoid shadowing outer outcomeCounts useMemo)
+        const notAchievedOutcomeCounts: Record<string, number> = {};
         for (const r of failedRuns) {
           const k = r.callOutcome || "unknown";
-          outcomeCounts[k] = (outcomeCounts[k] || 0) + 1;
+          notAchievedOutcomeCounts[k] = (notAchievedOutcomeCounts[k] || 0) + 1;
         }
-        const outcomeBreakdown = Object.entries(outcomeCounts)
+        const notAchievedOutcomeBreakdown = Object.entries(notAchievedOutcomeCounts)
           .sort((a, b) => b[1] - a[1]);
 
         // Issues specific to not-achieved calls
@@ -800,7 +947,7 @@ export default function ProjectDashboard({ project }: Props) {
                   What happened
                 </div>
                 <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-                  {outcomeBreakdown.map(([outcome, count]) => {
+                  {notAchievedOutcomeBreakdown.map(([outcome, count]) => {
                     const pct = Math.round((count / failedRuns.length) * 100);
                     const color = getOutcomeColor(outcome);
                     return (
@@ -820,7 +967,7 @@ export default function ProjectDashboard({ project }: Props) {
                       </div>
                     );
                   })}
-                  {outcomeBreakdown.length === 0 && (
+                  {notAchievedOutcomeBreakdown.length === 0 && (
                     <div style={{ fontSize: 12, color: "#92400e" }}>No call outcome data available for these calls.</div>
                   )}
                 </div>
@@ -881,6 +1028,30 @@ export default function ProjectDashboard({ project }: Props) {
                 <button onClick={() => setObjectiveFilter(null)} style={{ background: "none", border: "none", cursor: "pointer", padding: 0, fontSize: 12, color: "inherit", lineHeight: 1 }}>×</button>
               </span>
             )}
+            {scoreFilter && (
+              <span style={{
+                display: "inline-flex", alignItems: "center", gap: 5,
+                fontSize: 11, fontWeight: 600, color: "#6366f1",
+                background: "#6366f118", border: "1px solid #6366f144",
+                borderRadius: 20, padding: "2px 10px",
+              }}>
+                Score: {scoreFilter.label}
+                <button onClick={() => setScoreFilter(null)} style={{ background: "none", border: "none", cursor: "pointer", padding: 0, fontSize: 12, color: "inherit", lineHeight: 1 }}>×</button>
+              </span>
+            )}
+            {nodeFilter && (
+              <span style={{
+                display: "inline-flex", alignItems: "center", gap: 5,
+                fontSize: 11, fontWeight: 600, color: T.primary,
+                background: T.primary + "18", border: `1px solid ${T.primary}44`,
+                borderRadius: 20, padding: "2px 10px", maxWidth: 200,
+              }}>
+                <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                  Node: {nodeFilter.label}
+                </span>
+                <button onClick={() => setNodeFilter(null)} style={{ background: "none", border: "none", cursor: "pointer", padding: 0, fontSize: 12, color: "inherit", lineHeight: 1, flexShrink: 0 }}>×</button>
+              </span>
+            )}
           </div>
           <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
             <input
@@ -935,7 +1106,9 @@ export default function ProjectDashboard({ project }: Props) {
                 const rowKey = `row-${run.id}`;
                 const convKey = `conv-${run.id}`;
                 const rowCopied = copiedId === rowKey;
+                const rowCopyFailed = copiedId === `err-${rowKey}`;
                 const convCopied = copiedId === convKey;
+                const convCopyFailed = copiedId === `err-${convKey}`;
 
                 function copyRow() {
                   const vals = [
@@ -957,10 +1130,10 @@ export default function ProjectDashboard({ project }: Props) {
                   <td style={{ padding: "6px 10px", fontFamily: "monospace", fontSize: 11, maxWidth: 140, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                     <span
                       onClick={() => run.conversationId && copyToClipboard(run.conversationId, convKey)}
-                      title={run.conversationId ? (convCopied ? "Copied!" : "Click to copy full ID") : undefined}
-                      style={{ color: convCopied ? T.primary : T.textMuted, cursor: run.conversationId ? "pointer" : "default" }}
+                      title={run.conversationId ? (convCopied ? "Copied!" : convCopyFailed ? "Copy failed" : "Click to copy full ID") : undefined}
+                      style={{ color: convCopyFailed ? "#ef4444" : convCopied ? T.primary : T.textMuted, cursor: run.conversationId ? "pointer" : "default" }}
                     >
-                      {convCopied ? "✓ Copied" : (run.conversationId ? run.conversationId.slice(0, 16) + (run.conversationId.length > 16 ? "…" : "") : "—")}
+                      {convCopyFailed ? "✗ Failed" : convCopied ? "✓ Copied" : (run.conversationId ? run.conversationId.slice(0, 16) + (run.conversationId.length > 16 ? "…" : "") : "—")}
                     </span>
                   </td>
                   <td style={{ padding: "6px 10px", color: T.textSecondary, whiteSpace: "nowrap" }}>
@@ -992,14 +1165,14 @@ export default function ProjectDashboard({ project }: Props) {
                   <td style={{ padding: "6px 8px", textAlign: "right", whiteSpace: "nowrap" }}>
                     <button
                       onClick={copyRow}
-                      title="Copy row as tab-separated values"
+                      title={rowCopyFailed ? "Copy failed — clipboard unavailable" : "Copy row as tab-separated values"}
                       style={{
                         background: "none", border: "none", cursor: "pointer", padding: "2px 6px",
-                        fontSize: 11, color: rowCopied ? T.primary : T.textMuted,
+                        fontSize: 11, color: rowCopyFailed ? "#ef4444" : rowCopied ? T.primary : T.textMuted,
                         borderRadius: 4,
                       }}
                     >
-                      {rowCopied ? "✓" : "⎘"}
+                      {rowCopyFailed ? "✗" : rowCopied ? "✓" : "⎘"}
                     </button>
                     <a href={`/projects/${project.id}/runs/${run.id}`} style={{ color: T.primary, fontSize: 11, fontWeight: 500, textDecoration: "none", marginLeft: 4 }}>→</a>
                   </td>
