@@ -12,6 +12,8 @@ interface DashData {
   objectiveRate: number | null;
   nodePerformance: Array<{ label: string; avg: number; count: number }>;
   topIssues: Array<{ text: string; severity: string; count: number; runIds: string[] }>;
+  achievedRunIds: string[];
+  notAchievedRunIds: string[];
 }
 
 interface Props {
@@ -135,10 +137,19 @@ export default function ProjectDashboard({ project }: Props) {
   const [expandedIssue, setExpandedIssue] = useState<number | null>(null);
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [selectedOutcome, setSelectedOutcome] = useState<string | null>(null);
+  const [objectiveFilter, setObjectiveFilter] = useState<"achieved" | "not_achieved" | null>(null);
   const tableRef = useRef<HTMLDivElement>(null);
 
   function selectOutcome(name: string) {
     setSelectedOutcome(prev => prev === name ? null : name);
+    setObjectiveFilter(null);
+    setTableSearch("");
+    setTimeout(() => tableRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }), 50);
+  }
+
+  function selectObjective(filter: "achieved" | "not_achieved") {
+    setObjectiveFilter(prev => prev === filter ? null : filter);
+    setSelectedOutcome(null);
     setTableSearch("");
     setTimeout(() => tableRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }), 50);
   }
@@ -264,6 +275,11 @@ export default function ProjectDashboard({ project }: Props) {
     if (selectedOutcome) {
       sorted = sorted.filter((r: any) => (r.callOutcome || "unknown") === selectedOutcome);
     }
+    if (objectiveFilter === "achieved") {
+      sorted = sorted.filter((r: any) => dashData?.achievedRunIds?.includes(r.id));
+    } else if (objectiveFilter === "not_achieved") {
+      sorted = sorted.filter((r: any) => dashData?.notAchievedRunIds?.includes(r.id));
+    }
     if (!tableSearch.trim()) return sorted;
     const q = tableSearch.toLowerCase();
     return sorted.filter((r: any) => {
@@ -277,7 +293,7 @@ export default function ProjectDashboard({ project }: Props) {
         outcomeColumns.some((k) => String((r.outcomeResult || {})[k] || "").toLowerCase().includes(q))
       );
     });
-  }, [project.runs, tableSearch, outcomeColumns, selectedOutcome]);
+  }, [project.runs, tableSearch, outcomeColumns, selectedOutcome, objectiveFilter, dashData]);
 
   function exportCsv() {
     const headers = ["Conv ID", "Date", "Call Outcome", "Score", "Duration", ...outcomeColumns];
@@ -327,18 +343,68 @@ export default function ProjectDashboard({ project }: Props) {
             tip: "Weighted average evaluation score across all completed calls. 70%+ is passing. Combines structural flow (30%), per-node LLM scoring (50%), and overall call quality (20%)." },
           { label: "Pass Rate", value: passRate != null ? `${passRate}%` : "—", color: "#17B26A",
             tip: "Percentage of completed calls that scored 70% or above. A call passes when the agent handled the conversation correctly end-to-end." },
-          { label: "Objective Achieved", value: dashData?.objectiveRate != null ? `${Math.round(dashData.objectiveRate * 100)}%` : "—", color: T.text,
+          { label: "Objective Achieved", value: null, color: T.text,
             tip: "Percentage of calls where the main call objective was met (e.g., appointment booked, request resolved). Out-of-scope calls handled with a correct transfer are counted as objective achieved." },
           { label: "Avg Duration", value: avgDuration ?? "—", color: T.text,
             tip: "Average call duration across completed calls. Unusually long calls may indicate the agent got stuck or the user was unresponsive." },
-        ] as const).map(({ label, value, color, tip }) => (
+        ] as const).map(({ label, value, color, tip }) => {
+          if (label === "Objective Achieved") {
+            const achPct = dashData?.objectiveRate != null ? Math.round(dashData.objectiveRate * 100) : null;
+            const notAchCount = dashData ? dashData.notAchievedRunIds.length : null;
+            return (
+              <div key={label} style={CARD_STYLE}>
+                <div style={{ ...SECTION_LABEL_STYLE, display: "flex", alignItems: "center", marginBottom: 8 }}>
+                  {label}<InfoTip text={tip} />
+                </div>
+                {achPct == null ? (
+                  <div style={{ fontSize: 28, fontWeight: 700, color: T.text }}>—</div>
+                ) : (
+                  <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                    <button
+                      onClick={() => selectObjective("achieved")}
+                      title="View calls where objective was met"
+                      style={{
+                        background: objectiveFilter === "achieved" ? "#17B26A" : "#17B26A18",
+                        color: objectiveFilter === "achieved" ? "#fff" : "#17B26A",
+                        border: "none", borderRadius: 7, padding: "4px 10px",
+                        cursor: "pointer", fontWeight: 700, fontSize: 22,
+                      }}
+                    >
+                      {achPct}%
+                    </button>
+                    <button
+                      onClick={() => selectObjective("not_achieved")}
+                      title="View calls where objective was NOT met"
+                      style={{
+                        background: objectiveFilter === "not_achieved" ? "#ef4444" : "#ef444418",
+                        color: objectiveFilter === "not_achieved" ? "#fff" : "#ef4444",
+                        border: "none", borderRadius: 7, padding: "4px 10px",
+                        cursor: "pointer", fontWeight: 700, fontSize: 22,
+                      }}
+                    >
+                      {notAchCount != null ? `${100 - achPct}%` : "—"}
+                    </button>
+                  </div>
+                )}
+                <div style={{ fontSize: 10, color: T.textMuted, marginTop: 4 }}>
+                  {objectiveFilter ? (
+                    <span style={{ color: T.primary, cursor: "pointer" }} onClick={() => setObjectiveFilter(null)}>✕ Clear filter</span>
+                  ) : (
+                    <span style={{ color: T.textMuted }}>green = met · red = not met</span>
+                  )}
+                </div>
+              </div>
+            );
+          }
+          return (
           <div key={label} style={CARD_STYLE}>
             <div style={{ ...SECTION_LABEL_STYLE, display: "flex", alignItems: "center", marginBottom: 8 }}>
               {label}<InfoTip text={tip} />
             </div>
             <div style={{ fontSize: 28, fontWeight: 700, color }}>{value}</div>
           </div>
-        ))}
+          );
+        })}
       </div>
 
       {/* Loading indicator */}
@@ -709,6 +775,19 @@ export default function ProjectDashboard({ project }: Props) {
               }}>
                 {selectedOutcome}
                 <button onClick={() => setSelectedOutcome(null)} style={{ background: "none", border: "none", cursor: "pointer", padding: 0, fontSize: 12, color: "inherit", lineHeight: 1 }}>×</button>
+              </span>
+            )}
+            {objectiveFilter && (
+              <span style={{
+                display: "inline-flex", alignItems: "center", gap: 5,
+                fontSize: 11, fontWeight: 600,
+                color: objectiveFilter === "achieved" ? "#17B26A" : "#ef4444",
+                background: objectiveFilter === "achieved" ? "#17B26A18" : "#ef444418",
+                border: `1px solid ${objectiveFilter === "achieved" ? "#17B26A44" : "#ef444444"}`,
+                borderRadius: 20, padding: "2px 10px",
+              }}>
+                Objective {objectiveFilter === "achieved" ? "met" : "not met"}
+                <button onClick={() => setObjectiveFilter(null)} style={{ background: "none", border: "none", cursor: "pointer", padding: 0, fontSize: 12, color: "inherit", lineHeight: 1 }}>×</button>
               </span>
             )}
           </div>

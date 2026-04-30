@@ -220,6 +220,8 @@ router.get("/:id/dashboard", async (req: AuthRequest, res) => {
     const issueCounts: Record<string, { severity: string; count: number; runIds: string[] }> = {};
     let objectiveCount = 0;
     let objectiveTotal = 0;
+    const achievedRunIds: string[] = [];
+    const notAchievedRunIds: string[] = [];
 
     for (const run of runs) {
       const layered = run.evalResults.find((er: any) => er.criterion?.type === "LAYERED_EVALUATION");
@@ -274,6 +276,9 @@ router.get("/:id/dashboard", async (req: AuthRequest, res) => {
         objectiveTotal++;
         if (detail.objectiveAchieved === true || detail.objectiveAchieved === 1) {
           objectiveCount++;
+          achievedRunIds.push(run.id);
+        } else {
+          notAchievedRunIds.push(run.id);
         }
       }
     }
@@ -298,6 +303,8 @@ router.get("/:id/dashboard", async (req: AuthRequest, res) => {
       totalRuns: runs.length,
       sentiment: sentimentCounts,
       objectiveRate: objectiveTotal > 0 ? Math.round((objectiveCount / objectiveTotal) * 100) / 100 : null,
+      achievedRunIds,
+      notAchievedRunIds,
       nodePerformance,
       topIssues,
     });
