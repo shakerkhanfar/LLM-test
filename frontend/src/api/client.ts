@@ -318,3 +318,12 @@ export function applyPromptFix(projectId: string, nodeId: string, prompt: string
     { method: "POST", body: JSON.stringify({ nodeId, prompt }) }
   );
 }
+
+export async function getProjectDashboard(projectId: string) {
+  const token = localStorage.getItem("hamsa_eval_token");
+  const res = await fetch(`/api/projects/${projectId}/dashboard`, {
+    headers: token ? { Authorization: `Bearer ${token}` } : {},
+  });
+  if (!res.ok) throw new Error(`Dashboard fetch failed: ${res.status}`);
+  return res.json();
+}

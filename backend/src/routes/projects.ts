@@ -186,6 +186,118 @@ router.get("/:id", async (req: AuthRequest, res) => {
   }
 });
 
+// Dashboard aggregation endpoint
+router.get("/:id/dashboard", async (req: AuthRequest, res) => {
+  try {
+    const project = await prisma.project.findUnique({
+      where: { id: req.params.id },
+      select: { userId: true },
+    });
+    if (!project) return res.status(404).json({ error: "Project not found" });
+    if (project.userId !== null && project.userId !== req.userId) {
+      return res.status(403).json({ error: "Access denied" });
+    }
+
+    const runs = await prisma.run.findMany({
+      where: { projectId: req.params.id, status: "COMPLETE" },
+      orderBy: { callDate: "asc" },
+      select: {
+        id: true,
+        overallScore: true,
+        callDate: true,
+        callDuration: true,
+        callOutcome: true,
+        conversationId: true,
+        evalResults: {
+          include: { criterion: true },
+        },
+      },
+    });
+
+    const sentimentCounts: Record<string, number> = { positive: 0, neutral: 0, negative: 0, unknown: 0 };
+    const nodeScores: Record<string, number[]> = {};
+    const issueCounts: Record<string, { severity: string; count: number }> = {};
+    let objectiveCount = 0;
+    let objectiveTotal = 0;
+
+    for (const run of runs) {
+      const layered = run.evalResults.find((er: any) => er.criterion?.type === "LAYERED_EVALUATION");
+      if (!layered || !layered.detail) continue;
+
+      let detail: any;
+      try {
+        detail = JSON.parse(layered.detail as string);
+      } catch {
+        continue;
+      }
+
+      // Sentiment
+      const sentiment: string = (detail.callerSentiment || detail.sentiment || "unknown").toLowerCase();
+      if (sentiment in sentimentCounts) {
+        sentimentCounts[sentiment]++;
+      } else {
+        sentimentCounts.unknown++;
+      }
+
+      // Node scores
+      if (Array.isArray(detail.perNode)) {
+        for (const node of detail.perNode) {
+          const label: string = node.nodeLabel || node.label || node.node || "Unknown";
+          const score: number | undefined = node.overallNodeScore ?? node.score;
+          if (score != null) {
+            if (!nodeScores[label]) nodeScores[label] = [];
+            nodeScores[label].push(score);
+          }
+        }
+      }
+
+      // Issues
+      if (Array.isArray(detail.criticalIssues)) {
+        for (const issue of detail.criticalIssues) {
+          const text: string = typeof issue === "string" ? issue : (issue.text || String(issue));
+          const severity: string = (typeof issue === "object" && issue.severity) ? issue.severity : "critical";
+          if (!issueCounts[text]) {
+            issueCounts[text] = { severity, count: 0 };
+          }
+          issueCounts[text].count++;
+        }
+      }
+
+      // Objective
+      if (detail.objectiveAchieved != null) {
+        objectiveTotal++;
+        if (detail.objectiveAchieved === true || detail.objectiveAchieved === 1) {
+          objectiveCount++;
+        }
+      }
+    }
+
+    const nodePerformance = Object.entries(nodeScores)
+      .map(([label, scores]) => ({
+        label,
+        avg: Math.round((scores.reduce((a, b) => a + b, 0) / scores.length) * 10) / 10,
+        count: scores.length,
+      }))
+      .sort((a, b) => b.avg - a.avg);
+
+    const topIssues = Object.entries(issueCounts)
+      .map(([text, { severity, count }]) => ({ text, severity, count }))
+      .sort((a, b) => b.count - a.count)
+      .slice(0, 8);
+
+    res.json({
+      totalRuns: runs.length,
+      sentiment: sentimentCounts,
+      objectiveRate: objectiveTotal > 0 ? Math.round((objectiveCount / objectiveTotal) * 100) / 100 : null,
+      nodePerformance,
+      topIssues,
+    });
+  } catch (err) {
+    console.error("[Projects] GET /:id/dashboard error:", (err as Error).message);
+    res.status(500).json({ error: "Failed to fetch dashboard" });
+  }
+});
+
 // Create project
 router.post("/", async (req: AuthRequest, res) => {
   const { name, agentId, hamsaApiKey, description, agentStructure, criteria, projectType, historyStartDate, historyEndDate } = req.body;

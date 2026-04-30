@@ -8,6 +8,7 @@ import {
   getEvalContext, saveEvalContext, runPromptAudit, applyPromptFix,
 } from "../api/client";
 import CallAgent from "../components/CallAgent";
+import ProjectDashboard from "../components/ProjectDashboard";
 import T from "../theme";
 
 const AVAILABLE_MODELS = [
@@ -89,7 +90,7 @@ export default function ProjectDetail() {
   const [modelInput, setModelInput] = useState("openai/gpt-4.1");
   const [showUpload, setShowUpload] = useState<string | null>(null);
   const [callingRunId, setCallingRunId] = useState<string | null>(null);
-  const [activeTab, setActiveTab] = useState<"evaluation" | "outcomes">("evaluation");
+  const [activeTab, setActiveTab] = useState<"dashboard" | "evaluation" | "outcomes">("dashboard");
   const [searchQuery, setSearchQuery] = useState("");
   const [channelFilter, setChannelFilter] = useState<string | null>(null);
 
@@ -1006,7 +1007,7 @@ export default function ProjectDetail() {
         </div>
         {(isHistory || isWebhook) && (
           <div style={{ display: "flex", gap: 0, borderRadius: 6, overflow: "hidden", border: `1px solid ${T.border}` }}>
-            {(["evaluation", "outcomes"] as const).map((tab) => (
+            {(["dashboard", "evaluation", "outcomes"] as const).map((tab) => (
               <button
                 key={tab}
                 onClick={() => setActiveTab(tab)}
@@ -1020,12 +1021,15 @@ export default function ProjectDetail() {
                   fontWeight: activeTab === tab ? 600 : 400,
                 }}
               >
-                {tab === "evaluation" ? "Evaluation" : `Outcomes${outcomeColumns.length ? ` (${outcomeColumns.length})` : ""}`}
+                {tab === "dashboard" ? "Dashboard" : tab === "evaluation" ? "Evaluation" : `Outcomes${outcomeColumns.length ? ` (${outcomeColumns.length})` : ""}`}
               </button>
             ))}
           </div>
         )}
       </div>
+      {activeTab === "dashboard" && (isHistory || isWebhook) ? (
+        <ProjectDashboard project={project} />
+      ) : (
       <table style={{ width: "100%", borderCollapse: "collapse" }}>
         <thead>
           <tr style={{ borderBottom: `1px solid ${T.border}`, textAlign: "left" }}>
@@ -1216,7 +1220,8 @@ export default function ProjectDetail() {
           ))}
         </tbody>
       </table>
-      {(searchQuery.trim() || channelFilter) && project.runs?.length > 0 && (() => {
+      )}
+      {activeTab !== "dashboard" && (searchQuery.trim() || channelFilter) && project.runs?.length > 0 && (() => {
         const filtered = (project.runs ?? []).filter((run: any) => {
           if (channelFilter) {
             const ch = getChannel(run.webhookData);
