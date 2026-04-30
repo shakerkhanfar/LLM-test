@@ -80,6 +80,42 @@ function SeverityBadge({ severity }: { severity: string }) {
   );
 }
 
+function InfoTip({ text }: { text: string }) {
+  const [show, setShow] = useState(false);
+  return (
+    <span style={{ position: "relative", display: "inline-flex", alignItems: "center" }}>
+      <button
+        onMouseEnter={() => setShow(true)}
+        onMouseLeave={() => setShow(false)}
+        onFocus={() => setShow(true)}
+        onBlur={() => setShow(false)}
+        style={{
+          background: "none", border: "none", cursor: "pointer", padding: "0 0 0 4px",
+          fontSize: 11, color: T.textMuted, lineHeight: 1, display: "inline-flex", alignItems: "center",
+        }}
+        aria-label="More information"
+      >
+        ⓘ
+      </button>
+      {show && (
+        <span style={{
+          position: "absolute", bottom: "calc(100% + 6px)", left: "50%", transform: "translateX(-50%)",
+          background: "#1f2937", color: "#f9fafb", fontSize: 11, lineHeight: 1.5,
+          borderRadius: 6, padding: "6px 10px", whiteSpace: "normal", width: 220,
+          boxShadow: "0 4px 12px rgba(0,0,0,0.18)", zIndex: 100, pointerEvents: "none",
+        }}>
+          {text}
+          <span style={{
+            position: "absolute", top: "100%", left: "50%", transform: "translateX(-50%)",
+            borderLeft: "5px solid transparent", borderRight: "5px solid transparent",
+            borderTop: "5px solid #1f2937", width: 0, height: 0,
+          }} />
+        </span>
+      )}
+    </span>
+  );
+}
+
 function ScorePill({ score }: { score: number }) {
   const color = score >= 7 ? "#17B26A" : score >= 5 ? "#f59e0b" : "#ef4444";
   return (
@@ -284,15 +320,22 @@ export default function ProjectDashboard({ project }: Props) {
     <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
       {/* KPI Row */}
       <div style={{ display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: 12 }}>
-        {[
-          { label: "Total Runs", value: totalRuns, color: T.text },
-          { label: "Avg Score", value: avgScore != null ? `${avgScore}%` : "—", color: "#17B26A" },
-          { label: "Pass Rate", value: passRate != null ? `${passRate}%` : "—", color: "#17B26A" },
-          { label: "Objective Achieved", value: dashData?.objectiveRate != null ? `${Math.round(dashData.objectiveRate * 100)}%` : "—", color: T.text },
-          { label: "Avg Duration", value: avgDuration ?? "—", color: T.text },
-        ].map(({ label, value, color }) => (
+        {([
+          { label: "Total Runs", value: totalRuns, color: T.text,
+            tip: "Total number of evaluated calls in this project, including all statuses." },
+          { label: "Avg Score", value: avgScore != null ? `${avgScore}%` : "—", color: "#17B26A",
+            tip: "Weighted average evaluation score across all completed calls. 70%+ is passing. Combines structural flow (30%), per-node LLM scoring (50%), and overall call quality (20%)." },
+          { label: "Pass Rate", value: passRate != null ? `${passRate}%` : "—", color: "#17B26A",
+            tip: "Percentage of completed calls that scored 70% or above. A call passes when the agent handled the conversation correctly end-to-end." },
+          { label: "Objective Achieved", value: dashData?.objectiveRate != null ? `${Math.round(dashData.objectiveRate * 100)}%` : "—", color: T.text,
+            tip: "Percentage of calls where the main call objective was met (e.g., appointment booked, request resolved). Out-of-scope calls handled with a correct transfer are counted as objective achieved." },
+          { label: "Avg Duration", value: avgDuration ?? "—", color: T.text,
+            tip: "Average call duration across completed calls. Unusually long calls may indicate the agent got stuck or the user was unresponsive." },
+        ] as const).map(({ label, value, color, tip }) => (
           <div key={label} style={CARD_STYLE}>
-            <div style={SECTION_LABEL_STYLE}>{label}</div>
+            <div style={{ ...SECTION_LABEL_STYLE, display: "flex", alignItems: "center", marginBottom: 8 }}>
+              {label}<InfoTip text={tip} />
+            </div>
             <div style={{ fontSize: 28, fontWeight: 700, color }}>{value}</div>
           </div>
         ))}
@@ -314,7 +357,7 @@ export default function ProjectDashboard({ project }: Props) {
       <div style={{ display: "grid", gridTemplateColumns: "1.6fr 1fr 1fr", gap: 12 }}>
         {/* Score Over Time */}
         <div style={CARD_STYLE}>
-          <div style={SECTION_LABEL_STYLE}>Score Over Time</div>
+          <div style={{ ...SECTION_LABEL_STYLE, display: "flex", alignItems: "center" }}>Score Over Time<InfoTip text="Each dot is one call's overall score (0–100%). The green line is a 7-call rolling average, smoothing out individual outliers to show the trend." /></div>
           {trendData.length < 2 ? (
             <div style={{ color: T.textMuted, fontSize: 12 }}>Not enough data</div>
           ) : (
@@ -488,7 +531,7 @@ export default function ProjectDashboard({ project }: Props) {
       <div style={{ display: "grid", gridTemplateColumns: "1.1fr 0.9fr 1fr", gap: 12 }}>
         {/* Most Common Issues */}
         <div style={CARD_STYLE}>
-          <div style={SECTION_LABEL_STYLE}>Most Common Issues</div>
+          <div style={{ ...SECTION_LABEL_STYLE, display: "flex", alignItems: "center" }}>Most Common Issues<InfoTip text="Issues identified by the LLM judge across all calls, deduplicated and counted. Click the number to see which calls had each issue." /></div>
           {!dashData ? (
             <div style={{ color: T.textMuted, fontSize: 12 }}>Loading...</div>
           ) : dashData.topIssues.length === 0 ? (
@@ -577,7 +620,7 @@ export default function ProjectDashboard({ project }: Props) {
 
         {/* Score Distribution */}
         <div style={CARD_STYLE}>
-          <div style={SECTION_LABEL_STYLE}>Score Distribution</div>
+          <div style={{ ...SECTION_LABEL_STYLE, display: "flex", alignItems: "center" }}>Score Distribution<InfoTip text="How calls are spread across score buckets. Green = passed (≥70%), amber = warning (50–69%), red = failed (<50%). A healthy agent has most calls in the 70–100% range." /></div>
           {completeRuns.length < 2 ? (
             <div style={{ color: T.textMuted, fontSize: 12 }}>Not enough data</div>
           ) : (
@@ -618,7 +661,7 @@ export default function ProjectDashboard({ project }: Props) {
 
         {/* Node Performance */}
         <div style={CARD_STYLE}>
-          <div style={SECTION_LABEL_STYLE}>Node Performance</div>
+          <div style={{ ...SECTION_LABEL_STYLE, display: "flex", alignItems: "center" }}>Node Performance<InfoTip text="Average LLM score (0–10) per workflow node, across all evaluated calls. Low-scoring nodes are where the agent most often fails to follow instructions or gets stuck. ×N = number of times the node was visited." /></div>
           {!dashData ? (
             <div style={{ color: T.textMuted, fontSize: 12 }}>Loading...</div>
           ) : dashData.nodePerformance.length === 0 ? (
