@@ -201,6 +201,7 @@ router.get("/:id/dashboard", async (req: AuthRequest, res) => {
     const runs = await prisma.run.findMany({
       where: { projectId: req.params.id, status: "COMPLETE" },
       orderBy: { callDate: "asc" },
+      take: 1000,   // cap at 1000 complete runs to avoid memory/timeout on large projects
       select: {
         id: true,
         overallScore: true,
@@ -226,8 +227,11 @@ router.get("/:id/dashboard", async (req: AuthRequest, res) => {
 
       let detail: any;
       try {
-        detail = JSON.parse(layered.detail as string);
-      } catch {
+        detail = typeof layered.detail === "string"
+          ? JSON.parse(layered.detail)
+          : layered.detail;   // Prisma may already parse JSON columns
+      } catch (e) {
+        console.warn(`[Dashboard] Could not parse eval detail for run ${run.id}: ${(e as Error).message}`);
         continue;
       }
 
@@ -254,7 +258,8 @@ router.get("/:id/dashboard", async (req: AuthRequest, res) => {
       // Issues
       if (Array.isArray(detail.criticalIssues)) {
         for (const issue of detail.criticalIssues) {
-          const text: string = typeof issue === "string" ? issue : (issue.text || String(issue));
+          const rawText: string = typeof issue === "string" ? issue : (issue.text || String(issue));
+          const text = rawText.trim().toLowerCase();  // normalize for dedup
           const severity: string = (typeof issue === "object" && issue.severity) ? issue.severity : "critical";
           if (!issueCounts[text]) {
             issueCounts[text] = { severity, count: 0 };
@@ -281,7 +286,10 @@ router.get("/:id/dashboard", async (req: AuthRequest, res) => {
       .sort((a, b) => b.avg - a.avg);
 
     const topIssues = Object.entries(issueCounts)
-      .map(([text, { severity, count }]) => ({ text, severity, count }))
+      .map(([text, { severity, count }]) => ({
+        text: text.charAt(0).toUpperCase() + text.slice(1),  // restore sentence case
+        severity, count,
+      }))
       .sort((a, b) => b.count - a.count)
       .slice(0, 8);
 

@@ -104,7 +104,7 @@ export default function ProjectDashboard({ project }: Props) {
   }, [project.id]);
 
   const completeRuns = useMemo(
-    () => (project.runs as any[]).filter((r: any) => r.status === "COMPLETE"),
+    () => ((project.runs ?? []) as any[]).filter((r: any) => r.status === "COMPLETE"),
     [project.runs]
   );
 
@@ -179,14 +179,16 @@ export default function ProjectDashboard({ project }: Props) {
     return bins;
   }, [completeRuns]);
 
-  const passCount = completeRuns.filter((r: any) => (r.overallScore ?? 0) >= 0.7).length;
-  const warnCount = completeRuns.filter((r: any) => (r.overallScore ?? 0) >= 0.5 && (r.overallScore ?? 0) < 0.7).length;
-  const failCount = completeRuns.filter((r: any) => (r.overallScore ?? 0) < 0.5).length;
+  // Only count runs that actually have a score (COMPLETE runs without score are still in-progress evals)
+  const scoredRuns = completeRuns.filter((r: any) => r.overallScore != null);
+  const passCount = scoredRuns.filter((r: any) => r.overallScore >= 0.7).length;
+  const warnCount = scoredRuns.filter((r: any) => r.overallScore >= 0.5 && r.overallScore < 0.7).length;
+  const failCount = scoredRuns.filter((r: any) => r.overallScore < 0.5).length;
 
   // Call outcomes table
   const outcomeColumns = useMemo(() => {
     const keys = new Set<string>();
-    for (const r of (project.runs as any[])) {
+    for (const r of ((project.runs ?? []) as any[])) {
       if (r.outcomeResult && typeof r.outcomeResult === "object") {
         for (const k of Object.keys(r.outcomeResult)) {
           if (!OUTCOME_SKIP_KEYS.includes(k)) keys.add(k);
@@ -197,7 +199,7 @@ export default function ProjectDashboard({ project }: Props) {
   }, [project.runs]);
 
   const tableRuns = useMemo(() => {
-    const sorted = [...(project.runs as any[])].sort(
+    const sorted = [...((project.runs ?? []) as any[])].sort(
       (a, b) => new Date(b.callDate || b.createdAt).getTime() - new Date(a.callDate || a.createdAt).getTime()
     );
     if (!tableSearch.trim()) return sorted;
@@ -225,7 +227,12 @@ export default function ProjectDashboard({ project }: Props) {
         r.overallScore != null ? Math.round(r.overallScore * 100) + "%" : "",
         r.callDuration ? fmtDuration(r.callDuration) : "",
       ];
-      const dyn = outcomeColumns.map((k) => String((r.outcomeResult || {})[k] ?? ""));
+      const dyn = outcomeColumns.map((k) => {
+        const val = (r.outcomeResult || {})[k];
+        if (val == null) return "";
+        if (typeof val === "object") return JSON.stringify(val);
+        return String(val);
+      });
       return [...base, ...dyn];
     });
     const esc = (v: string) => /[",\n\r]/.test(v) ? `"${v.replace(/"/g, '""')}"` : v;

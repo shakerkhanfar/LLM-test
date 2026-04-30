@@ -99,6 +99,7 @@ model Run {
   @@index([conversationId])
   @@index([status])
   @@index([projectId, source])
+  @@index([projectId, status])
   @@unique([projectId, hamsaCallId])
 }
 
