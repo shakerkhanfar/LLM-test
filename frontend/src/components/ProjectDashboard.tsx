@@ -298,14 +298,14 @@ export default function ProjectDashboard({ project }: Props) {
                 <YAxis domain={[0, 100]} tick={{ fontSize: 10, fill: T.textMuted }} tickLine={false} axisLine={false} />
                 <Tooltip
                   contentStyle={{ background: T.card, border: `1px solid ${T.border}`, borderRadius: 6, fontSize: 11 }}
-                  formatter={(value: number | null, name: string) => {
-                    if (value == null) return [null, null];
+                  formatter={(value: any, name: any) => {
+                    if (value == null) return ["—", name];
                     if (name === "score") return [`${value}%`, "Score"];
                     if (name === "rolling") return [`${value}%`, "7-run avg"];
-                    return [value, name];
+                    return [`${value}`, name];
                   }}
-                  labelFormatter={(label: number) => {
-                    const d = trendData[label - 1];
+                  labelFormatter={(label: any) => {
+                    const d = trendData[(label as number) - 1];
                     return d?.date || `Run ${label}`;
                   }}
                 />
@@ -448,7 +448,7 @@ export default function ProjectDashboard({ project }: Props) {
                   <YAxis tick={{ fontSize: 9, fill: T.textMuted }} tickLine={false} axisLine={false} />
                   <Tooltip
                     contentStyle={{ background: T.card, border: `1px solid ${T.border}`, borderRadius: 6, fontSize: 11 }}
-                    formatter={(value: number) => [value, "Runs"]}
+                    formatter={(value: any) => [value, "Runs"]}
                   />
                   <Bar dataKey="count" radius={[2, 2, 0, 0]}>
                     {scoreDistData.map((entry, idx) => (
