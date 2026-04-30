@@ -1,4 +1,4 @@
-import { useEffect, useState, useMemo } from "react";
+import { useEffect, useState, useMemo, useRef } from "react";
 import {
   LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer,
   PieChart, Pie, Cell, BarChart, Bar,
@@ -98,6 +98,14 @@ export default function ProjectDashboard({ project }: Props) {
   const [tableSearch, setTableSearch] = useState("");
   const [expandedIssue, setExpandedIssue] = useState<number | null>(null);
   const [copiedId, setCopiedId] = useState<string | null>(null);
+  const [selectedOutcome, setSelectedOutcome] = useState<string | null>(null);
+  const tableRef = useRef<HTMLDivElement>(null);
+
+  function selectOutcome(name: string) {
+    setSelectedOutcome(prev => prev === name ? null : name);
+    setTableSearch("");
+    setTimeout(() => tableRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }), 50);
+  }
 
   function copyToClipboard(text: string, key: string) {
     navigator.clipboard.writeText(text).then(() => {
@@ -214,9 +222,12 @@ export default function ProjectDashboard({ project }: Props) {
   }, [project.runs]);
 
   const tableRuns = useMemo(() => {
-    const sorted = [...((project.runs ?? []) as any[])].sort(
+    let sorted = [...((project.runs ?? []) as any[])].sort(
       (a, b) => new Date(b.callDate || b.createdAt).getTime() - new Date(a.callDate || a.createdAt).getTime()
     );
+    if (selectedOutcome) {
+      sorted = sorted.filter((r: any) => (r.callOutcome || "unknown") === selectedOutcome);
+    }
     if (!tableSearch.trim()) return sorted;
     const q = tableSearch.toLowerCase();
     return sorted.filter((r: any) => {
@@ -230,7 +241,7 @@ export default function ProjectDashboard({ project }: Props) {
         outcomeColumns.some((k) => String((r.outcomeResult || {})[k] || "").toLowerCase().includes(q))
       );
     });
-  }, [project.runs, tableSearch, outcomeColumns]);
+  }, [project.runs, tableSearch, outcomeColumns, selectedOutcome]);
 
   function exportCsv() {
     const headers = ["Conv ID", "Date", "Call Outcome", "Score", "Duration", ...outcomeColumns];
@@ -364,25 +375,50 @@ export default function ProjectDashboard({ project }: Props) {
             <div style={{ color: T.textMuted, fontSize: 12 }}>Not enough data</div>
           ) : (
             <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-              <PieChart width={110} height={110}>
-                <Pie data={outcomeCounts} cx={50} cy={50} innerRadius={35} outerRadius={55} dataKey="value" paddingAngle={2}>
-                  {outcomeCounts.map((entry, idx) => (
-                    <Cell key={idx} fill={getOutcomeColor(entry.name)} />
-                  ))}
+              <PieChart width={110} height={110} style={{ cursor: "pointer" }}>
+                <Pie
+                  data={outcomeCounts}
+                  cx={50} cy={50}
+                  innerRadius={35} outerRadius={55}
+                  dataKey="value"
+                  paddingAngle={2}
+                  onClick={(data: any) => selectOutcome(data.name)}
+                >
+                  {outcomeCounts.map((entry, idx) => {
+                    const isSelected = selectedOutcome === entry.name;
+                    const isDimmed = selectedOutcome && !isSelected;
+                    return (
+                      <Cell
+                        key={idx}
+                        fill={getOutcomeColor(entry.name)}
+                        opacity={isDimmed ? 0.3 : 1}
+                        stroke={isSelected ? "#111827" : "none"}
+                        strokeWidth={isSelected ? 2 : 0}
+                      />
+                    );
+                  })}
                 </Pie>
               </PieChart>
               <div style={{ display: "flex", flexDirection: "column", gap: 4, flex: 1, minWidth: 0 }}>
-                {outcomeCounts.map((entry, idx) => (
-                  <div key={idx} style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 11 }}>
-                    <span style={{ width: 8, height: 8, borderRadius: "50%", background: getOutcomeColor(entry.name), flexShrink: 0 }} />
-                    <span style={{ color: T.textSecondary, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1 }}>
-                      {entry.name}
-                    </span>
-                    <span style={{ color: T.text, fontWeight: 600, flexShrink: 0 }}>
-                      {Math.round((entry.value / totalRuns) * 100)}%
-                    </span>
-                  </div>
-                ))}
+                {outcomeCounts.map((entry, idx) => {
+                  const isSelected = selectedOutcome === entry.name;
+                  const isDimmed = selectedOutcome && !isSelected;
+                  return (
+                    <div
+                      key={idx}
+                      onClick={() => selectOutcome(entry.name)}
+                      style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 11, cursor: "pointer", opacity: isDimmed ? 0.4 : 1, borderRadius: 4, padding: "1px 3px", background: isSelected ? getOutcomeColor(entry.name) + "18" : "none" }}
+                    >
+                      <span style={{ width: 8, height: 8, borderRadius: "50%", background: getOutcomeColor(entry.name), flexShrink: 0 }} />
+                      <span style={{ color: isSelected ? T.text : T.textSecondary, fontWeight: isSelected ? 600 : 400, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1 }}>
+                        {entry.name}
+                      </span>
+                      <span style={{ color: T.text, fontWeight: 600, flexShrink: 0 }}>
+                        {Math.round((entry.value / totalRuns) * 100)}%
+                      </span>
+                    </div>
+                  );
+                })}
               </div>
             </div>
           )}
@@ -615,9 +651,24 @@ export default function ProjectDashboard({ project }: Props) {
       </div>
 
       {/* Call Outcomes Table */}
-      <div style={CARD_STYLE}>
+      <div ref={tableRef} style={{ ...CARD_STYLE, scrollMarginTop: 16 }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12, flexWrap: "wrap", gap: 8 }}>
-          <div style={SECTION_LABEL_STYLE}>Call Outcomes</div>
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <div style={SECTION_LABEL_STYLE}>Call Outcomes</div>
+            {selectedOutcome && (
+              <span style={{
+                display: "inline-flex", alignItems: "center", gap: 5,
+                fontSize: 11, fontWeight: 600,
+                color: getOutcomeColor(selectedOutcome),
+                background: getOutcomeColor(selectedOutcome) + "18",
+                border: `1px solid ${getOutcomeColor(selectedOutcome)}44`,
+                borderRadius: 20, padding: "2px 10px",
+              }}>
+                {selectedOutcome}
+                <button onClick={() => setSelectedOutcome(null)} style={{ background: "none", border: "none", cursor: "pointer", padding: 0, fontSize: 12, color: "inherit", lineHeight: 1 }}>×</button>
+              </span>
+            )}
+          </div>
           <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
             <input
               type="text"
