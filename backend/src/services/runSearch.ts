@@ -36,6 +36,7 @@ interface SearchFilters {
   callStatuses?: string[];
   keywords?: string[];
   evalIssueTypes?: string[];
+  actionMismatch?: boolean;   // true = look for calls where agent claimed an action but outcome vars contradict it
   dateFrom?: string;
   dateTo?: string;
   limit?: number;
@@ -133,10 +134,12 @@ Available filter fields:
 - callStatuses: array like "COMPLETED", "FAILED", "NO_ANSWER", "BUSY", "VOICEMAIL"
 - keywords: array of words/phrases to search for in transcripts and evaluation details (use the actual words, in the language they'd appear in the transcript — Arabic or English)
 - evalIssueTypes: array of evaluation issue types: "hallucination", "stuck", "off_topic", "wrong_transition", "dead_end", "loop", "backward_jump", "skipped_node", "instruction_violated"
+- actionMismatch: set to true when the user wants calls where the agent CLAIMED to perform an action (e.g., "I've booked", "I've cancelled", "I've confirmed") but the outcome variables show the action wasn't actually completed (e.g., objective_met=no, booking_confirmed=false)
 - dateFrom/dateTo: ISO date strings like "2026-04-01"
 - limit: max results (default 20, max 50)
 
-Example: {"keywords": ["hospital location"], "evalIssueTypes": ["hallucination"], "limit": 20}`,
+Example: {"keywords": ["hospital location"], "evalIssueTypes": ["hallucination"], "limit": 20}
+Example actionMismatch: {"actionMismatch": true, "limit": 30}`,
       },
       { role: "user", content: sanitizedQuestion },
     ],
@@ -294,6 +297,16 @@ Example: {"keywords": ["hospital location"], "evalIssueTypes": ["hallucination"]
     const outcome = run.callOutcome || "unknown";
     const score = run.overallScore != null ? `${(run.overallScore * 100).toFixed(0)}%` : "N/A";
 
+    // Format outcomeResult variables (excluding noisy/redundant keys)
+    const SKIP_OUTCOME_KEYS = new Set(["summary", "language", "call_outcome", "default_params"]);
+    const outcomeData = run.outcomeResult as Record<string, any> | null;
+    const outcomeVars = outcomeData
+      ? Object.entries(outcomeData)
+          .filter(([k]) => !SKIP_OUTCOME_KEYS.has(k))
+          .map(([k, v]) => `${k}=${typeof v === "object" ? JSON.stringify(v) : v}`)
+          .join(", ")
+      : "";
+
     return {
       id: run.id,
       convId: run.conversationId,
@@ -303,13 +316,14 @@ Example: {"keywords": ["hospital location"], "evalIssueTypes": ["hallucination"]
       score,
       overallScore: run.overallScore,
       transcriptPreview: transcriptText.slice(0, 500),
-      compact: `[${run.id.slice(0, 8)}] date:${run.callDate?.toISOString().split("T")[0] || "?"} outcome:${outcome} score:${score} dur:${run.callDuration || "?"}s\nTranscript: ${transcriptText.slice(0, 500)}\n${layeredSummary ? `Layered Analysis: ${layeredSummary.slice(0, 600)}\n` : ""}Evals: ${evalSummaries.slice(0, 400)}`,
+      compact: `[${run.id.slice(0, 8)}] date:${run.callDate?.toISOString().split("T")[0] || "?"} outcome:${outcome} score:${score} dur:${run.callDuration || "?"}s\n${outcomeVars ? `Outcome variables: ${outcomeVars}\n` : ""}Transcript: ${transcriptText.slice(0, 500)}\n${layeredSummary ? `Layered Analysis: ${layeredSummary.slice(0, 600)}\n` : ""}Evals: ${evalSummaries.slice(0, 400)}`,
     };
   });
 
-  // If we have keywords or evalIssueTypes, use the LLM to rank/filter
+  // If we have keywords, evalIssueTypes, or actionMismatch, use the LLM to rank/filter
   const needsContentSearch = (filters.keywords?.length || 0) > 0
-    || (filters.evalIssueTypes?.length || 0) > 0;
+    || (filters.evalIssueTypes?.length || 0) > 0
+    || filters.actionMismatch === true;
 
   if (!needsContentSearch) {
     const topResults = candidateSummaries.slice(0, filters.limit);
@@ -344,13 +358,20 @@ Example: {"keywords": ["hospital location"], "evalIssueTypes": ["hallucination"]
         role: "system",
         content: `You are an expert analyst for voice AI call evaluations. Analyze the provided calls and identify distinct ISSUES — patterns, bugs, failures, or problems across calls.
 
+Each call includes:
+- outcome: the Hamsa system's recorded call outcome
+- Outcome variables: structured key=value pairs from the system recording what actually happened (e.g. objective_met, booking_confirmed, appointment_id, etc.)
+- Transcript: what the agent and user actually said
+- Layered Analysis: LLM evaluation of the call
+
 For each issue, provide:
-- title: Short issue name (e.g. "Agent stuck on national ID collection", "Out of scope question not handled")
+- title: Short issue name (e.g. "Agent claimed booking but system shows none", "Agent stuck on national ID collection")
 - description: What's happening, based on transcripts, eval results, flow data, and tool calls
 - severity: "critical" | "high" | "medium" | "low"
 - callIndices: 0-based indices of calls exhibiting this issue
 
 Look for:
+- ACTION MISMATCHES: Agent said "I've booked/confirmed/cancelled/registered" (or equivalent in Arabic) in the transcript BUT the outcome variables show the opposite (e.g. objective_met=no, booking_confirmed=false, appointment_id=null). This is a critical hallucination.
 - Where users get stuck or frustrated
 - Agent hallucinations (saying things not in its instructions/knowledge)
 - Going out of scope (discussing topics outside the agent's purpose)
@@ -369,12 +390,12 @@ Rules:
 - Group similar problems into single issues (don't list the same problem per-call)
 - A call can appear in multiple issues
 - Order issues by severity (critical first)
-- Be specific — cite what the agent said or did wrong
+- Be specific — cite what the agent said or did wrong, and what the outcome variables show
 - Max 15 issues`,
       },
       {
         role: "user",
-        content: `Question: ${sanitizedQuestion}\n\nKeywords: ${JSON.stringify(filters.keywords || [])}\nIssue types: ${JSON.stringify(filters.evalIssueTypes || [])}\n\n${llmCandidates.map((c, i) => `--- ${i} ---\n${c.compact}`).join("\n\n")}`,
+        content: `Question: ${sanitizedQuestion}\n\nKeywords: ${JSON.stringify(filters.keywords || [])}\nIssue types: ${JSON.stringify(filters.evalIssueTypes || [])}${filters.actionMismatch ? "\n⚠️ PRIORITY: Look specifically for ACTION MISMATCHES — calls where the agent verbally claimed to complete an action (booked, confirmed, cancelled, registered, etc.) but the outcome variables contradict it." : ""}\n\n${llmCandidates.map((c, i) => `--- ${i} ---\n${c.compact}`).join("\n\n")}`,
       },
     ],
   });
