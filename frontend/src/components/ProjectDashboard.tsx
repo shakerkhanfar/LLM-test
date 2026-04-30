@@ -759,6 +759,97 @@ export default function ProjectDashboard({ project }: Props) {
         </div>
       </div>
 
+      {/* Not-achieved analysis panel */}
+      {objectiveFilter === "not_achieved" && dashData && (() => {
+        const ids = new Set(dashData.notAchievedRunIds);
+        const failedRuns = ((project.runs ?? []) as any[]).filter((r: any) => ids.has(r.id));
+
+        // Outcome breakdown for not-achieved calls
+        const outcomeCounts: Record<string, number> = {};
+        for (const r of failedRuns) {
+          const k = r.callOutcome || "unknown";
+          outcomeCounts[k] = (outcomeCounts[k] || 0) + 1;
+        }
+        const outcomeBreakdown = Object.entries(outcomeCounts)
+          .sort((a, b) => b[1] - a[1]);
+
+        // Issues specific to not-achieved calls
+        const specificIssues = (dashData.topIssues || [])
+          .map(issue => ({
+            ...issue,
+            relevantCount: issue.runIds.filter(id => ids.has(id)).length,
+          }))
+          .filter(i => i.relevantCount > 0)
+          .sort((a, b) => b.relevantCount - a.relevantCount)
+          .slice(0, 5);
+
+        return (
+          <div style={{
+            background: "#fef9f0", border: "1px solid #fde68a",
+            borderRadius: 10, padding: "16px 20px",
+          }}>
+            <div style={{ fontSize: 12, fontWeight: 700, color: "#92400e", marginBottom: 12, display: "flex", alignItems: "center", gap: 6 }}>
+              <span>⚠</span>
+              Analysis: {failedRuns.length} calls that didn't meet the objective
+            </div>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
+
+              {/* Why did they fail — outcome breakdown */}
+              <div>
+                <div style={{ fontSize: 11, fontWeight: 600, color: "#78350f", marginBottom: 8, textTransform: "uppercase", letterSpacing: 0.5 }}>
+                  What happened
+                </div>
+                <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                  {outcomeBreakdown.map(([outcome, count]) => {
+                    const pct = Math.round((count / failedRuns.length) * 100);
+                    const color = getOutcomeColor(outcome);
+                    return (
+                      <div key={outcome} style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                        <span style={{
+                          fontSize: 11, fontWeight: 600, color, background: color + "22",
+                          borderRadius: 4, padding: "1px 7px", whiteSpace: "nowrap", minWidth: 90, textAlign: "center",
+                        }}>
+                          {outcome.replace(/_/g, " ")}
+                        </span>
+                        <div style={{ flex: 1, height: 6, background: "#fde68a", borderRadius: 99, overflow: "hidden" }}>
+                          <div style={{ width: `${pct}%`, height: "100%", background: color, borderRadius: 99 }} />
+                        </div>
+                        <span style={{ fontSize: 11, fontWeight: 600, color: "#374151", minWidth: 40, textAlign: "right" }}>
+                          {count} ({pct}%)
+                        </span>
+                      </div>
+                    );
+                  })}
+                  {outcomeBreakdown.length === 0 && (
+                    <div style={{ fontSize: 12, color: "#92400e" }}>No call outcome data available for these calls.</div>
+                  )}
+                </div>
+              </div>
+
+              {/* Issues specific to not-achieved calls */}
+              <div>
+                <div style={{ fontSize: 11, fontWeight: 600, color: "#78350f", marginBottom: 8, textTransform: "uppercase", letterSpacing: 0.5 }}>
+                  Top issues in these calls
+                </div>
+                {specificIssues.length === 0 ? (
+                  <div style={{ fontSize: 12, color: "#92400e" }}>No issues logged for these calls.</div>
+                ) : (
+                  <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                    {specificIssues.map((issue, i) => (
+                      <div key={i} style={{ display: "flex", alignItems: "flex-start", gap: 6, fontSize: 12 }}>
+                        <SeverityBadge severity={issue.severity} />
+                        <span style={{ flex: 1, color: "#374151", lineHeight: 1.3 }}>{issue.text}</span>
+                        <span style={{ fontSize: 11, fontWeight: 700, color: "#92400e", flexShrink: 0 }}>{issue.relevantCount}×</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        );
+      })()}
+
       {/* Call Outcomes Table */}
       <div ref={tableRef} style={{ ...CARD_STYLE, scrollMarginTop: 16 }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12, flexWrap: "wrap", gap: 8 }}>
