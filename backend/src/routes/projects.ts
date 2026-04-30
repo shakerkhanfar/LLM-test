@@ -762,6 +762,7 @@ router.get("/:id/eval-context", async (req: AuthRequest, res) => {
 router.patch("/:id/eval-context", async (req: AuthRequest, res) => {
   const { evalContext } = req.body as { evalContext?: string };
   if (typeof evalContext !== "string") return res.status(400).json({ error: "evalContext must be a string" });
+  if (evalContext.length > 5000) return res.status(400).json({ error: "evalContext must be 5000 characters or fewer" });
   try {
     const project = await prisma.project.findUnique({
       where: { id: req.params.id },
@@ -788,14 +789,23 @@ router.patch("/:id/eval-context", async (req: AuthRequest, res) => {
 // one-off instructions. Returns per-node findings and suggested rewrites.
 router.post("/:id/prompt-audit", async (req: AuthRequest, res) => {
   const { instructions } = req.body as { instructions?: string };
+  if (instructions && instructions.length > 3000) {
+    return res.status(400).json({ error: "instructions must be 3000 characters or fewer" });
+  }
+
+  // 120s timeout — audit can be slow with many nodes
+  const timeout = setTimeout(() => {
+    if (!res.headersSent) res.status(504).json({ error: "Prompt audit timed out. Try again." });
+  }, 120_000);
+
   try {
     const project = await prisma.project.findUnique({
       where: { id: req.params.id },
       select: { userId: true, agentSummary: true, agentStructure: true, evalContext: true },
     });
-    if (!project) return res.status(404).json({ error: "Project not found" });
-    if (project.userId !== null && project.userId !== req.userId) return res.status(403).json({ error: "Access denied" });
-    if (!project.agentStructure) return res.status(400).json({ error: "Agent structure not loaded. Refresh the agent first." });
+    if (!project) { clearTimeout(timeout); return res.status(404).json({ error: "Project not found" }); }
+    if (project.userId !== null && project.userId !== req.userId) { clearTimeout(timeout); return res.status(403).json({ error: "Access denied" }); }
+    if (!project.agentStructure) { clearTimeout(timeout); return res.status(400).json({ error: "Agent structure not loaded. Refresh the agent first." }); }
 
     const result = await auditAgentPrompts(
       project.agentSummary ?? null,
@@ -804,10 +814,12 @@ router.post("/:id/prompt-audit", async (req: AuthRequest, res) => {
       instructions?.trim() || null
     );
 
-    res.json(result);
+    clearTimeout(timeout);
+    if (!res.headersSent) res.json(result);
   } catch (err) {
+    clearTimeout(timeout);
     console.error("[PromptAudit] Failed:", err);
-    res.status(500).json({ error: (err as Error).message });
+    if (!res.headersSent) res.status(500).json({ error: (err as Error).message });
   }
 });
 

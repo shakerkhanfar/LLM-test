@@ -787,7 +787,7 @@ export async function evaluateNodeBehavior(
     : "  (no explicit transitions defined)";
 
   const evalContextBlock = evalContext?.trim()
-    ? `\nPROJECT EVALUATION RULES (always apply these when scoring):\n${evalContext.trim()}\n`
+    ? `\nPROJECT EVALUATION RULES (always apply these when scoring):\n${safeTruncate(evalContext.trim(), 2000)}\n`
     : "";
 
   const prompt = `You are evaluating ONE specific node of a voice AI agent call. You see ONLY this node's data — do NOT speculate about other parts of the call.
@@ -797,7 +797,9 @@ IMPORTANT EVALUATION GUIDELINES:
 - "Stuck" means the agent is repeating the same prompt without making progress despite the user providing the requested information. If the user hasn't provided the info yet, the agent asking again is CORRECT behavior.
 - Many turns ≠ stuck. A node with 10+ turns where the user is slowly providing digits is working correctly. A node with 6 turns where the agent asks the same question 3 times despite getting an answer IS stuck.
 - Score the AGENT's behavior, not the user's cooperation level.
-- AGENT INSTRUCTION ADHERENCE IS PRIMARY: If the agent followed its node instructions correctly, the node should score HIGH — even if the call's overall objective was not met. A correctly-handled out-of-scope transfer, a correct escalation, or a proper "I can't help with that" response are all 9-10/10 scores.${evalContextBlock}
+- CALL OBJECTIVE: The primary question is whether the agent accomplished what it was supposed to do at this node (collect information, confirm booking, handle the request). Score based on this.
+- SPECIAL SUCCESSES — score these HIGH (9-10/10): (1) Out-of-scope requests that the agent correctly handles by transferring/forwarding to a call center or human agent. (2) Correct escalations per the agent's instructions. (3) Proper "I can't help with that" responses when the topic is genuinely outside scope. These are the agent doing its job correctly.
+- SCORE LOW for actual agent failures: hallucinating information, looping or staying stuck within the same node when the user has already provided what was needed and the agent should have moved on, ignoring user input that should trigger a transition, providing incorrect or fabricated information, failing to follow the node's explicit instructions.${evalContextBlock}
 
 AGENT CONTEXT:
 ${agentSummary ? safeTruncate(agentSummary, 500) : "No agent summary available."}
@@ -934,18 +936,17 @@ export async function evaluateOverall(
     }).join("\n").slice(0, 2000);
 
   const evalContextBlock = evalContext?.trim()
-    ? `\nPROJECT-SPECIFIC EVALUATION RULES (highest priority — override defaults if they conflict):\n${evalContext.trim()}\n`
+    ? `\nPROJECT-SPECIFIC EVALUATION RULES (highest priority — override defaults if they conflict):\n${safeTruncate(evalContext.trim(), 2000)}\n`
     : "";
 
   const prompt = `You are producing the final evaluation summary for a voice AI agent call. You receive pre-evaluated summaries from structural and per-node analyses — do NOT re-evaluate the raw data.
 
 IMPORTANT SCORING RULES:
-- AGENT INSTRUCTION ADHERENCE IS THE PRIMARY METRIC. If the agent followed its prompts correctly at every node, the call scores HIGH — even if the caller's personal objective was not ultimately met. A correctly-handled out-of-scope transfer, escalation, or "I can't help with that" response is a SUCCESSFUL call, not a failure.
-- If the user asks about something OUTSIDE the agent's scope and the agent CORRECTLY handles it (politely redirects, transfers to call center, stays on track), this is a SUCCESS — score it HIGH, not low.
-- A call should only be scored low if the agent itself made mistakes: hallucinating information, getting stuck in loops, ignoring user input, providing wrong information, or failing to follow its instructions.
+- PRIMARY METRIC: Did the agent accomplish the call's objective (e.g., successfully book an appointment, collect required information, resolve the user's request)? This is what the score should primarily reflect.
+- EXCEPTIONS — these are SUCCESSES, score HIGH: (1) Out-of-scope calls where the agent correctly transferred/forwarded to a call center or human agent — the agent did its job. (2) Correct escalations per the agent's design. (3) Proper refusals when the user asks about something genuinely outside the agent's scope.
+- SCORE LOW for actual agent failures: hallucinating information, getting stuck or looping within the same node when the user already provided what was needed, ignoring user input that should trigger a node transition, providing incorrect information, failing to follow its instructions at any node.
 - "Stuck" means the agent repeats the same prompt without progress DESPITE the user providing information. If the user is giving data piecemeal (e.g., dictating an ID digit by digit, correcting themselves), the agent correctly waiting is NOT stuck.
 - HIGH TURN COUNT ≠ BAD CALL. A call with many turns where the user is slowly cooperating and the agent successfully collects all data is a GOOD call.
-- Calls with outcome "stuck" or "timeout" but where the agent properly completed its instructions should be re-assessed — the outcome label may be misleading.
 - If the per-node analyses show high scores but the navigation flagged "stuck" or "loops", weigh the per-node analyses more heavily — they have transcript-level detail.${evalContextBlock}
 
 AGENT CONTEXT:

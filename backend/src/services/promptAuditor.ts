@@ -152,10 +152,22 @@ Respond with JSON:
     node_issues: {},
   });
 
+  // Build a case-insensitive lookup for node issues returned by LLM
+  // (LLM may return labels with different casing/spacing than actual node labels)
+  const nodeIssuesNormalized = new Map<string, typeof overview.node_issues[string]>();
+  for (const [label, info] of Object.entries(overview.node_issues)) {
+    nodeIssuesNormalized.set(label.trim().toLowerCase(), info);
+  }
+  function getNodeInfo(label: string) {
+    return overview.node_issues[label]
+      ?? nodeIssuesNormalized.get(label.trim().toLowerCase())
+      ?? null;
+  }
+
   // ── Step 2: Per-node rewrite for nodes that need it ──────────────
   const nodeAudits: NodeAudit[] = [];
   const nodesNeedingRewrite = auditableNodes.filter((n: any) => {
-    const info = overview.node_issues[n.label];
+    const info = getNodeInfo(n.label);
     return info?.needs_rewrite;
   });
 
@@ -166,7 +178,7 @@ Respond with JSON:
 
     const rewriteItems = batch.map((n: any) => {
       const transitions = edgeMap.get(n.id) || [];
-      const nodeInfo = overview.node_issues[n.label] || { issues: [], reasoning: "" };
+      const nodeInfo = getNodeInfo(n.label) || { issues: [], reasoning: "" };
       return `NODE: "${n.label}" (${n.type})
 CURRENT PROMPT:
 ${n.message}
@@ -213,7 +225,7 @@ Respond with JSON where each key is the exact node label:
     );
 
     for (const n of batch) {
-      const nodeInfo = overview.node_issues[n.label] || { issues: [], reasoning: "" };
+      const nodeInfo = getNodeInfo(n.label) || { issues: [], reasoning: "" };
       const rewrite = rewrites[n.label];
       nodeAudits.push({
         nodeId: n.id,
@@ -231,7 +243,7 @@ Respond with JSON where each key is the exact node label:
   // Add clean nodes (no rewrite needed)
   for (const n of auditableNodes) {
     if (!nodesNeedingRewrite.find((r: any) => r.id === n.id)) {
-      const nodeInfo = overview.node_issues[n.label];
+      const nodeInfo = getNodeInfo(n.label);
       nodeAudits.push({
         nodeId: n.id,
         nodeLabel: n.label,

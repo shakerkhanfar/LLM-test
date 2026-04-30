@@ -333,7 +333,7 @@ export default function ProjectDetail() {
       )}
 
       {/* Prompt Audit & Eval Rules */}
-      <PromptAuditPanel projectId={project.id} agentStruct={agentStruct} />
+      <PromptAuditPanel projectId={project.id} agentStruct={agentStruct} onRefresh={load} />
 
       {/* Summary cards */}
       <div style={{ display: "flex", gap: 16, marginBottom: 24, flexWrap: "wrap" }}>
@@ -1924,7 +1924,7 @@ function WebhookUrlBar({ url }: { url: string }) {
 
 // ─── Prompt Audit Panel ───────────────────────────────────────────
 
-function PromptAuditPanel({ projectId, agentStruct }: { projectId: string; agentStruct: any }) {
+function PromptAuditPanel({ projectId, agentStruct, onRefresh }: { projectId: string; agentStruct: any; onRefresh?: () => void }) {
   const [open, setOpen] = useState(false);
   const [evalContext, setEvalContext] = useState("");
   const [savedContext, setSavedContext] = useState("");
@@ -1981,6 +1981,7 @@ function PromptAuditPanel({ projectId, agentStruct }: { projectId: string; agent
     try {
       await applyPromptFix(projectId, nodeId, prompt);
       setApplied(prev => new Set([...prev, nodeId]));
+      onRefresh?.();
     } catch (e: any) {
       alert("Failed to apply: " + e.message);
     } finally {
@@ -2055,11 +2056,14 @@ function PromptAuditPanel({ projectId, agentStruct }: { projectId: string; agent
             </div>
             <textarea
               value={evalContext}
-              onChange={e => setEvalContext(e.target.value)}
+              onChange={e => setEvalContext(e.target.value.slice(0, 5000))}
               rows={5}
               placeholder={"Examples:\n• Transfers to the call center for OOS requests = success, not failure\n• Agent is only responsible for booking appointments — cannot answer medical questions\n• Calls where the patient books with any doctor in their specialty = objective met"}
               style={textareaStyle}
             />
+            <div style={{ fontSize: 11, color: evalContext.length > 4500 ? "#f59e0b" : T.textMuted, textAlign: "right", marginTop: 2 }}>
+              {evalContext.length} / 5000
+            </div>
             <div style={{ display: "flex", gap: 8, marginTop: 8, alignItems: "center" }}>
               <button
                 onClick={handleSaveContext}

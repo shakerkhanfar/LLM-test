@@ -120,6 +120,10 @@ export async function updateAgentWorkflow(
   updatedNodes: Array<{ id: string; message: string; [key: string]: any }>,
   apiKey?: string
 ) {
+  if (!updatedNodes || updatedNodes.length === 0) {
+    throw new Error("updatedNodes must not be empty — sending an empty array would wipe the agent workflow");
+  }
+
   const url = `${HAMSA_API_BASE}/v2/voice-agents/${agentId}`;
 
   const body = {
