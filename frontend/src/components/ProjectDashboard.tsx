@@ -156,12 +156,18 @@ export default function ProjectDashboard({ project }: Props) {
   }, [completeRuns]);
 
   // Sentiment donut
+  const SENTIMENT_COLORS: Record<string, string> = {
+    positive: "#17B26A",
+    neutral:  "#3b82f6",
+    negative: "#ef4444",
+    unknown:  "#d1d5db",
+  };
+  const SENTIMENT_ORDER = ["positive", "neutral", "negative", "unknown"];
   const sentimentData = useMemo(() => {
     if (!dashData) return [];
-    const colors: Record<string, string> = { positive: "#22c55e", neutral: "#9ca3af", negative: "#ef4444" };
-    return Object.entries(dashData.sentiment)
-      .filter(([, v]) => v > 0)
-      .map(([name, value]) => ({ name, value, color: colors[name] || "#9ca3af" }));
+    return SENTIMENT_ORDER
+      .filter(k => (dashData.sentiment[k] ?? 0) > 0)
+      .map(k => ({ name: k, value: dashData.sentiment[k], color: SENTIMENT_COLORS[k] }));
   }, [dashData]);
 
   // Score distribution
@@ -381,31 +387,56 @@ export default function ProjectDashboard({ project }: Props) {
             <div style={{ color: T.textMuted, fontSize: 12 }}>Loading...</div>
           ) : sentimentData.length === 0 ? (
             <div style={{ color: T.textMuted, fontSize: 12 }}>Not enough data</div>
-          ) : (
-            <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-              <PieChart width={110} height={110}>
-                <Pie data={sentimentData} cx={50} cy={50} innerRadius={35} outerRadius={55} dataKey="value" paddingAngle={2}>
-                  {sentimentData.map((entry, idx) => (
-                    <Cell key={idx} fill={entry.color} />
-                  ))}
-                </Pie>
-              </PieChart>
-              <div style={{ display: "flex", flexDirection: "column", gap: 4, flex: 1, minWidth: 0 }}>
-                {sentimentData.map((entry, idx) => {
-                  const total = sentimentData.reduce((s, e) => s + e.value, 0);
-                  return (
-                    <div key={idx} style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 11 }}>
-                      <span style={{ width: 8, height: 8, borderRadius: "50%", background: entry.color, flexShrink: 0 }} />
-                      <span style={{ color: T.textSecondary, flex: 1, textTransform: "capitalize" }}>{entry.name}</span>
-                      <span style={{ color: T.text, fontWeight: 600, flexShrink: 0 }}>
-                        {Math.round((entry.value / total) * 100)}%
-                      </span>
-                    </div>
-                  );
-                })}
+          ) : (() => {
+            const total = sentimentData.reduce((s, e) => s + e.value, 0);
+            const knownTotal = sentimentData.filter(e => e.name !== "unknown").reduce((s, e) => s + e.value, 0);
+            const posCount = dashData.sentiment.positive ?? 0;
+            const negCount = dashData.sentiment.negative ?? 0;
+            const neuCount = dashData.sentiment.neutral ?? 0;
+            const unknownPct = total > 0 ? Math.round(((dashData.sentiment.unknown ?? 0) / total) * 100) : 0;
+            const insight = (() => {
+              if (knownTotal === 0) return "No sentiment data yet — calls haven't been evaluated.";
+              const posPct = Math.round((posCount / knownTotal) * 100);
+              const negPct = Math.round((negCount / knownTotal) * 100);
+              const neuPct = Math.round((neuCount / knownTotal) * 100);
+              if (posPct >= 60) return `${posPct}% of callers felt positive — strong experience.`;
+              if (negPct >= 40) return `${negPct}% of callers felt negative — review failed calls.`;
+              if (neuPct >= 60) return `Most callers felt neutral (${neuPct}%) — limited emotional signal.`;
+              return `Mixed sentiment: ${posPct}% positive, ${neuPct}% neutral, ${negPct}% negative.`;
+            })();
+            return (
+              <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                  <PieChart width={110} height={110}>
+                    <Pie data={sentimentData} cx={50} cy={50} innerRadius={35} outerRadius={55} dataKey="value" paddingAngle={2}>
+                      {sentimentData.map((entry, idx) => (
+                        <Cell key={idx} fill={entry.color} />
+                      ))}
+                    </Pie>
+                  </PieChart>
+                  <div style={{ display: "flex", flexDirection: "column", gap: 5, flex: 1, minWidth: 0 }}>
+                    {sentimentData.map((entry, idx) => (
+                      <div key={idx} style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11 }}>
+                        <span style={{ width: 9, height: 9, borderRadius: "50%", background: entry.color, flexShrink: 0, border: entry.name === "unknown" ? `1px solid ${T.border}` : "none" }} />
+                        <span style={{ color: T.textSecondary, flex: 1, textTransform: "capitalize" }}>
+                          {entry.name === "unknown" ? "Not analysed" : entry.name}
+                        </span>
+                        <span style={{ color: entry.name === "unknown" ? T.textMuted : T.text, fontWeight: entry.name === "unknown" ? 400 : 600, flexShrink: 0 }}>
+                          {Math.round((entry.value / total) * 100)}%
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+                <div style={{ fontSize: 11, color: T.textSecondary, lineHeight: 1.4, borderTop: `1px solid ${T.border}`, paddingTop: 8 }}>
+                  {insight}
+                  {unknownPct > 30 && (
+                    <span style={{ color: T.textMuted }}> ({unknownPct}% of calls were not scored by the LLM judge.)</span>
+                  )}
+                </div>
               </div>
-            </div>
-          )}
+            );
+          })()}
         </div>
       </div>
 
