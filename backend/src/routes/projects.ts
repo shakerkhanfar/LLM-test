@@ -10,6 +10,7 @@ import { runEvaluationCheck } from "../services/evaluationRunner";
 import { auditAgentPrompts } from "../services/promptAuditor";
 import { updateAgentWorkflow } from "../services/hamsaApi";
 import { AuthRequest } from "../middleware/auth";
+import { canAccess } from "../lib/ownership";
 import { evalRateLimit, llmRateLimit } from "../middleware/rateLimiter";
 import { audit } from "../middleware/auditLog";
 
@@ -62,25 +63,6 @@ function validateCriterionExpectedValue(type: string, expectedValue: unknown): s
   return null;
 }
 
-/**
- * Returns true if the requesting user can access a project owned by `projectUserId`.
- * Access is granted when:
- *  - projectUserId is null (legacy / unowned project)
- *  - the requesting user owns the project
- *  - both users belong to the same organization
- *
- * Ready for org-level roles: just add a `role` check here later.
- */
-async function canAccess(projectUserId: string | null, req: AuthRequest): Promise<boolean> {
-  if (projectUserId === null) return true;
-  if (projectUserId === req.userId) return true;
-  if (!req.organizationId) return false;
-  const owner = await prisma.user.findUnique({
-    where: { id: projectUserId },
-    select: { organizationId: true },
-  });
-  return !!owner?.organizationId && owner.organizationId === req.organizationId;
-}
 
 // List projects: user's own projects + org-mates' projects + legacy projects (userId=null)
 router.get("/", async (req: AuthRequest, res) => {
@@ -272,7 +254,7 @@ router.get("/:id/dashboard", async (req: AuthRequest, res) => {
       select: { userId: true },
     });
     if (!project) return res.status(404).json({ error: "Project not found" });
-    if (project.userId !== null && project.userId !== req.userId) {
+    if (!await canAccess(project.userId ?? null, req)) {
       return res.status(403).json({ error: "Access denied" });
     }
 
