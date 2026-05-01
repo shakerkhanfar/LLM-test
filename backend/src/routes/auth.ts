@@ -2,16 +2,15 @@ import { Router } from "express";
 import bcrypt from "bcryptjs";
 import prisma from "../lib/prisma";
 import { requireAuth, signToken, AuthRequest } from "../middleware/auth";
+import { BCRYPT_ROUNDS, PASSWORD_MIN_LENGTH } from "../lib/config";
 
 const router = Router();
 
-// ── Simple in-memory rate limiter for login ────────────────────────
-// Limits to 20 attempts per IP per 15-minute window.
-// On platforms like Replit, all requests may share the same proxy IP,
-// so we're generous with the limit.
+// ── In-memory rate limiter for login ──────────────────────────────
+// 10 attempts per IP per 15-minute window. Deliberately conservative.
 const loginAttempts = new Map<string, { count: number; resetAt: number }>();
-const RATE_LIMIT_MAX = 20;
-const RATE_LIMIT_WINDOW_MS = 15 * 60 * 1000; // 15 minutes
+const RATE_LIMIT_MAX = 10;
+const RATE_LIMIT_WINDOW_MS = 15 * 60 * 1000;
 
 function checkLoginRateLimit(ip: string): { allowed: boolean; retryAfterSec: number } {
   const now = Date.now();
@@ -27,7 +26,6 @@ function checkLoginRateLimit(ip: string): { allowed: boolean; retryAfterSec: num
   return { allowed: true, retryAfterSec: 0 };
 }
 
-// Clean up stale entries every 30 minutes
 setInterval(() => {
   const now = Date.now();
   for (const [ip, entry] of loginAttempts) {
@@ -35,22 +33,37 @@ setInterval(() => {
   }
 }, 30 * 60 * 1000).unref();
 
-// Pre-compute a valid dummy hash (for timing-attack prevention on non-existent users).
-// This is a real bcrypt hash of the string "dummy" with cost 12.
+// Pre-compute a valid dummy hash for timing-attack prevention.
+// Uses the same BCRYPT_ROUNDS constant so timing matches real hashes.
 let DUMMY_HASH = "";
-bcrypt.hash("dummy", 12).then((h) => { DUMMY_HASH = h; });
+bcrypt.hash("dummy_timing_placeholder", BCRYPT_ROUNDS).then((h) => { DUMMY_HASH = h; });
+
+/** Validates a password meets minimum policy requirements. */
+function validatePassword(password: string): string | null {
+  if (password.length < PASSWORD_MIN_LENGTH) {
+    return `Password must be at least ${PASSWORD_MIN_LENGTH} characters`;
+  }
+  if (!/[A-Z]/.test(password)) return "Password must contain at least one uppercase letter";
+  if (!/[a-z]/.test(password)) return "Password must contain at least one lowercase letter";
+  if (!/[0-9]/.test(password)) return "Password must contain at least one number";
+  if (!/[^A-Za-z0-9]/.test(password)) return "Password must contain at least one special character";
+  return null;
+}
 
 // POST /api/auth/login
 router.post("/login", async (req, res) => {
-  const ip = (req.headers["x-forwarded-for"] as string | undefined)?.split(",")[0]?.trim()
-    || req.socket.remoteAddress
-    || "unknown";
+  const ip =
+    (req.headers["x-forwarded-for"] as string | undefined)?.split(",")[0]?.trim() ||
+    req.socket.remoteAddress ||
+    "unknown";
 
   const { allowed, retryAfterSec } = checkLoginRateLimit(ip);
   if (!allowed) {
-    console.log(`[Auth] Rate limited IP: ${ip}`);
+    console.warn(`[Auth] Rate limited IP: ${ip}`);
     res.setHeader("Retry-After", String(retryAfterSec));
-    return res.status(429).json({ error: `Too many login attempts. Try again in ${Math.ceil(retryAfterSec / 60)} minutes.` });
+    return res.status(429).json({
+      error: `Too many login attempts. Try again in ${Math.ceil(retryAfterSec / 60)} minutes.`,
+    });
   }
 
   const { email, password } = req.body as { email?: string; password?: string };
@@ -58,30 +71,22 @@ router.post("/login", async (req, res) => {
   if (!email || typeof email !== "string" || !email.trim()) {
     return res.status(400).json({ error: "Email is required" });
   }
-  if (email.length > 254) {
-    return res.status(400).json({ error: "Invalid email" });
-  }
-  if (!password || typeof password !== "string" || !password.trim()) {
+  if (email.length > 254) return res.status(400).json({ error: "Invalid email" });
+  if (!password || typeof password !== "string") {
     return res.status(400).json({ error: "Password is required" });
   }
 
-  // Trim password to avoid copy-paste whitespace mismatches
-  const cleanPassword = password.trim();
-  if (cleanPassword.length < 6) {
-    return res.status(400).json({ error: "Password must be at least 6 characters" });
-  }
-
   const cleanEmail = email.trim().toLowerCase();
+  const cleanPassword = password.trim();
 
   try {
     const user = await prisma.user.findUnique({
       where: { email: cleanEmail },
+      select: { id: true, email: true, passwordHash: true, organizationId: true },
     });
 
-    console.log(`[Auth] Login attempt: ip=${ip} email=${cleanEmail} found=${!!user} hashLen=${user?.passwordHash?.length ?? 0}`);
-
+    // Always run bcrypt even when user doesn't exist (timing-attack prevention)
     if (!user) {
-      // Timing-safe: always run bcrypt even when user doesn't exist
       if (DUMMY_HASH) {
         try { await bcrypt.compare(cleanPassword, DUMMY_HASH); } catch {}
       }
@@ -92,19 +97,15 @@ router.post("/login", async (req, res) => {
     try {
       valid = await bcrypt.compare(cleanPassword, user.passwordHash);
     } catch (bcryptErr) {
-      console.error("[Auth] bcrypt.compare threw:", {
-        message: (bcryptErr as Error).message,
-        hashLength: user.passwordHash?.length,
-        hashPrefix: user.passwordHash?.slice(0, 7),
-      });
+      console.error("[Auth] bcrypt.compare error:", (bcryptErr as Error).message);
     }
-    console.log(`[Auth] bcrypt result: valid=${valid} passwordLen=${cleanPassword.length}`);
 
     if (!valid) {
       return res.status(401).json({ error: "Invalid email or password" });
     }
 
-    const token = signToken(user.id, user.email);
+    // Embed organizationId in token — eliminates DB hit on every authenticated request
+    const token = signToken(user.id, user.email, user.organizationId);
     res.json({ token, user: { id: user.id, email: user.email } });
   } catch (err) {
     console.error("[Auth] Login error:", err);
@@ -112,16 +113,58 @@ router.post("/login", async (req, res) => {
   }
 });
 
-// GET /api/auth/me — returns current user info
+// POST /api/auth/register — create a new account (admin-only in production)
+router.post("/register", requireAuth, async (req: AuthRequest, res) => {
+  const { email, password } = req.body as { email?: string; password?: string };
+
+  if (!email || typeof email !== "string" || !email.trim()) {
+    return res.status(400).json({ error: "Email is required" });
+  }
+  if (email.length > 254) return res.status(400).json({ error: "Invalid email" });
+  if (!password || typeof password !== "string") {
+    return res.status(400).json({ error: "Password is required" });
+  }
+
+  const validationError = validatePassword(password.trim());
+  if (validationError) return res.status(400).json({ error: validationError });
+
+  const cleanEmail = email.trim().toLowerCase();
+
+  try {
+    // New user inherits the creator's organization
+    const creator = await prisma.user.findUnique({
+      where: { id: req.userId },
+      select: { organizationId: true },
+    });
+
+    const hash = await bcrypt.hash(password.trim(), BCRYPT_ROUNDS);
+    const newUser = await prisma.user.create({
+      data: {
+        email: cleanEmail,
+        passwordHash: hash,
+        organizationId: creator?.organizationId ?? null,
+      },
+    });
+
+    console.log(`[Auth] User ${newUser.email} registered by ${req.userEmail} (req ${req.requestId})`);
+    res.status(201).json({ id: newUser.id, email: newUser.email });
+  } catch (err: any) {
+    if (err?.code === "P2002") {
+      return res.status(409).json({ error: "Email already registered" });
+    }
+    console.error("[Auth] Register error:", err);
+    res.status(500).json({ error: "Registration failed" });
+  }
+});
+
+// GET /api/auth/me
 router.get("/me", requireAuth, async (req: AuthRequest, res) => {
   try {
     const user = await prisma.user.findUnique({
       where: { id: req.userId },
-      select: { id: true, email: true, createdAt: true },
+      select: { id: true, email: true, organizationId: true, createdAt: true },
     });
-    if (!user) {
-      return res.status(404).json({ error: "User not found" });
-    }
+    if (!user) return res.status(404).json({ error: "User not found" });
     res.json(user);
   } catch (err) {
     console.error("[Auth] /me error:", err);
@@ -129,4 +172,5 @@ router.get("/me", requireAuth, async (req: AuthRequest, res) => {
   }
 });
 
+export { validatePassword, BCRYPT_ROUNDS };
 export default router;

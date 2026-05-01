@@ -1,9 +1,75 @@
 import prisma from "../lib/prisma";
-import { Router } from "express";
+import { Router, Request, Response } from "express";
 import { runCallLogFetch, runEvaluationCheck } from "../services/evaluationRunner";
 import { fetchConversation } from "../services/hamsaApi";
+import crypto from "crypto";
 
 const router = Router();
+
+/**
+ * Verify HMAC-SHA256 signature on incoming webhook payloads.
+ * If the project has a webhookSecret configured, the sender MUST include
+ * an `X-Hamsa-Signature` header: `sha256=<hex(HMAC-SHA256(secret, rawBody))>`.
+ *
+ * Projects without a webhookSecret are accepted but logged as a warning —
+ * this keeps backward compatibility while encouraging migration to signed webhooks.
+ */
+async function verifyWebhookSignature(
+  req: Request & { rawBody?: Buffer },
+  projectId: string | null,
+  res: Response
+): Promise<boolean> {
+  const project = projectId
+    ? await prisma.project.findUnique({ where: { id: projectId }, select: { webhookSecret: true } })
+    : null;
+
+  const secret = project?.webhookSecret;
+  const signature = req.headers["x-hamsa-signature"] as string | undefined;
+
+  if (!secret) {
+    // No secret configured — accept but warn operators
+    if (signature) {
+      console.warn(`[Webhook] Received signature header but project ${projectId} has no webhookSecret configured`);
+    } else {
+      console.warn(`[Webhook] Project ${projectId} has no webhookSecret — webhook is unauthenticated`);
+    }
+    return true;
+  }
+
+  if (!signature) {
+    console.error(`[Webhook] Rejected: project ${projectId} requires signature but none provided`);
+    res.status(401).json({ error: "Missing webhook signature" });
+    return false;
+  }
+
+  // Signature format: "sha256=<hex>"
+  const [algo, receivedHex] = signature.split("=", 2);
+  if (algo !== "sha256" || !receivedHex) {
+    res.status(401).json({ error: "Invalid signature format. Expected: sha256=<hex>" });
+    return false;
+  }
+
+  // Use raw body bytes for HMAC so JSON serialisation differences don't break verification
+  const bodyBytes = (req as any).rawBody || Buffer.from(JSON.stringify(req.body));
+  const expectedHex = crypto
+    .createHmac("sha256", secret)
+    .update(bodyBytes)
+    .digest("hex");
+
+  // Constant-time comparison to prevent timing attacks
+  const expectedBuf = Buffer.from(expectedHex, "hex");
+  const receivedBuf = Buffer.from(receivedHex, "hex");
+  if (
+    expectedBuf.length !== receivedBuf.length ||
+    !crypto.timingSafeEqual(expectedBuf, receivedBuf)
+  ) {
+    console.error(`[Webhook] Rejected: invalid signature for project ${projectId}`);
+    res.status(401).json({ error: "Invalid webhook signature" });
+    return false;
+  }
+
+  return true;
+}
 
 /**
  * Project-specific webhook endpoint for WEBHOOK projects.
@@ -14,6 +80,9 @@ router.post("/hamsa/:projectId", async (req, res) => {
   try {
   const { projectId } = req.params;
   const payload = req.body;
+
+  // Verify HMAC signature before doing any DB work
+  if (!await verifyWebhookSignature(req, projectId, res)) return;
 
   console.log(`[Webhook] Received event for project ${projectId}: ${payload.event_type}`);
 
@@ -32,7 +101,7 @@ router.post("/hamsa/:projectId", async (req, res) => {
   // Verify project exists and is a WEBHOOK project
   const project = await prisma.project.findUnique({
     where: { id: projectId },
-    select: { id: true, projectType: true, hamsaApiKey: true, agentSummary: true },
+    select: { id: true, projectType: true, hamsaApiKey: true, agentSummary: true, webhookSecret: true },
   });
 
   if (!project) {
@@ -142,6 +211,9 @@ router.post("/hamsa/:projectId", async (req, res) => {
 router.post("/hamsa", async (req, res) => {
   try {
   const payload = req.body;
+
+  // Generic endpoint has no projectId — verify against a global fallback secret if configured
+  if (!await verifyWebhookSignature(req, null, res)) return;
 
   console.log(`[Webhook] Received event (generic): ${payload.event_type}`);
 

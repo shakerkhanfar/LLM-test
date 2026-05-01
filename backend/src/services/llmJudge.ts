@@ -54,19 +54,23 @@ TYPE: ${agentStructure.type}
 LANGUAGE: ${lang}
 LLM: ${llmModel}
 
-GREETING:
+<agent_greeting>
 ${greeting}
+</agent_greeting>
 
-INSTRUCTIONS / PREAMBLE:
+<agent_preamble>
 ${preamble}
+</agent_preamble>
 
-FLOW NODES:
+<flow_nodes>
 ${nodeLines || "(no flow nodes defined)"}
+</flow_nodes>
 
-TOOLS AVAILABLE:
+<tools_available>
 ${toolLines || "(no tools)"}
+</tools_available>
 
-Based on the above, write a structured plain-text analysis that will be given to an LLM evaluator before it scores a call. Be specific and concise. Format exactly as:
+Based on the agent data enclosed in XML tags above, write a structured plain-text analysis that will be given to an LLM evaluator before it scores a call. Be specific and concise. Format exactly as:
 
 AGENT PURPOSE:
 [1-3 sentences: what this agent is designed to do, for whom, and in what language]
@@ -159,17 +163,20 @@ LANGUAGE SWITCHING — there are exactly two failure scenarios:
     (B) The agent switched back to Arabic (or another language) after the user already requested a different language, without the user asking for that.
   Anything else is a pass: agent starting in Arabic, agent staying in the requested language throughout the call, agent complying immediately when asked.
 
-Evaluation rule: "${rule}"
+<evaluation_rule>
+${rule}
+</evaluation_rule>
 
-Transcript:
+<transcript>
 ${transcriptText}
+</transcript>
 
 RULES YOU MUST FOLLOW:
 
 1. NOT APPLICABLE: If this criterion did not occur in the conversation at all (e.g. no language switch happened, gender was never relevant), return:
    { "passed": null, "score": null, "detail": "Not applicable — [reason]" }
 
-2. EVIDENCE REQUIRED: Your "detail" field MUST quote the exact word(s) or phrase(s) from the transcript above that support your verdict. Do NOT cite words or phrases that do not appear verbatim in the transcript. If you cannot find direct evidence, say so.
+2. EVIDENCE REQUIRED: Your "detail" field MUST quote the exact word(s) or phrase(s) from the <transcript> above that support your verdict. Do NOT cite words or phrases that do not appear verbatim in the transcript. If you cannot find direct evidence, say so.
 
 3. COMMIT TO A VERDICT FIRST, THEN WRITE DETAIL: Decide passed=true/false, then write one or two sentences that explain why. Do NOT write a reasoning chain that walks through possibilities — state only the final conclusion. Do NOT write corrections or second-guesses in the detail field.
 

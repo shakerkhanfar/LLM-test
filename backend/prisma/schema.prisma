@@ -14,6 +14,22 @@ model Organization {
   users     User[]
 }
 
+model AuditLog {
+  id         String   @id @default(cuid())
+  userId     String?
+  userEmail  String?
+  action     String   // e.g. "project.delete", "run.re-evaluate", "project.analyze"
+  resourceId String?  // ID of the affected resource
+  meta       Json?    // Additional context (project name, run count, etc.)
+  ip         String?
+  requestId  String?
+  createdAt  DateTime @default(now())
+
+  @@index([userId])
+  @@index([action])
+  @@index([createdAt])
+}
+
 model User {
   id             String        @id @default(cuid())
   email          String        @unique
@@ -36,6 +52,7 @@ model Project {
   flowDefinition  Json?       // Extracted expected node sequence + tool calls
   agentSummary    String?     // LLM-generated plain-text analysis: purpose, scenarios, success criteria
   evalContext     String?     // User-defined evaluation rules injected into every eval for this project
+  webhookSecret   String?     // HMAC-SHA256 secret for verifying incoming webhook payloads
   projectType     ProjectType @default(LIVE)
   historyStartDate DateTime?  // For HISTORY projects: start of date range
   historyEndDate   DateTime?  // For HISTORY projects: end of date range

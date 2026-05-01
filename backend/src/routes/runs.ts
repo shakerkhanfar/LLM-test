@@ -5,6 +5,7 @@ import { updateAgentModel } from "../services/hamsaApi";
 import { runEvaluationCheck } from "../services/evaluationRunner";
 import { AuthRequest } from "../middleware/auth";
 import { assertProjectAccess, assertRunAccess, canAccess } from "../lib/ownership";
+import { evalRateLimit } from "../middleware/rateLimiter";
 
 const router = Router();
 
@@ -178,7 +179,7 @@ router.post("/:id/transcript", async (req: AuthRequest, res) => {
 });
 
 // Manually trigger evaluation (force re-run even if status is COMPLETE)
-router.post("/:id/evaluate", async (req: AuthRequest, res) => {
+router.post("/:id/evaluate", evalRateLimit, async (req: AuthRequest, res) => {
   try {
     const access = await assertRunAccess(req.params.id, req, res);
     if (!access) return;

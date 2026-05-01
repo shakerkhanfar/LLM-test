@@ -1,6 +1,7 @@
 import prisma from "../lib/prisma";
 import { Router } from "express";
 import { CriterionType } from "@prisma/client";
+import { z } from "zod";
 import { getAgent } from "../services/hamsaApi";
 import { generateAgentSummary } from "../services/llmJudge";
 import { analyzeProject, compareAnalyses } from "../services/projectAnalyzer";
@@ -9,11 +10,57 @@ import { runEvaluationCheck } from "../services/evaluationRunner";
 import { auditAgentPrompts } from "../services/promptAuditor";
 import { updateAgentWorkflow } from "../services/hamsaApi";
 import { AuthRequest } from "../middleware/auth";
+import { evalRateLimit, llmRateLimit } from "../middleware/rateLimiter";
+import { audit } from "../middleware/auditLog";
 
 const router = Router();
 
 const VALID_CRITERION_TYPES = new Set<string>(Object.values(CriterionType));
 const VALID_PROJECT_TYPES = new Set(["LIVE", "HISTORY", "WEBHOOK"]);
+
+// ─── Criterion expectedValue schemas ──────────────────────────────
+// Validate the shape of each criterion type's expectedValue to prevent
+// malformed data reaching the evaluator and LLM prompt builders.
+
+const CriterionExpectedValueSchemas: Partial<Record<CriterionType, z.ZodTypeAny>> = {
+  DETERMINISTIC: z.object({
+    requiredTools: z.array(z.string()).optional(),
+    requiredVariables: z.array(z.string()).optional(),
+  }).refine(v => v.requiredTools || v.requiredVariables, {
+    message: "DETERMINISTIC criterion must specify requiredTools or requiredVariables",
+  }),
+  STRUCTURAL: z.object({
+    expectedSequence: z.array(z.string()),
+  }),
+  LLM_JUDGE: z.object({
+    rule: z.string().min(1).optional(),
+    prompt: z.string().min(1).optional(),
+  }).refine(v => v.rule || v.prompt, {
+    message: "LLM_JUDGE criterion must specify rule or prompt",
+  }),
+  WORD_ACCURACY: z.object({
+    threshold: z.number().min(0).max(1).optional(),
+  }),
+  LATENCY: z.object({
+    maxToolLatencyMs: z.number().int().positive().optional(),
+  }),
+  // These types require no configuration
+  FLOW_PROGRESSION: z.object({}).optional(),
+  ACTION_CONSISTENCY: z.object({}).optional(),
+  ACTION_HALLUCINATION: z.object({}).optional(),
+  LAYERED_EVALUATION: z.object({}).optional(),
+};
+
+function validateCriterionExpectedValue(type: string, expectedValue: unknown): string | null {
+  const schema = CriterionExpectedValueSchemas[type as CriterionType];
+  if (!schema) return null; // unknown type — caught by VALID_CRITERION_TYPES check
+  const result = schema.safeParse(expectedValue ?? {});
+  if (!result.success) {
+    const messages = result.error.errors.map(e => e.message).join("; ");
+    return `Invalid expectedValue for ${type}: ${messages}`;
+  }
+  return null;
+}
 
 /**
  * Returns true if the requesting user can access a project owned by `projectUserId`.
@@ -37,17 +84,17 @@ async function canAccess(projectUserId: string | null, req: AuthRequest): Promis
 
 // List projects: user's own projects + org-mates' projects + legacy projects (userId=null)
 router.get("/", async (req: AuthRequest, res) => {
-  // Collect all user IDs in the same org (includes self) for project visibility
-  const orgUserIds: string[] = req.userId ? [req.userId] : [];
+  // Collect all user IDs in the same org (includes self) for project visibility.
+  // Use a Set to avoid O(n²) includes() scan on large orgs.
+  const orgUserIdSet = new Set<string>(req.userId ? [req.userId] : []);
   if (req.organizationId) {
     const orgMembers = await prisma.user.findMany({
       where: { organizationId: req.organizationId },
       select: { id: true },
     });
-    for (const m of orgMembers) {
-      if (!orgUserIds.includes(m.id)) orgUserIds.push(m.id);
-    }
+    for (const m of orgMembers) orgUserIdSet.add(m.id);
   }
+  const orgUserIds = [...orgUserIdSet];
   const projects = await prisma.project.findMany({
     where: { OR: [{ userId: { in: orgUserIds } }, { userId: null }] },
     include: {
@@ -411,6 +458,8 @@ router.post("/", async (req: AuthRequest, res) => {
       if (!VALID_CRITERION_TYPES.has(c.type)) {
         return res.status(400).json({ error: `Invalid criterion type: ${c.type}` });
       }
+      const valErr = validateCriterionExpectedValue(c.type, c.expectedValue);
+      if (valErr) return res.status(400).json({ error: valErr });
     }
   }
 
@@ -551,6 +600,7 @@ router.delete("/:id", async (req: AuthRequest, res) => {
     if (!existing) return res.status(404).json({ error: "Project not found" });
     if (!await canAccess(existing.userId ?? null, req)) return res.status(403).json({ error: "Access denied" });
     await prisma.project.delete({ where: { id: req.params.id } });
+    audit(req, "project.delete", req.params.id);
     res.json({ ok: true });
   } catch (err: any) {
     if (err?.code === "P2025") return res.status(404).json({ error: "Project not found" });
@@ -568,6 +618,8 @@ router.post("/:id/criteria", async (req: AuthRequest, res) => {
   if (!VALID_CRITERION_TYPES.has(type)) {
     return res.status(400).json({ error: `Invalid criterion type: ${type}` });
   }
+  const valErr = validateCriterionExpectedValue(type, expectedValue);
+  if (valErr) return res.status(400).json({ error: valErr });
 
   try {
     const existing = await prisma.project.findUnique({ where: { id: req.params.id }, select: { userId: true } });
@@ -663,7 +715,7 @@ const analyzingProjects = new Set<string>();
 const rehydratingProjects = new Set<string>();
 
 // Trigger a new analysis version for the project
-router.post("/:id/analyze", async (req: AuthRequest, res) => {
+router.post("/:id/analyze", evalRateLimit, async (req: AuthRequest, res) => {
   const projectId = req.params.id;
   const { dateFilterType, from, to } = req.body;
 
@@ -774,7 +826,7 @@ router.delete("/:id/analyses/:analysisId", async (req: AuthRequest, res) => {
  * Reset all COMPLETE/FAILED runs to PENDING so they get re-evaluated.
  * Deletes existing eval results so criteria run fresh.
  */
-router.post("/:id/re-evaluate", async (req: AuthRequest, res) => {
+router.post("/:id/re-evaluate", evalRateLimit, async (req: AuthRequest, res) => {
   const projectId = req.params.id;
   const p = await prisma.project.findUnique({ where: { id: projectId }, select: { userId: true } });
   if (!p) return res.status(404).json({ error: "Project not found" });
@@ -801,6 +853,7 @@ router.post("/:id/re-evaluate", async (req: AuthRequest, res) => {
       );
     }
 
+    audit(req, "project.re_evaluate", projectId, { resetCount: result.count });
     res.json({ ok: true, resetCount: result.count });
   } catch (err) {
     res.status(500).json({ error: (err as Error).message });
@@ -919,7 +972,7 @@ router.post("/:id/re-hydrate", async (req: AuthRequest, res) => {
  * Body: { question: string }
  * Returns matching runs with explanations.
  */
-router.post("/:id/ask", async (req: AuthRequest, res) => {
+router.post("/:id/ask", llmRateLimit, async (req: AuthRequest, res) => {
   const { question } = req.body;
   if (!question || typeof question !== "string" || question.trim().length < 3) {
     return res.status(400).json({ error: "Please provide a question (min 3 characters)" });
@@ -993,7 +1046,7 @@ router.patch("/:id/eval-context", async (req: AuthRequest, res) => {
 // Body: { instructions?: string }
 // Audits all workflow node prompts using the project's evalContext + optional
 // one-off instructions. Returns per-node findings and suggested rewrites.
-router.post("/:id/prompt-audit", async (req: AuthRequest, res) => {
+router.post("/:id/prompt-audit", llmRateLimit, async (req: AuthRequest, res) => {
   const { instructions } = req.body as { instructions?: string };
   if (instructions && instructions.length > 3000) {
     return res.status(400).json({ error: "instructions must be 3000 characters or fewer" });
@@ -1069,6 +1122,7 @@ router.post("/:id/prompt-audit/apply", async (req: AuthRequest, res) => {
       data: { agentStructure: updatedStructure },
     });
 
+    audit(req, "prompt_audit.apply", req.params.id, { nodeId, nodeLabel: node.label });
     res.json({ ok: true, nodeId, nodeLabel: node.label });
   } catch (err) {
     console.error("[PromptAudit] Apply failed:", err);

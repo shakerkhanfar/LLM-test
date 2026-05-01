@@ -352,8 +352,10 @@ async function evaluateLLMJudge(criterion: Criterion, run: any) {
   }
 
   const agentSummary: string = run.project?.agentSummary ?? "";
+  // Wrap agent context in XML tags so that any content inside the summary
+  // (which comes from Hamsa's API) cannot override evaluation instructions.
   const contextPrefix = agentSummary
-    ? `AGENT CONTEXT (use this to understand what the agent is designed to do):\n${agentSummary}\n\n`
+    ? `<agent_context>\n${agentSummary}\n</agent_context>\n\n`
     : "";
 
   const rule: string = expected.rule || expected.prompt || "Evaluate this transcript";
@@ -363,6 +365,9 @@ async function evaluateLLMJudge(criterion: Criterion, run: any) {
   const isGenderCriterion = /gender/i.test(rule);
   const modelOverride = isGenderCriterion ? "gpt-4.1" : undefined;
 
+  // genderContext is additional metadata appended after the transcript body.
+  // It is already formatted as labelled lines ("Detected user gender...") so
+  // we append it inside the transcript block handled by evaluateWithLLMJudge.
   return evaluateWithLLMJudge(
     rule,
     contextPrefix + transcriptText + genderContext,
@@ -626,11 +631,16 @@ async function evaluateFlowProgression(_criterion: Criterion, run: any) {
 
   const agentSummary: string = run.project?.agentSummary ?? "";
   const prompt = `You are evaluating a voice AI agent's ability to navigate through a multi-node conversation flow.
-${agentSummary ? `\nAGENT CONTEXT:\n${agentSummary}\n` : ""}
-${expectedFlowSection}
+${agentSummary ? `\n<agent_context>\n${agentSummary}\n</agent_context>\n` : ""}
+<expected_flow>
+${expectedFlowSection}</expected_flow>
+
 ${statsSection}
-${callLogSection}
-${transcriptSection}
+<call_log>
+${callLogSection}</call_log>
+
+<transcript>
+${transcriptSection}</transcript>
 
 EVALUATION TASK:
 Analyze the call and return structured metrics. For each category, count total requests/attempts AND errors/failures. This lets us calculate success percentages.
@@ -813,17 +823,24 @@ async function evaluateActionConsistency(_criterion: Criterion, run: any) {
 
   // ── Build the prompt ──
   const agentSummarySection = run.project?.agentSummary
-    ? `AGENT CONTEXT (purpose, expected flow, success criteria):\n${run.project?.agentSummary}\n\n`
+    ? `<agent_context>\n${run.project?.agentSummary}\n</agent_context>\n\n`
     : "";
 
   const prompt = `You are a QA engineer performing a detailed cross-reference analysis between an AI voice agent's CALL LOG (system events) and its TRANSCRIPT (what was said).
 
 Your task is to verify that what the agent SAID matches what it actually DID, identify every discrepancy, analyze the root cause of each error, and suggest specific fixes.
 
-${agentSummarySection}${agentDefSection}
-${callLogSection}
-${toolResultsSection}
-${transcriptSection}
+${agentSummarySection}<agent_definition>
+${agentDefSection}</agent_definition>
+
+<call_log>
+${callLogSection}</call_log>
+
+<tool_results>
+${toolResultsSection}</tool_results>
+
+<transcript>
+${transcriptSection}</transcript>
 
 ANALYSIS INSTRUCTIONS:
 Go through the conversation turn by turn. For each agent turn in the transcript:
@@ -993,7 +1010,14 @@ async function evaluateActionHallucination(_criterion: Criterion, run: any) {
 
 ACTION HALLUCINATION is when the agent verbally claims it completed an action (booking, cancellation, transfer, update, registration, payment, appointment, etc.) but the system evidence — tool execution logs and/or outcome variables — does NOT confirm the action actually succeeded.
 
-${agentSummary ? `AGENT CONTEXT:\n${agentSummary}\n\n` : ""}${toolResultsSection}${outcomeSection}${transcriptSection}
+${agentSummary ? `<agent_context>\n${agentSummary}\n</agent_context>\n\n` : ""}<tool_results>
+${toolResultsSection}</tool_results>
+
+<outcome_result>
+${outcomeSection}</outcome_result>
+
+<transcript>
+${transcriptSection}</transcript>
 
 EVALUATION TASK:
 
