@@ -4,7 +4,7 @@ import { RunStatus } from "@prisma/client";
 import { updateAgentModel } from "../services/hamsaApi";
 import { runEvaluationCheck } from "../services/evaluationRunner";
 import { AuthRequest } from "../middleware/auth";
-import { assertProjectAccess, assertRunAccess } from "../lib/ownership";
+import { assertProjectAccess, assertRunAccess, canAccess } from "../lib/ownership";
 
 const router = Router();
 
@@ -14,7 +14,7 @@ const CLIENT_SETTABLE_STATUSES = new Set<string>(["PENDING", "RUNNING", "AWAITIN
 
 // List runs for a project (most recent 200, with pagination via ?skip=)
 router.get("/project/:projectId", async (req: AuthRequest, res) => {
-  const project = await assertProjectAccess(req.params.projectId, req.userId, res);
+  const project = await assertProjectAccess(req.params.projectId, req, res);
   if (!project) return;
 
   const skip = parseInt(req.query.skip as string) || 0;
@@ -46,7 +46,7 @@ router.get("/:id", async (req: AuthRequest, res) => {
     });
     if (!run) return res.status(404).json({ error: "Run not found" });
     const projectUserId = (run.project as any)?.userId as string | null;
-    if (projectUserId !== null && projectUserId !== req.userId) {
+    if (!await canAccess(projectUserId, req)) {
       return res.status(403).json({ error: "Access denied" });
     }
     res.json(run);
@@ -61,7 +61,7 @@ router.post("/", async (req: AuthRequest, res) => {
   if (!projectId) return res.status(400).json({ error: "projectId is required" });
 
   try {
-    const project = await assertProjectAccess(projectId, req.userId, res);
+    const project = await assertProjectAccess(projectId, req, res);
     if (!project) return;
 
     const run = await prisma.run.create({
@@ -87,7 +87,7 @@ router.post("/:id/switch-model", async (req: AuthRequest, res) => {
       include: { project: true },
     });
     if (!run) return res.status(404).json({ error: "Run not found" });
-    if ((run.project as any).userId !== null && (run.project as any).userId !== req.userId) {
+    if (!await canAccess((run.project as any).userId ?? null, req)) {
       return res.status(403).json({ error: "Access denied" });
     }
 
@@ -118,7 +118,7 @@ router.post("/:id/fetch-logs", async (req: AuthRequest, res) => {
       include: { project: true },
     });
     if (!run) return res.status(404).json({ error: "Run not found" });
-    if ((run.project as any).userId !== null && (run.project as any).userId !== req.userId) {
+    if (!await canAccess((run.project as any).userId ?? null, req)) {
       return res.status(403).json({ error: "Access denied" });
     }
     if (!run.hamsaCallId) return res.status(400).json({ error: "No call ID on this run" });
@@ -142,7 +142,7 @@ router.post("/:id/call-log", async (req: AuthRequest, res) => {
   if (!Array.isArray(callLog)) return res.status(400).json({ error: "callLog must be an array" });
 
   try {
-    const access = await assertRunAccess(req.params.id, req.userId, res);
+    const access = await assertRunAccess(req.params.id, req, res);
     if (!access) return;
 
     const run = await prisma.run.update({
@@ -162,7 +162,7 @@ router.post("/:id/transcript", async (req: AuthRequest, res) => {
   const { transcript, webhookData } = req.body;
 
   try {
-    const access = await assertRunAccess(req.params.id, req.userId, res);
+    const access = await assertRunAccess(req.params.id, req, res);
     if (!access) return;
 
     const run = await prisma.run.update({
@@ -180,7 +180,7 @@ router.post("/:id/transcript", async (req: AuthRequest, res) => {
 // Manually trigger evaluation (force re-run even if status is COMPLETE)
 router.post("/:id/evaluate", async (req: AuthRequest, res) => {
   try {
-    const access = await assertRunAccess(req.params.id, req.userId, res);
+    const access = await assertRunAccess(req.params.id, req, res);
     if (!access) return;
 
     // Atomic reset: prevents interrupting an in-progress evaluation.
@@ -214,7 +214,7 @@ router.patch("/:id", async (req: AuthRequest, res) => {
   }
 
   try {
-    const access = await assertRunAccess(req.params.id, req.userId, res);
+    const access = await assertRunAccess(req.params.id, req, res);
     if (!access) return;
 
     const data: any = {};
@@ -235,7 +235,7 @@ router.patch("/:id", async (req: AuthRequest, res) => {
 // Delete a run
 router.delete("/:id", async (req: AuthRequest, res) => {
   try {
-    const access = await assertRunAccess(req.params.id, req.userId, res);
+    const access = await assertRunAccess(req.params.id, req, res);
     if (!access) return;
 
     await prisma.run.delete({ where: { id: access.id } });
@@ -282,7 +282,7 @@ router.post("/compare", async (req: AuthRequest, res) => {
 
     // Verify the user owns the project (runs.length > 0 is guaranteed above)
     const projectUserId = (runs[0].project as any)?.userId as string | null;
-    if (projectUserId !== null && projectUserId !== req.userId) {
+    if (!await canAccess(projectUserId, req)) {
       return res.status(403).json({ error: "Access denied" });
     }
 

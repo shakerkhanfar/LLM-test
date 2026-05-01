@@ -2,13 +2,13 @@ import prisma from "../lib/prisma";
 import { Router } from "express";
 import { runEvaluationCheck } from "../services/evaluationRunner";
 import { AuthRequest } from "../middleware/auth";
-import { assertRunAccess } from "../lib/ownership";
+import { assertRunAccess, canAccess } from "../lib/ownership";
 
 const router = Router();
 
 // Get all labels for a run
 router.get("/run/:runId", async (req: AuthRequest, res) => {
-  const access = await assertRunAccess(req.params.runId, req.userId, res);
+  const access = await assertRunAccess(req.params.runId, req, res);
   if (!access) return;
 
   const labels = await prisma.wordLabel.findMany({
@@ -20,7 +20,7 @@ router.get("/run/:runId", async (req: AuthRequest, res) => {
 
 // Create a word label
 router.post("/run/:runId", async (req: AuthRequest, res) => {
-  const access = await assertRunAccess(req.params.runId, req.userId, res);
+  const access = await assertRunAccess(req.params.runId, req, res);
   if (!access) return;
 
   const { wordIndex, utteranceIndex, originalWord, labelType, correction } = req.body;
@@ -58,7 +58,7 @@ router.delete("/:id", async (req: AuthRequest, res) => {
     if (!label) return res.status(404).json({ error: "Label not found" });
 
     const projectUserId = (label as any).run?.project?.userId as string | null;
-    if (projectUserId !== null && projectUserId !== req.userId) {
+    if (!await canAccess(projectUserId, req)) {
       return res.status(403).json({ error: "Access denied" });
     }
 
@@ -76,7 +76,7 @@ router.delete("/:id", async (req: AuthRequest, res) => {
 
 // Bulk create labels
 router.post("/run/:runId/bulk", async (req: AuthRequest, res) => {
-  const access = await assertRunAccess(req.params.runId, req.userId, res);
+  const access = await assertRunAccess(req.params.runId, req, res);
   if (!access) return;
 
   const { labels } = req.body;

@@ -1,13 +1,35 @@
 /**
- * Ownership helpers — centralise the "does this user own this resource?" checks.
+ * Ownership helpers — centralise the "can this user access this resource?" checks.
  *
- * Projects with userId=null are legacy records accessible by any authenticated
- * user (read AND write). New projects always get a userId at creation time.
+ * Access is granted when ANY of these is true:
+ *  1. Project has no owner (userId=null) — legacy records
+ *  2. The requesting user owns the project (userId === req.userId)
+ *  3. Both the requesting user and the project owner share the same organization
+ *
+ * Ready for org-level roles: add a `role` check inside `canAccess` when needed.
  */
 import prisma from "./prisma";
 import type { Response } from "express";
+import type { AuthRequest } from "../middleware/auth";
 
 type AccessResult<T> = T | null; // null means the response was already sent
+
+/**
+ * Returns true if the requesting user can access a project owned by `projectUserId`.
+ */
+export async function canAccess(
+  projectUserId: string | null,
+  req: AuthRequest,
+): Promise<boolean> {
+  if (projectUserId === null) return true;             // legacy / unowned
+  if (projectUserId === req.userId) return true;       // own project
+  if (!req.organizationId) return false;               // no org — deny
+  const owner = await prisma.user.findUnique({
+    where: { id: projectUserId },
+    select: { organizationId: true },
+  });
+  return !!owner?.organizationId && owner.organizationId === req.organizationId;
+}
 
 /**
  * Verify an authenticated user can access a project.
@@ -15,11 +37,10 @@ type AccessResult<T> = T | null; // null means the response was already sent
  */
 export async function assertProjectAccess(
   projectId: string,
-  userId: string | undefined,
+  req: AuthRequest,
   res: Response,
 ): Promise<AccessResult<{ id: string; userId: string | null }>> {
-  // userId must be set by requireAuth middleware; if missing, reject immediately
-  if (!userId) {
+  if (!req.userId) {
     res.status(401).json({ error: "Unauthorized" });
     return null;
   }
@@ -31,9 +52,7 @@ export async function assertProjectAccess(
     res.status(404).json({ error: "Project not found" });
     return null;
   }
-  // Legacy projects (userId=null) are accessible by any authenticated user.
-  // New projects require matching userId.
-  if (project.userId !== null && project.userId !== userId) {
+  if (!await canAccess(project.userId, req)) {
     res.status(403).json({ error: "Access denied" });
     return null;
   }
@@ -46,10 +65,10 @@ export async function assertProjectAccess(
  */
 export async function assertRunAccess(
   runId: string,
-  userId: string | undefined,
+  req: AuthRequest,
   res: Response,
 ): Promise<AccessResult<{ id: string; projectId: string }>> {
-  if (!userId) {
+  if (!req.userId) {
     res.status(401).json({ error: "Unauthorized" });
     return null;
   }
@@ -61,9 +80,8 @@ export async function assertRunAccess(
     res.status(404).json({ error: "Run not found" });
     return null;
   }
-  // project is guaranteed by FK, but use optional chain defensively for orphaned rows
   const projectUserId = (run as any).project?.userId as string | null | undefined;
-  if (projectUserId !== null && projectUserId !== undefined && projectUserId !== userId) {
+  if (!await canAccess(projectUserId ?? null, req)) {
     res.status(403).json({ error: "Access denied" });
     return null;
   }

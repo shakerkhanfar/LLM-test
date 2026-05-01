@@ -15,10 +15,41 @@ const router = Router();
 const VALID_CRITERION_TYPES = new Set<string>(Object.values(CriterionType));
 const VALID_PROJECT_TYPES = new Set(["LIVE", "HISTORY", "WEBHOOK"]);
 
-// List projects: user's own projects + legacy projects (userId=null)
+/**
+ * Returns true if the requesting user can access a project owned by `projectUserId`.
+ * Access is granted when:
+ *  - projectUserId is null (legacy / unowned project)
+ *  - the requesting user owns the project
+ *  - both users belong to the same organization
+ *
+ * Ready for org-level roles: just add a `role` check here later.
+ */
+async function canAccess(projectUserId: string | null, req: AuthRequest): Promise<boolean> {
+  if (projectUserId === null) return true;
+  if (projectUserId === req.userId) return true;
+  if (!req.organizationId) return false;
+  const owner = await prisma.user.findUnique({
+    where: { id: projectUserId },
+    select: { organizationId: true },
+  });
+  return !!owner?.organizationId && owner.organizationId === req.organizationId;
+}
+
+// List projects: user's own projects + org-mates' projects + legacy projects (userId=null)
 router.get("/", async (req: AuthRequest, res) => {
+  // Collect all user IDs in the same org (includes self) for project visibility
+  const orgUserIds: string[] = req.userId ? [req.userId] : [];
+  if (req.organizationId) {
+    const orgMembers = await prisma.user.findMany({
+      where: { organizationId: req.organizationId },
+      select: { id: true },
+    });
+    for (const m of orgMembers) {
+      if (!orgUserIds.includes(m.id)) orgUserIds.push(m.id);
+    }
+  }
   const projects = await prisma.project.findMany({
-    where: { OR: [{ userId: req.userId }, { userId: null }] },
+    where: { OR: [{ userId: { in: orgUserIds } }, { userId: null }] },
     include: {
       _count: { select: { criteria: true, runs: true } },
       runs: {
@@ -63,7 +94,7 @@ router.post("/agent-preview", async (req, res) => {
 router.get("/:id/export-call-ids", async (req: AuthRequest, res) => {
   const p = await prisma.project.findUnique({ where: { id: req.params.id }, select: { userId: true, name: true } });
   if (!p) return res.status(404).json({ error: "Project not found" });
-  if (p.userId !== null && p.userId !== req.userId) return res.status(403).json({ error: "Access denied" });
+  if (!await canAccess(p.userId, req)) return res.status(403).json({ error: "Access denied" });
 
   const runs = await prisma.run.findMany({
     where: { projectId: req.params.id, conversationId: { not: null } },
@@ -149,7 +180,7 @@ router.get("/:id", async (req: AuthRequest, res) => {
       },
     });
     if (!project) return res.status(404).json({ error: "Project not found" });
-    if (project.userId && project.userId !== req.userId) {
+    if (!await canAccess(project.userId ?? null, req)) {
       console.log(`[Projects] Access denied: project.userId=${project.userId} req.userId=${req.userId}`);
       return res.status(403).json({ error: "Access denied" });
     }
@@ -455,7 +486,7 @@ router.patch("/:id", async (req: AuthRequest, res) => {
   try {
     const existing = await prisma.project.findUnique({ where: { id: req.params.id }, select: { userId: true } });
     if (!existing) return res.status(404).json({ error: "Project not found" });
-    if (existing.userId && existing.userId !== req.userId) return res.status(403).json({ error: "Access denied" });
+    if (!await canAccess(existing.userId ?? null, req)) return res.status(403).json({ error: "Access denied" });
 
     const data: any = {};
     if (name !== undefined) data.name = name;
@@ -484,7 +515,7 @@ router.post("/:id/refresh-agent", async (req: AuthRequest, res) => {
   try {
     const project = await prisma.project.findUnique({ where: { id: req.params.id } });
     if (!project) return res.status(404).json({ error: "Project not found" });
-    if (project.userId && project.userId !== req.userId) return res.status(403).json({ error: "Access denied" });
+    if (!await canAccess(project.userId ?? null, req)) return res.status(403).json({ error: "Access denied" });
 
     const agent = await getAgent(project.agentId, project.hamsaApiKey || undefined);
     const updated = await prisma.project.update({
@@ -518,7 +549,7 @@ router.delete("/:id", async (req: AuthRequest, res) => {
   try {
     const existing = await prisma.project.findUnique({ where: { id: req.params.id }, select: { userId: true } });
     if (!existing) return res.status(404).json({ error: "Project not found" });
-    if (existing.userId && existing.userId !== req.userId) return res.status(403).json({ error: "Access denied" });
+    if (!await canAccess(existing.userId ?? null, req)) return res.status(403).json({ error: "Access denied" });
     await prisma.project.delete({ where: { id: req.params.id } });
     res.json({ ok: true });
   } catch (err: any) {
@@ -647,7 +678,7 @@ router.post("/:id/analyze", async (req: AuthRequest, res) => {
   // Ownership check
   const projectOwner = await prisma.project.findUnique({ where: { id: projectId }, select: { userId: true } });
   if (!projectOwner) return res.status(404).json({ error: "Project not found" });
-  if (projectOwner.userId !== null && projectOwner.userId !== req.userId) return res.status(403).json({ error: "Access denied" });
+  if (!await canAccess(projectOwner.userId, req)) return res.status(403).json({ error: "Access denied" });
 
   analyzingProjects.add(projectId);
   try {
@@ -677,7 +708,7 @@ router.get("/:id/analyses", async (req: AuthRequest, res) => {
   try {
     const p = await prisma.project.findUnique({ where: { id: req.params.id }, select: { userId: true } });
     if (!p) return res.status(404).json({ error: "Project not found" });
-    if (p.userId !== null && p.userId !== req.userId) return res.status(403).json({ error: "Access denied" });
+    if (!await canAccess(p.userId, req)) return res.status(403).json({ error: "Access denied" });
 
     const analyses = await prisma.projectAnalysis.findMany({
       where:   { projectId: req.params.id },
@@ -725,7 +756,7 @@ router.delete("/:id/analyses/:analysisId", async (req: AuthRequest, res) => {
   try {
     const p = await prisma.project.findUnique({ where: { id: req.params.id }, select: { userId: true } });
     if (!p) return res.status(404).json({ error: "Project not found" });
-    if (p.userId !== null && p.userId !== req.userId) return res.status(403).json({ error: "Access denied" });
+    if (!await canAccess(p.userId, req)) return res.status(403).json({ error: "Access denied" });
 
     await prisma.projectAnalysis.delete({
       where: { id: req.params.analysisId, projectId: req.params.id },
@@ -747,7 +778,7 @@ router.post("/:id/re-evaluate", async (req: AuthRequest, res) => {
   const projectId = req.params.id;
   const p = await prisma.project.findUnique({ where: { id: projectId }, select: { userId: true } });
   if (!p) return res.status(404).json({ error: "Project not found" });
-  if (p.userId !== null && p.userId !== req.userId) return res.status(403).json({ error: "Access denied" });
+  if (!await canAccess(p.userId, req)) return res.status(403).json({ error: "Access denied" });
 
   try {
     // Atomic: delete eval results + reset runs in one transaction
@@ -787,7 +818,7 @@ router.post("/:id/re-hydrate", async (req: AuthRequest, res) => {
   const projectId = req.params.id;
   const project = await prisma.project.findUnique({ where: { id: projectId } });
   if (!project) return res.status(404).json({ error: "Project not found" });
-  if (project.userId !== null && project.userId !== req.userId) return res.status(403).json({ error: "Access denied" });
+  if (!await canAccess(project.userId, req)) return res.status(403).json({ error: "Access denied" });
 
   if (rehydratingProjects.has(projectId)) {
     return res.status(409).json({ error: "Re-hydration already in progress for this project." });
@@ -896,7 +927,7 @@ router.post("/:id/ask", async (req: AuthRequest, res) => {
 
   const project = await prisma.project.findUnique({ where: { id: req.params.id } });
   if (!project) return res.status(404).json({ error: "Project not found" });
-  if (project.userId !== null && project.userId !== req.userId) return res.status(403).json({ error: "Access denied" });
+  if (!await canAccess(project.userId, req)) return res.status(403).json({ error: "Access denied" });
 
   // 90s timeout — two LLM calls with enriched context + DB query
   const timeout = setTimeout(() => {
@@ -926,7 +957,7 @@ router.get("/:id/eval-context", async (req: AuthRequest, res) => {
       select: { userId: true, evalContext: true },
     });
     if (!project) return res.status(404).json({ error: "Project not found" });
-    if (project.userId !== null && project.userId !== req.userId) return res.status(403).json({ error: "Access denied" });
+    if (!await canAccess(project.userId, req)) return res.status(403).json({ error: "Access denied" });
     res.json({ evalContext: project.evalContext ?? "" });
   } catch (err) {
     res.status(500).json({ error: (err as Error).message });
@@ -944,7 +975,7 @@ router.patch("/:id/eval-context", async (req: AuthRequest, res) => {
       select: { userId: true },
     });
     if (!project) return res.status(404).json({ error: "Project not found" });
-    if (project.userId !== null && project.userId !== req.userId) return res.status(403).json({ error: "Access denied" });
+    if (!await canAccess(project.userId, req)) return res.status(403).json({ error: "Access denied" });
     const updated = await prisma.project.update({
       where: { id: req.params.id },
       data: { evalContext: evalContext.trim() || null },
@@ -979,7 +1010,7 @@ router.post("/:id/prompt-audit", async (req: AuthRequest, res) => {
       select: { userId: true, agentSummary: true, agentStructure: true, evalContext: true },
     });
     if (!project) { clearTimeout(timeout); return res.status(404).json({ error: "Project not found" }); }
-    if (project.userId !== null && project.userId !== req.userId) { clearTimeout(timeout); return res.status(403).json({ error: "Access denied" }); }
+    if (!await canAccess(project.userId, req)) { clearTimeout(timeout); return res.status(403).json({ error: "Access denied" }); }
     if (!project.agentStructure) { clearTimeout(timeout); return res.status(400).json({ error: "Agent structure not loaded. Refresh the agent first." }); }
 
     const result = await auditAgentPrompts(
@@ -1012,7 +1043,7 @@ router.post("/:id/prompt-audit/apply", async (req: AuthRequest, res) => {
       select: { userId: true, agentId: true, hamsaApiKey: true, agentStructure: true },
     });
     if (!project) return res.status(404).json({ error: "Project not found" });
-    if (project.userId !== null && project.userId !== req.userId) return res.status(403).json({ error: "Access denied" });
+    if (!await canAccess(project.userId, req)) return res.status(403).json({ error: "Access denied" });
     if (!project.agentStructure) return res.status(400).json({ error: "Agent structure not loaded." });
 
     const structure = project.agentStructure as any;

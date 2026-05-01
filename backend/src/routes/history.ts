@@ -20,6 +20,7 @@ function flog(msg: string) {
  */
 import { Router } from "express";
 import { AuthRequest } from "../middleware/auth";
+import { canAccess } from "../lib/ownership";
 import * as XLSX from "xlsx";
 import {
   exportConversations,
@@ -67,7 +68,7 @@ router.post("/:projectId/import-ids", async (req: AuthRequest, res) => {
 
   const project = await prisma.project.findUnique({ where: { id: projectId } });
   if (!project) return res.status(404).json({ error: "Project not found" });
-  if (project.userId !== null && project.userId !== (req as any).userId) {
+  if (!await canAccess(project.userId, req)) {
     return res.status(403).json({ error: "Access denied" });
   }
 
@@ -218,7 +219,7 @@ router.post("/:projectId/import", async (req: AuthRequest, res) => {
 
   const project = await prisma.project.findUnique({ where: { id: projectId } });
   if (!project) return res.status(404).json({ error: "Project not found" });
-  if (project.userId !== null && project.userId !== req.userId) return res.status(403).json({ error: "Access denied" });
+  if (!await canAccess(project.userId, req)) return res.status(403).json({ error: "Access denied" });
 
   const apiKey = project.hamsaApiKey || undefined;
   if (!apiKey && !process.env.HAMSA_API_KEY) {
@@ -354,7 +355,7 @@ router.post("/:projectId/import-csv", async (req: AuthRequest, res) => {
 
   const project = await prisma.project.findUnique({ where: { id: projectId } });
   if (!project) return res.status(404).json({ error: "Project not found" });
-  if (project.userId !== null && project.userId !== req.userId) return res.status(403).json({ error: "Access denied" });
+  if (!await canAccess(project.userId, req)) return res.status(403).json({ error: "Access denied" });
 
   const apiKey = project.hamsaApiKey || process.env.HAMSA_API_KEY;
   if (!apiKey) {
@@ -487,7 +488,7 @@ router.post("/:projectId/import-csv", async (req: AuthRequest, res) => {
 router.get("/:projectId/export-status", async (req: AuthRequest, res) => {
   const project = await prisma.project.findUnique({ where: { id: req.params.projectId } });
   if (!project) return res.status(404).json({ error: "Project not found" });
-  if (project.userId !== null && project.userId !== req.userId) return res.status(403).json({ error: "Access denied" });
+  if (!await canAccess(project.userId, req)) return res.status(403).json({ error: "Access denied" });
 
   const { hamsaProjectId, exportId, apiBaseUrl } = req.query as Record<string, string>;
   if (!hamsaProjectId || !exportId) {
@@ -524,7 +525,7 @@ router.get("/:projectId/export-status", async (req: AuthRequest, res) => {
 router.get("/:projectId/debug-conv/:convId", async (req: AuthRequest, res) => {
   const project = await prisma.project.findUnique({ where: { id: req.params.projectId } });
   if (!project) return res.status(404).json({ error: "Project not found" });
-  if (project.userId !== null && project.userId !== req.userId) return res.status(403).json({ error: "Access denied" });
+  if (!await canAccess(project.userId, req)) return res.status(403).json({ error: "Access denied" });
 
   try {
     const conv = await fetchConversation(req.params.convId, project.hamsaApiKey || undefined);
@@ -569,7 +570,7 @@ router.get("/:projectId/debug-conv/:convId", async (req: AuthRequest, res) => {
 router.get("/:projectId/debug-excel", async (req: AuthRequest, res) => {
   const project = await prisma.project.findUnique({ where: { id: req.params.projectId } });
   if (!project) return res.status(404).json({ error: "Project not found" });
-  if (project.userId !== null && project.userId !== req.userId) return res.status(403).json({ error: "Access denied" });
+  if (!await canAccess(project.userId, req)) return res.status(403).json({ error: "Access denied" });
 
   try {
     const buf = await exportConversations(
@@ -601,7 +602,7 @@ router.get("/:projectId/status", async (req: AuthRequest, res) => {
   // Ownership check via project lookup
   const project = await prisma.project.findUnique({ where: { id: req.params.projectId }, select: { userId: true } });
   if (!project) return res.status(404).json({ error: "Project not found" });
-  if (project.userId !== null && project.userId !== req.userId) return res.status(403).json({ error: "Access denied" });
+  if (!await canAccess(project.userId, req)) return res.status(403).json({ error: "Access denied" });
 
   const groups = await prisma.run.groupBy({
     by: ["status"],
