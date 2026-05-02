@@ -547,6 +547,17 @@ async function evaluateFlowProgression(_criterion: Criterion, run: any) {
     return { passed: null, score: null, detail: "No data available" };
   }
 
+  // If the user never spoke, the call was abandoned after the greeting.
+  // There is nothing to evaluate about flow progression — it's not an agent failure.
+  const userUtteranceCount = transcript?.filter((t: any) => t.User)?.length ?? 0;
+  if (userUtteranceCount === 0) {
+    return {
+      passed: null,
+      score: null,
+      detail: "Not applicable — call abandoned before user responded. No agent flow failure.",
+    };
+  }
+
   // Extract flow stats for context
   const flow = callLog ? extractFlowData(callLog) : {
     nodeMoves: 0, uniqueNodesVisited: 0, nodeSequence: [],
@@ -630,7 +641,13 @@ async function evaluateFlowProgression(_criterion: Criterion, run: any) {
 `;
 
   const agentSummary: string = run.project?.agentSummary ?? "";
-  const prompt = `You are evaluating a voice AI agent's ability to navigate through a multi-node conversation flow.
+  // Warn the model when the call was very short — prevents over-penalising
+  // the agent for a caller who disengaged after just one or two turns.
+  const shortCallNote = userUtteranceCount <= 2
+    ? `\nIMPORTANT: This call had only ${userUtteranceCount} user turn(s). The caller may have hung up early. Do NOT penalise the agent for incomplete flow progression if the user disengaged before giving the agent a chance to proceed.\n`
+    : "";
+
+  const prompt = `You are evaluating a voice AI agent's ability to navigate through a multi-node conversation flow.${shortCallNote}
 ${agentSummary ? `\n<agent_context>\n${agentSummary}\n</agent_context>\n` : ""}
 <expected_flow>
 ${expectedFlowSection}</expected_flow>
@@ -727,6 +744,16 @@ async function evaluateActionConsistency(_criterion: Criterion, run: any) {
   }
   if (!transcript || (Array.isArray(transcript) && transcript.length === 0)) {
     return { passed: null, score: null, detail: "No transcript available — cannot cross-reference speech" };
+  }
+
+  // Only the agent greeted — no user interaction to cross-reference.
+  const userUtteranceCount = (transcript as any[]).filter((t: any) => t.User).length;
+  if (userUtteranceCount === 0) {
+    return {
+      passed: null,
+      score: null,
+      detail: "Not applicable — call abandoned before user responded. Nothing to cross-reference.",
+    };
   }
 
   // ── Build AGENT DEFINITION section ──
@@ -1116,6 +1143,17 @@ async function evaluateLayered(_criterion: Criterion, run: any) {
   }
   if (!Array.isArray(callLog) || callLog.length === 0) {
     return { passed: null, score: null, detail: "No call log available — layered evaluation requires execution logs for node mapping" };
+  }
+
+  // Call abandoned before user spoke — agent greeted but got no response.
+  // Evaluating node behavior on a zero-turn conversation produces false failures.
+  const userUtteranceCount = transcript.filter((t: any) => t.User).length;
+  if (userUtteranceCount === 0) {
+    return {
+      passed: null,
+      score: null,
+      detail: "Not applicable — call abandoned before user responded. No agent behavior to evaluate.",
+    };
   }
 
   let result;
