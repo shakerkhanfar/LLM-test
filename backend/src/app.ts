@@ -108,19 +108,38 @@ import { initQueue } from "./services/evaluationRunner";
 async function ensureDemoUser() {
   const email = process.env.DEMO_USER_EMAIL;
   const password = process.env.DEMO_USER_PASSWORD;
-  if (!email || !password) {
-    // No demo user configured — skip silently
-    return;
-  }
+  const orgName = process.env.DEMO_ORG_NAME || "Hamsa";
+  if (!email || !password) return;
   try {
+    // Find or create the org
+    let org = await prisma.organization.findFirst({
+      where: { name: { equals: orgName, mode: "insensitive" } },
+    });
+    if (!org) {
+      org = await prisma.organization.create({ data: { name: orgName } });
+      console.log(`[Seed] Created org "${orgName}" (${org.id})`);
+    }
+
     const existing = await prisma.user.findUnique({ where: { email } });
     if (existing) {
-      console.log(`[Seed] User ${email} already exists`);
+      // Ensure the existing user is linked to the org (handles re-deploys)
+      if (existing.organizationId !== org.id) {
+        await prisma.user.update({
+          where: { id: existing.id },
+          data: { organizationId: org.id },
+        });
+        console.log(`[Seed] Linked ${email} to org "${orgName}"`);
+      } else {
+        console.log(`[Seed] User ${email} already exists in org "${orgName}"`);
+      }
       return;
     }
+
     const hash = await bcrypt.hash(password, BCRYPT_ROUNDS);
-    const user = await prisma.user.create({ data: { email, passwordHash: hash } });
-    console.log(`[Seed] Created demo user ${email} (${user.id})`);
+    const user = await prisma.user.create({
+      data: { email, passwordHash: hash, organizationId: org.id },
+    });
+    console.log(`[Seed] Created demo user ${email} (${user.id}) in org "${orgName}"`);
   } catch (err) {
     console.error("[Seed] Failed:", (err as Error).message);
   }
