@@ -1001,6 +1001,7 @@ router.post("/:id/tool-search", async (req: AuthRequest, res) => {
   try {
     // Use Postgres text cast: callLog is JSONB so ::text is efficient.
     // The cast produces the full JSON string which ILIKE can search over.
+    // Fetch 101 rows so we can detect truncation without a separate COUNT query.
     type RawRun = {
       id: string;
       hamsaCallId: string | null;
@@ -1012,24 +1013,40 @@ router.post("/:id/tool-search", async (req: AuthRequest, res) => {
       overallScore: number | null;
       callLog: any;
     };
-    const runs = await prisma.$queryRaw<RawRun[]>`
+    const PAGE_SIZE = 100;
+    const rawRuns = await prisma.$queryRaw<RawRun[]>`
       SELECT id, "hamsaCallId", "conversationId", "callDate", "callDuration",
              "callOutcome", "callStatus", "overallScore", "callLog"
       FROM "Run"
       WHERE "projectId" = ${project.id}
         AND "callLog" IS NOT NULL
-        AND "callLog"::text ILIKE ${'%' + cleanQuery.replace(/'/g, "''") + '%'}
+        AND "callLog"::text ILIKE ${'%' + cleanQuery + '%'}
       ORDER BY "callDate" DESC NULLS LAST
-      LIMIT 100
+      LIMIT ${PAGE_SIZE + 1}
     `;
+
+    // Detect truncation — if we got more than PAGE_SIZE rows, there are more results
+    const hasMore = rawRuns.length > PAGE_SIZE;
+    const runs = hasMore ? rawRuns.slice(0, PAGE_SIZE) : rawRuns;
 
     const queryLower = cleanQuery.toLowerCase();
 
     // For each matching run, extract the TOOLS events that contain the query
     const results = runs.map((run) => {
-      const callLog: any[] = Array.isArray(run.callLog) ? run.callLog : [];
+      // $queryRaw may return JSONB columns as a parsed object or as a JSON string
+      // depending on the Prisma version / pg driver — handle both.
+      let callLog: any[];
+      if (Array.isArray(run.callLog)) {
+        callLog = run.callLog;
+      } else if (typeof run.callLog === "string") {
+        try { callLog = JSON.parse(run.callLog); } catch { callLog = []; }
+      } else {
+        callLog = [];
+      }
 
-      // Collect all TOOLS events and pair Executing + Success/Error events together
+      // Collect all TOOLS events and pair Executing + Success/Error events together.
+      // We match result events by toolName so concurrent tool calls don't get
+      // mismatched responses.
       const toolEventGroups: Array<{
         toolName: string;
         request: any;
@@ -1046,12 +1063,17 @@ router.post("/:id/tool-search", async (req: AuthRequest, res) => {
         const toolName = e.payload?.toolName || "unknown";
         const request = e.payload?.request || e.payload?.params || null;
 
-        // Find the next result event for this tool
+        // Search ahead for the matching result event for this specific toolName.
+        // Scan up to 10 events (wider window handles interleaved concurrent calls).
         let response: any = null;
         let status: "success" | "error" | "unknown" = "unknown";
-        for (let j = i + 1; j < Math.min(i + 5, callLog.length); j++) {
+        const scanLimit = Math.min(i + 10, callLog.length);
+        for (let j = i + 1; j < scanLimit; j++) {
           const r = callLog[j];
           if (r.category !== "TOOLS") continue;
+          // Match by toolName when available; fall back to first result event.
+          const resultTool = r.payload?.toolName ?? r.payload?.name;
+          if (resultTool && resultTool !== toolName) continue;
           if (r.message === "Tool Success" || r.message === "Tool API call completed") {
             response = r.payload?.response ?? r.payload;
             status = (r.payload?.response?.ok === false) ? "error" : "success";
@@ -1064,7 +1086,7 @@ router.post("/:id/tool-search", async (req: AuthRequest, res) => {
           }
         }
 
-        // Check if this tool event contains the query
+        // Check if this tool event (request or response) contains the query
         const eventText = JSON.stringify({ toolName, request, response }).toLowerCase();
         const matchesQuery = eventText.includes(queryLower);
 
@@ -1087,7 +1109,7 @@ router.post("/:id/tool-search", async (req: AuthRequest, res) => {
       };
     }).filter((r) => r.matchCount > 0);
 
-    res.json({ query: cleanQuery, total: results.length, results });
+    res.json({ query: cleanQuery, total: results.length, hasMore, results });
   } catch (err) {
     console.error("[ToolSearch] Error:", err);
     res.status(500).json({ error: (err as Error).message });

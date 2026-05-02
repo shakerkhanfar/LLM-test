@@ -323,7 +323,7 @@ export interface ToolSearchResult {
 }
 
 export function searchToolResults(projectId: string, query: string) {
-  return request<{ query: string; total: number; results: ToolSearchResult[] }>(
+  return request<{ query: string; total: number; hasMore: boolean; results: ToolSearchResult[] }>(
     `/projects/${projectId}/tool-search`,
     { method: "POST", body: JSON.stringify({ query }) }
   );

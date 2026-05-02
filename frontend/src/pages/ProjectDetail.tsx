@@ -120,8 +120,27 @@ export default function ProjectDetail() {
   const [toolSearchQuery, setToolSearchQuery] = useState("");
   const [toolSearchLoading, setToolSearchLoading] = useState(false);
   const [toolSearchResults, setToolSearchResults] = useState<ToolSearchResult[] | null>(null);
+  const [toolSearchHasMore, setToolSearchHasMore] = useState(false);
   const [toolSearchError, setToolSearchError] = useState<string | null>(null);
   const [toolSearchExpanded, setToolSearchExpanded] = useState<string | null>(null);
+
+  const runToolSearch = useCallback(async (query: string) => {
+    if (!query.trim() || toolSearchLoading) return;
+    setToolSearchLoading(true);
+    setToolSearchError(null);
+    setToolSearchResults(null);
+    setToolSearchHasMore(false);
+    setToolSearchExpanded(null);
+    try {
+      const r = await searchToolResults(id!, query.trim());
+      setToolSearchResults(r.results);
+      setToolSearchHasMore(r.hasMore ?? false);
+    } catch (err) {
+      setToolSearchError((err as Error).message);
+    } finally {
+      setToolSearchLoading(false);
+    }
+  }, [id, toolSearchLoading]);
 
   const sortedRuns = useMemo(() => {
     const runs = [...(project?.runs ?? [])];
@@ -980,7 +999,7 @@ export default function ProjectDetail() {
           />
           {(isHistory || isWebhook) && (
             <button
-              onClick={() => { setToolSearchOpen(true); setToolSearchResults(null); setToolSearchError(null); }}
+              onClick={() => { setToolSearchOpen(true); setToolSearchQuery(""); setToolSearchResults(null); setToolSearchHasMore(false); setToolSearchError(null); setToolSearchExpanded(null); }}
               title="Search for specific text inside tool request/response payloads across all calls"
               style={{ padding: "5px 10px", background: T.card, border: `1px solid ${T.border}`, borderRadius: 4, color: T.textSecondary, fontSize: 12, cursor: "pointer", whiteSpace: "nowrap" }}
             >
@@ -2262,6 +2281,7 @@ function PromptAuditPanel({ projectId, agentStruct, onRefresh }: { projectId: st
       {toolSearchOpen && (
         <div
           onClick={(e) => { if (e.target === e.currentTarget) setToolSearchOpen(false); }}
+          onKeyDown={(e) => { if (e.key === "Escape") setToolSearchOpen(false); }}
           style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.4)", zIndex: 1000, display: "flex", alignItems: "flex-start", justifyContent: "center", paddingTop: 60 }}
         >
           <div style={{ background: T.card, border: `1px solid ${T.border}`, borderRadius: 8, width: "min(860px, 95vw)", height: "80vh", display: "flex", flexDirection: "column", boxShadow: "0 8px 32px rgba(0,0,0,0.18)" }}>
@@ -2277,24 +2297,12 @@ function PromptAuditPanel({ projectId, agentStruct, onRefresh }: { projectId: st
                       placeholder='e.g. "Invalid startDateTime format" or "No available slots"'
                       value={toolSearchQuery}
                       onChange={(e) => setToolSearchQuery(e.target.value)}
-                      onKeyDown={async (e) => {
-                        if (e.key !== "Enter" || !toolSearchQuery.trim() || toolSearchLoading) return;
-                        setToolSearchLoading(true); setToolSearchError(null); setToolSearchResults(null); setToolSearchExpanded(null);
-                        try { const r = await searchToolResults(id!, toolSearchQuery.trim()); setToolSearchResults(r.results); }
-                        catch (err) { setToolSearchError((err as Error).message); }
-                        finally { setToolSearchLoading(false); }
-                      }}
+                      onKeyDown={(e) => { if (e.key === "Enter") runToolSearch(toolSearchQuery); }}
                       style={{ flex: 1, padding: "6px 10px", background: T.input, border: `1px solid ${T.borderDark}`, borderRadius: 4, color: T.text, fontSize: 13 }}
                     />
                     <button
                       disabled={toolSearchLoading || !toolSearchQuery.trim()}
-                      onClick={async () => {
-                        if (!toolSearchQuery.trim() || toolSearchLoading) return;
-                        setToolSearchLoading(true); setToolSearchError(null); setToolSearchResults(null); setToolSearchExpanded(null);
-                        try { const r = await searchToolResults(id!, toolSearchQuery.trim()); setToolSearchResults(r.results); }
-                        catch (err) { setToolSearchError((err as Error).message); }
-                        finally { setToolSearchLoading(false); }
-                      }}
+                      onClick={() => runToolSearch(toolSearchQuery)}
                       style={{ padding: "6px 16px", background: toolSearchLoading ? T.cardAlt : T.primary, color: toolSearchLoading ? T.textSecondary : "#fff", border: "none", borderRadius: 4, cursor: toolSearchLoading ? "default" : "pointer", fontSize: 13, fontWeight: 600, whiteSpace: "nowrap" }}
                     >
                       {toolSearchLoading ? "Searching…" : "Search"}
@@ -2310,18 +2318,27 @@ function PromptAuditPanel({ projectId, agentStruct, onRefresh }: { projectId: st
 
             {/* Body */}
             <div style={{ flex: 1, overflowY: "auto", minHeight: 0 }}>
-              {toolSearchError && (
+              {toolSearchLoading && (
+                <div style={{ padding: 40, textAlign: "center", color: T.textMuted, fontSize: 13 }}>
+                  <div style={{ marginBottom: 8, fontSize: 20 }}>⏳</div>
+                  Searching tool payloads…
+                </div>
+              )}
+              {!toolSearchLoading && toolSearchError && (
                 <div style={{ padding: 20, color: "#ef4444", fontSize: 13 }}>Error: {toolSearchError}</div>
               )}
-              {toolSearchResults !== null && toolSearchResults.length === 0 && (
+              {!toolSearchLoading && toolSearchResults !== null && toolSearchResults.length === 0 && (
                 <div style={{ padding: 40, textAlign: "center", color: T.textMuted, fontSize: 13 }}>
                   No calls found containing <strong>"{toolSearchQuery}"</strong> in tool results.
                 </div>
               )}
-              {toolSearchResults !== null && toolSearchResults.length > 0 && (
+              {!toolSearchLoading && toolSearchResults !== null && toolSearchResults.length > 0 && (
                 <div>
-                  <div style={{ padding: "8px 20px", fontSize: 12, color: T.textMuted, borderBottom: `1px solid ${T.border}` }}>
-                    {toolSearchResults.length} call{toolSearchResults.length !== 1 ? "s" : ""} matched
+                  <div style={{ padding: "8px 20px", fontSize: 12, color: T.textMuted, borderBottom: `1px solid ${T.border}`, display: "flex", gap: 12, alignItems: "center" }}>
+                    <span>{toolSearchResults.length} call{toolSearchResults.length !== 1 ? "s" : ""} matched</span>
+                    {toolSearchHasMore && (
+                      <span style={{ color: "#f59e0b", fontWeight: 600 }}>Showing first 100 results — refine your query to narrow results</span>
+                    )}
                   </div>
                   {toolSearchResults.map((run) => {
                     const isExpanded = toolSearchExpanded === run.id;
@@ -2373,22 +2390,30 @@ function PromptAuditPanel({ projectId, agentStruct, onRefresh }: { projectId: st
                                   </span>
                                 </div>
                                 <div style={{ display: "grid", gridTemplateColumns: match.request != null && match.response != null ? "1fr 1fr" : "1fr" }}>
-                                  {match.request != null && (
-                                    <div style={{ padding: "8px 12px", borderRight: match.response != null ? `1px solid ${T.border}` : "none" }}>
-                                      <div style={{ fontSize: 10, fontWeight: 600, color: T.textMuted, marginBottom: 4, textTransform: "uppercase" as const, letterSpacing: 0.5 }}>Request</div>
-                                      <pre style={{ margin: 0, fontSize: 11, color: T.text, whiteSpace: "pre-wrap", wordBreak: "break-word" as const, fontFamily: "monospace", maxHeight: 180, overflowY: "auto" as const }}>
-                                        {JSON.stringify(match.request, null, 2)}
-                                      </pre>
-                                    </div>
-                                  )}
-                                  {match.response != null && (
-                                    <div style={{ padding: "8px 12px" }}>
-                                      <div style={{ fontSize: 10, fontWeight: 600, color: T.textMuted, marginBottom: 4, textTransform: "uppercase" as const, letterSpacing: 0.5 }}>Response</div>
-                                      <pre style={{ margin: 0, fontSize: 11, color: T.text, whiteSpace: "pre-wrap", wordBreak: "break-word" as const, fontFamily: "monospace", maxHeight: 180, overflowY: "auto" as const }}>
-                                        {JSON.stringify(match.response, null, 2)}
-                                      </pre>
-                                    </div>
-                                  )}
+                                  {match.request != null && (() => {
+                                    const full = JSON.stringify(match.request, null, 2);
+                                    const truncated = full.length > 4000;
+                                    return (
+                                      <div style={{ padding: "8px 12px", borderRight: match.response != null ? `1px solid ${T.border}` : "none" }}>
+                                        <div style={{ fontSize: 10, fontWeight: 600, color: T.textMuted, marginBottom: 4, textTransform: "uppercase" as const, letterSpacing: 0.5 }}>Request</div>
+                                        <pre style={{ margin: 0, fontSize: 11, color: T.text, whiteSpace: "pre-wrap", wordBreak: "break-word" as const, fontFamily: "monospace", maxHeight: 180, overflowY: "auto" as const }}>
+                                          {truncated ? full.slice(0, 4000) + "\n… [truncated]" : full}
+                                        </pre>
+                                      </div>
+                                    );
+                                  })()}
+                                  {match.response != null && (() => {
+                                    const full = JSON.stringify(match.response, null, 2);
+                                    const truncated = full.length > 4000;
+                                    return (
+                                      <div style={{ padding: "8px 12px" }}>
+                                        <div style={{ fontSize: 10, fontWeight: 600, color: T.textMuted, marginBottom: 4, textTransform: "uppercase" as const, letterSpacing: 0.5 }}>Response</div>
+                                        <pre style={{ margin: 0, fontSize: 11, color: T.text, whiteSpace: "pre-wrap", wordBreak: "break-word" as const, fontFamily: "monospace", maxHeight: 180, overflowY: "auto" as const }}>
+                                          {truncated ? full.slice(0, 4000) + "\n… [truncated]" : full}
+                                        </pre>
+                                      </div>
+                                    );
+                                  })()}
                                 </div>
                               </div>
                             ))}
@@ -2399,7 +2424,7 @@ function PromptAuditPanel({ projectId, agentStruct, onRefresh }: { projectId: st
                   })}
                 </div>
               )}
-              {toolSearchResults === null && !toolSearchLoading && !toolSearchError && (
+              {!toolSearchLoading && toolSearchResults === null && !toolSearchError && (
                 <div style={{ padding: 40, textAlign: "center", color: T.textMuted, fontSize: 13 }}>
                   Enter a search term to find calls by tool request or response content.
                   <div style={{ marginTop: 8, fontSize: 11, display: "flex", gap: 6, justifyContent: "center", flexWrap: "wrap" }}>
