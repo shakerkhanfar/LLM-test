@@ -1,7 +1,7 @@
 import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import { useParams, Link } from "react-router-dom";
 import T from "../theme";
-import { getRun, createLabel, deleteLabel, triggerEvaluation, fetchLogs } from "../api/client";
+import { getRun, createLabel, deleteLabel, triggerEvaluation, rehydrateRun } from "../api/client";
 
 const WorkflowCanvas = lazy(() => import("../components/WorkflowCanvas"));
 
@@ -169,6 +169,7 @@ export default function RunDetail() {
   const [labelingWord, setLabelingWord] = useState<{ wordIndex: number; utteranceIndex: number; word: string; speaker: string } | null>(null);
   const [audioError, setAudioError] = useState(false);
   const [reEvaluating, setReEvaluating] = useState(false);
+  const [rehydrating, setRehydrating] = useState(false);
   const [labeling, setLabeling] = useState(false);
   // Tracks which runId the current poll belongs to. When the user navigates
   // to a different run, this ref changes and any in-flight poll for the old
@@ -306,22 +307,49 @@ export default function RunDetail() {
       )}
 
       <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
-        {run.hamsaCallId && (!run.callLog || (Array.isArray(run.callLog) && run.callLog.length === 0)) && (
+        {run.hamsaCallId && (
           <button
+            disabled={rehydrating || reEvaluating}
+            title="Re-fetch fresh call logs and transcript from Hamsa, then re-evaluate"
             onClick={async () => {
+              setRehydrating(true);
+              const capturedRunId = runId!;
               try {
-                const r = await fetchLogs(runId!);
-                alert(`Fetched ${r.events} log events`);
-                load();
-              } catch (err) { alert("Failed: " + (err as Error).message); }
+                const r = await rehydrateRun(capturedRunId);
+                if (r.warnings?.length) {
+                  console.warn(`[Rehydrate] warnings: ${r.warnings.join("; ")}`);
+                }
+                // Rehydrate triggers evaluation — poll until terminal state
+                const poll = () => {
+                  if (activeRunIdRef.current !== capturedRunId) return;
+                  getRun(capturedRunId).then((updated) => {
+                    if (activeRunIdRef.current !== capturedRunId) return;
+                    setRun(updated);
+                    if (["EVALUATING", "PENDING", "RUNNING"].includes(updated.status)) {
+                      setTimeout(poll, 2000);
+                    } else {
+                      setRehydrating(false);
+                      if (updated.status === "FAILED") {
+                        alert("Evaluation failed after rehydration. Check the run's error log for details.");
+                      }
+                    }
+                  }).catch(() => {
+                    if (activeRunIdRef.current === capturedRunId) setRehydrating(false);
+                  });
+                };
+                setTimeout(poll, 1500);
+              } catch (err) {
+                setRehydrating(false);
+                alert("Rehydrate failed: " + (err as Error).message);
+              }
             }}
-            style={{ background: "#f59e0b", color: "#000", padding: "6px 12px", borderRadius: 4, border: "none", cursor: "pointer", fontSize: 12, fontWeight: 600 }}
+            style={{ background: rehydrating ? "#d1fae5" : "#f59e0b", color: rehydrating ? "#065f46" : "#000", padding: "6px 12px", borderRadius: 4, border: "none", cursor: (rehydrating || reEvaluating) ? "default" : "pointer", fontSize: 12, fontWeight: 600 }}
           >
-            Fetch Logs
+            {rehydrating ? "Rehydrating…" : "Rehydrate & Re-evaluate"}
           </button>
         )}
         <button
-          disabled={reEvaluating}
+          disabled={reEvaluating || rehydrating}
           onClick={async () => {
             setReEvaluating(true);
             const capturedRunId = runId!;
@@ -344,6 +372,9 @@ export default function RunDetail() {
                   setTimeout(poll, 2000);
                 } else {
                   setReEvaluating(false);
+                  if (r.status === "FAILED") {
+                    alert("Evaluation failed. Check the run's error log for details.");
+                  }
                 }
               }).catch(() => {
                 if (activeRunIdRef.current === capturedRunId) setReEvaluating(false);

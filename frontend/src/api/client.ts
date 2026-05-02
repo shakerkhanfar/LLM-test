@@ -148,6 +148,13 @@ export function fetchLogs(runId: string) {
   return request<any>(`/runs/${runId}/fetch-logs`, { method: "POST" });
 }
 
+export function rehydrateRun(runId: string) {
+  return request<{ ok: boolean; logEvents: number; transcriptTurns: number; warnings?: string[] }>(
+    `/runs/${runId}/rehydrate`,
+    { method: "POST" }
+  );
+}
+
 export function switchModel(runId: string) {
   return request<any>(`/runs/${runId}/switch-model`, { method: "POST" });
 }

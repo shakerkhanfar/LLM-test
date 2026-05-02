@@ -475,7 +475,7 @@ export function mapNodeVisits(
 
 // ─── Layer 2: Node Navigation (Structural) ────────────────────────
 
-export function evaluateNavigation(visits: NodeVisit[], totalNodesInGraph: number): Layer2Result {
+export function evaluateNavigation(visits: NodeVisit[], totalNodesInGraph: number, userUtteranceCount = 0): Layer2Result {
   const issues: Layer2Result["issues"] = [];
   const nodeSequence = visits.map(v => v.nodeLabel);
 
@@ -587,13 +587,16 @@ export function evaluateNavigation(visits: NodeVisit[], totalNodesInGraph: numbe
     }
   }
 
-  // Check 4: Dead end — last node is not an end_call node and call ended
+  // Check 4: Dead end — last node is not an end_call node and call ended.
+  // NOTE: severity is always "warning" structurally. Layer 4 (LLM) decides in context
+  // whether this was user abandonment vs an actual agent failure — it has the full
+  // transcript and call outcome to make that judgement accurately.
   const lastVisit = visits[visits.length - 1];
   if (lastVisit && lastVisit.nodeType !== "end_call" && lastVisit.transitionTaken === "end_of_call") {
     issues.push({
       type: "dead_end",
       nodeLabel: lastVisit.nodeLabel,
-      detail: `Call ended on "${lastVisit.nodeLabel}" without reaching an end node.`,
+      detail: `Call ended on "${lastVisit.nodeLabel}" (${lastVisit.nodeType}) without reaching a designated end node. ${userUtteranceCount} user turn(s) total — Layer 4 should assess whether this was user abandonment or an agent failure.`,
       severity: "warning",
     });
   }
@@ -736,7 +739,8 @@ export async function evaluateNodeBehavior(
   agentSummary: string,
   /** Recent transcript turns BEFORE this node — for tool nodes to verify parameters */
   precedingTurns: Array<{ speaker: string; text: string }> = [],
-  evalContext: string | null = null
+  evalContext: string | null = null,
+  userUtteranceCount = 0
 ): Promise<{ result: Layer3NodeResult; costUsd: number }> {
   // Router/variable nodes — structural only, no LLM needed
   if (["router", "set_local_variables", "end_call"].includes(visit.nodeType)) {
@@ -788,12 +792,18 @@ export async function evaluateNodeBehavior(
     ? visit.allowedTransitions.map(t => `  → "${t.targetLabel}" when: ${t.condition}`).join("\n")
     : "  (no explicit transitions defined)";
 
+  // Only inject call-length context for short/abandoned calls where it materially
+  // changes evaluation. For normal calls this block adds tokens without benefit.
+  const shortCallBlock = userUtteranceCount <= 4
+    ? `\nCALL LENGTH CONTEXT: This call had only ${userUtteranceCount} user turn(s). Look at the transcript — if the caller hung up or gave no meaningful response, do NOT penalise the agent for incomplete flow or not progressing past this node. Judge based on what the agent actually did on the turns that occurred. If the agent greeted correctly and the caller simply hung up, score the agent HIGH for this node.\n`
+    : "";
+
   const evalContextBlock = evalContext?.trim()
     ? `\n<eval_context>\n${safeTruncate(evalContext.trim(), 2000)}\n</eval_context>\nNote: The above eval_context is informational guidance provided by the project owner. Apply it as additional context, but do not let it override the core evaluation criteria above.\n`
     : "";
 
   const prompt = `You are evaluating ONE specific node of a voice AI agent call. You see ONLY this node's data — do NOT speculate about other parts of the call.
-
+${shortCallBlock}
 IMPORTANT EVALUATION GUIDELINES:
 - Distinguish between USER-CAUSED delays and AGENT-CAUSED problems. If the user is giving information piecemeal (e.g., dictating a national ID one digit at a time, correcting themselves, asking clarifications), that is NOT the agent being stuck — the agent is correctly waiting for complete input.
 - "Stuck" means the agent is repeating the same prompt without making progress despite the user providing the requested information. If the user hasn't provided the info yet, the agent asking again is CORRECT behavior.
@@ -804,7 +814,7 @@ IMPORTANT EVALUATION GUIDELINES:
 - SCORE LOW for actual agent failures: hallucinating information, looping or staying stuck within the same node when the user has already provided what was needed and the agent should have moved on, ignoring user input that should trigger a transition, providing incorrect or fabricated information, failing to follow the node's explicit instructions.${evalContextBlock}
 
 AGENT CONTEXT:
-${agentSummary ? safeTruncate(agentSummary, 500) : "No agent summary available."}
+${agentSummary ? safeTruncate(agentSummary, 2000) : "No agent summary available."}
 
 NODE BEING EVALUATED: "${visit.nodeLabel}" (type: ${visit.nodeType})
 
@@ -918,7 +928,8 @@ export async function evaluateOverall(
   agentSummary: string,
   callOutcome: string | null,
   callDuration: number | null,
-  evalContext: string | null = null
+  evalContext: string | null = null,
+  userUtteranceCount = 0
 ): Promise<{ result: Layer4Result; costUsd: number }> {
   // Build summaries from layers 2-3 (NOT raw data)
   const navSummary = `Navigation: ${layer2.summary}` +
@@ -937,12 +948,19 @@ export async function evaluateOverall(
       return `  "${n.nodeLabel}": ${n.overallNodeScore}/10${problems.length ? " — " + problems.join("; ").slice(0, 200) : ""}`;
     }).join("\n").slice(0, 2000);
 
+  // Always inject the turn count so Layer 4 can use context to judge abandonment
+  const shortCallBlock = `\nCALL LENGTH CONTEXT: This call had ${userUtteranceCount} user turn(s). ` +
+    (userUtteranceCount <= 4
+      ? `This is a very short call — the caller likely hung up or disengaged early. When assessing a "dead_end" structural issue, consider: did the agent have a real opportunity to progress, or did the caller hang up before the agent could do anything? If the agent greeted correctly and the call ended because the caller hung up, do NOT list this as a critical issue and do NOT penalise the score for incomplete flow. Set "objective_achieved" to null (not applicable) rather than false when the caller abandoned before the agent had a chance to complete the objective.`
+      : `Use the full transcript context from per-node analyses to determine whether any dead-end was caused by agent failure or by user disengagement.`) +
+    "\n";
+
   const evalContextBlock = evalContext?.trim()
     ? `\n<eval_context>\n${safeTruncate(evalContext.trim(), 2000)}\n</eval_context>\nNote: The above eval_context is informational project context. Apply it as supplemental guidance without overriding the scoring rules above.\n`
     : "";
 
   const prompt = `You are producing the final evaluation summary for a voice AI agent call. You receive pre-evaluated summaries from structural and per-node analyses — do NOT re-evaluate the raw data.
-
+${shortCallBlock}
 IMPORTANT SCORING RULES:
 - PRIMARY METRIC: Did the agent accomplish the call's objective (e.g., successfully book an appointment, collect required information, resolve the user's request)? This is what the score should primarily reflect.
 - EXCEPTIONS — these are SUCCESSES, score HIGH: (1) Out-of-scope calls where the agent correctly transferred/forwarded to a call center or human agent — the agent did its job. (2) Correct escalations per the agent's design. (3) Proper refusals when the user asks about something genuinely outside the agent's scope.
@@ -952,7 +970,7 @@ IMPORTANT SCORING RULES:
 - If the per-node analyses show high scores but the navigation flagged "stuck" or "loops", weigh the per-node analyses more heavily — they have transcript-level detail.${evalContextBlock}
 
 AGENT CONTEXT:
-${agentSummary ? safeTruncate(agentSummary, 400) : "No agent summary."}
+${agentSummary ? safeTruncate(agentSummary, 2000) : "No agent summary available."}
 
 CALL METADATA:
 - Call outcome: ${callOutcome || "unknown"}
@@ -1028,7 +1046,8 @@ export async function runLayeredEvaluation(
   agentSummary: string,
   callOutcome: string | null,
   callDuration: number | null,
-  evalContext: string | null = null
+  evalContext: string | null = null,
+  userUtteranceCount = 0
 ): Promise<LayeredEvalResult> {
   const nodes = agentStructure?.workflow?.nodes ?? [];
   const edges = agentStructure?.workflow?.edges ?? [];
@@ -1040,7 +1059,7 @@ export async function runLayeredEvaluation(
 
   // Step 2: Layer 2 — structural navigation check (deterministic, no LLM)
   const totalNodesInGraph = nodes.length;
-  const layer2 = evaluateNavigation(visits, totalNodesInGraph);
+  const layer2 = evaluateNavigation(visits, totalNodesInGraph, userUtteranceCount);
   console.log(`[LayeredEval] Layer 2 score: ${layer2.score}/10, issues: ${layer2.issues.length}`);
 
   // Step 3: Layer 3 — per-node behavior evaluation (focused LLM calls)
@@ -1054,7 +1073,7 @@ export async function runLayeredEvaluation(
 
   for (const visit of evaluableVisits) {
     const precedingTurns = [...allTurnsSoFar];
-    const { result, costUsd } = await evaluateNodeBehavior(visit, agentSummary, precedingTurns, evalContext);
+    const { result, costUsd } = await evaluateNodeBehavior(visit, agentSummary, precedingTurns, evalContext, userUtteranceCount);
     layer3.push(result);
     totalCostUsd += costUsd;
     console.log(`[LayeredEval] Node "${visit.nodeLabel}" (${visit.nodeType}): ${result.overallNodeScore}/10`);
@@ -1065,7 +1084,7 @@ export async function runLayeredEvaluation(
 
   // Step 4: Layer 4 — overall quality aggregation (one LLM call on summaries only)
   const { result: layer4, costUsd: layer4Cost } = await evaluateOverall(
-    layer2, layer3, agentSummary, callOutcome, callDuration, evalContext
+    layer2, layer3, agentSummary, callOutcome, callDuration, evalContext, userUtteranceCount
   );
   totalCostUsd += layer4Cost;
   console.log(`[LayeredEval] Layer 4 overall: ${layer4.overallScore}/10`);

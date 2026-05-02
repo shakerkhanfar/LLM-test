@@ -111,6 +111,105 @@ router.post("/:id/switch-model", async (req: AuthRequest, res) => {
   }
 });
 
+// Rehydrate a run — re-fetch fresh call log AND conversation/transcript from Hamsa,
+// then trigger re-evaluation. Works even if data already exists (overwrites stale data).
+router.post("/:id/rehydrate", evalRateLimit, async (req: AuthRequest, res) => {
+  try {
+    const run = await prisma.run.findUnique({
+      where: { id: req.params.id },
+      include: { project: true },
+    });
+    if (!run) return res.status(404).json({ error: "Run not found" });
+    if (!await canAccess((run.project as any).userId ?? null, req)) {
+      return res.status(403).json({ error: "Access denied" });
+    }
+
+    // hamsaCallId is required — it's the key for fetching execution logs (needed for
+    // node mapping in layered evaluation). conversationId is used for the transcript
+    // but falls back to hamsaCallId if not set.
+    if (!run.hamsaCallId) {
+      return res.status(400).json({ error: "No hamsaCallId on this run — cannot rehydrate" });
+    }
+
+    // Atomic guard: refuse if evaluation is already in progress.
+    // We immediately transition to PENDING to "claim" the run; if another process
+    // already owns it (EVALUATING), updateMany returns count=0 and we bail out.
+    const claimed = await prisma.run.updateMany({
+      where: { id: run.id, status: { notIn: ["EVALUATING"] } },
+      data: { status: "PENDING" },
+    });
+    if (claimed.count === 0) {
+      return res.status(409).json({ error: "Evaluation already in progress — try again once it completes" });
+    }
+
+    const apiKey = run.project.hamsaApiKey || undefined;
+    const { fetchCallLog, fetchConversation, extractTranscriptFromConversation } = await import("../services/hamsaApi");
+
+    let logEvents = 0;
+    let transcriptTurns = 0;
+    const warnings: string[] = [];
+
+    // 1. Re-fetch call log — REQUIRED for node mapping in layered evaluation.
+    //    If this fails, abort rather than evaluating with stale logs.
+    let freshCallLog: any;
+    try {
+      freshCallLog = await fetchCallLog(run.hamsaCallId, apiKey);
+      logEvents = Array.isArray(freshCallLog) ? freshCallLog.length : 0;
+      console.log(`[Rehydrate] Fetched ${logEvents} log events for run ${run.id}`);
+    } catch (err) {
+      // Release the claimed PENDING back to FAILED so the run is clearly errored,
+      // not stuck in PENDING forever.
+      await prisma.run.update({ where: { id: run.id }, data: { status: "FAILED", errorLog: `Rehydrate: call log fetch failed: ${(err as Error).message}` } });
+      return res.status(502).json({ error: `Call log fetch failed: ${(err as Error).message}` });
+    }
+
+    // 2. Re-fetch conversation (transcript + metadata) — optional but strongly preferred.
+    //    Failure here is non-fatal: transcript may be embedded in the call log.
+    let freshWebhookData: any = undefined;
+    let freshTranscript: any[] | undefined = undefined;
+    const convId = run.conversationId || run.hamsaCallId;
+    try {
+      const conv = await fetchConversation(convId, apiKey);
+      freshWebhookData = conv;
+      const extracted = extractTranscriptFromConversation(conv);
+      if (extracted && extracted.length > 0) {
+        freshTranscript = extracted;
+        transcriptTurns = extracted.length;
+      }
+      console.log(`[Rehydrate] Fetched conversation for run ${run.id} (${transcriptTurns} transcript turns)`);
+    } catch (err) {
+      const msg = `Conversation fetch failed (will rely on call log for transcript): ${(err as Error).message}`;
+      warnings.push(msg);
+      console.warn(`[Rehydrate] ${msg}`);
+    }
+
+    // 3. Atomically persist fresh data and reset to PENDING.
+    const updatePayload: Record<string, any> = {
+      callLog: freshCallLog,
+      status: "PENDING",
+    };
+    if (freshWebhookData !== undefined) updatePayload.webhookData = freshWebhookData;
+    if (freshTranscript !== undefined) updatePayload.transcript = freshTranscript;
+
+    await prisma.run.update({ where: { id: run.id }, data: updatePayload });
+
+    // 4. Trigger re-evaluation with fresh data
+    const { runEvaluationCheck } = await import("../services/evaluationRunner");
+    await runEvaluationCheck(run.id);
+
+    res.json({
+      ok: true,
+      callLogFetched: true,
+      conversationFetched: freshWebhookData !== undefined,
+      logEvents,
+      transcriptTurns,
+      warnings: warnings.length > 0 ? warnings : undefined,
+    });
+  } catch (err) {
+    res.status(500).json({ error: (err as Error).message });
+  }
+});
+
 // Fetch call log from Hamsa API for a run
 router.post("/:id/fetch-logs", async (req: AuthRequest, res) => {
   try {

@@ -643,7 +643,7 @@ async function evaluateFlowProgression(_criterion: Criterion, run: any) {
   const agentSummary: string = run.project?.agentSummary ?? "";
   // Warn the model when the call was very short — prevents over-penalising
   // the agent for a caller who disengaged after just one or two turns.
-  const shortCallNote = userUtteranceCount <= 2
+  const shortCallNote = userUtteranceCount <= 4
     ? `\nIMPORTANT: This call had only ${userUtteranceCount} user turn(s). The caller may have hung up early. Do NOT penalise the agent for incomplete flow progression if the user disengaged before giving the agent a chance to proceed.\n`
     : "";
 
@@ -1166,6 +1166,7 @@ async function evaluateLayered(_criterion: Criterion, run: any) {
       run.callOutcome || null,
       run.callDuration || null,
       evalContext,
+      userUtteranceCount,
     );
   } catch (err) {
     return { passed: null, score: null, detail: `Layered evaluation failed: ${(err as Error).message}` };
