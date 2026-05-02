@@ -142,12 +142,21 @@ export default function ProjectDashboard({ project }: Props) {
   const [issuesModalSearch, setIssuesModalSearch] = useState("");
   const [issuesModalExpanded, setIssuesModalExpanded] = useState<number | null>(null);
 
-  // Close issues modal on ESC
+  // Close issues modal on ESC + lock body scroll while open
   useEffect(() => {
     function onKey(e: KeyboardEvent) { if (e.key === "Escape") setIssuesModalOpen(false); }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, []);
+
+  useEffect(() => {
+    if (issuesModalOpen) {
+      document.body.style.overflow = "hidden";
+    } else {
+      document.body.style.overflow = "";
+    }
+    return () => { document.body.style.overflow = ""; };
+  }, [issuesModalOpen]);
 
   // Reset per-project UI state when the project changes
   useEffect(() => {
