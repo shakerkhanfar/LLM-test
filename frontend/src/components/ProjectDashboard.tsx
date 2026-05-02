@@ -141,6 +141,7 @@ export default function ProjectDashboard({ project }: Props) {
   const [issuesModalOpen, setIssuesModalOpen] = useState(false);
   const [issuesModalSearch, setIssuesModalSearch] = useState("");
   const [issuesModalExpanded, setIssuesModalExpanded] = useState<number | null>(null);
+  const [issuesModalTab, setIssuesModalTab] = useState<"common" | "all">("common");
 
   // Close issues modal on ESC + lock body scroll while open
   useEffect(() => {
@@ -854,7 +855,7 @@ export default function ProjectDashboard({ project }: Props) {
             <InfoTip text="Issues identified by the LLM judge across all calls, deduplicated and counted. Click the number to see which calls had each issue." />
             {dashData && dashData.topIssues.length > 0 && (
               <button
-                onClick={() => { setIssuesModalOpen(true); setIssuesModalSearch(""); setIssuesModalExpanded(null); }}
+                onClick={() => { setIssuesModalOpen(true); setIssuesModalSearch(""); setIssuesModalExpanded(null); setIssuesModalTab("common"); }}
                 style={{
                   marginLeft: "auto", background: "none", border: `1px solid ${T.border}`,
                   borderRadius: 6, padding: "2px 8px", fontSize: 11, color: T.textSecondary,
@@ -1529,173 +1530,199 @@ export default function ProjectDashboard({ project }: Props) {
         </div>
       </div>
 
-      {/* ── All Issues Modal ──────────────────────────────────────── */}
+      {/* ── Issues Modal ──────────────────────────────────────────── */}
       {issuesModalOpen && dashData && (() => {
         const q = issuesModalSearch.trim().toLowerCase();
-        const filtered = dashData.topIssues.filter(issue =>
+        const commonIssues = dashData.topIssues.filter(i => i.count >= 2);
+        const allIssues = dashData.topIssues;
+        const sourceList = issuesModalTab === "common" ? commonIssues : allIssues;
+        const filtered = sourceList.filter(issue =>
           !q || issue.text.toLowerCase().includes(q) || issue.severity.toLowerCase().includes(q)
         );
+
+        const IssueRow = ({ issue, idx }: { issue: typeof allIssues[0]; idx: number }) => {
+          const isOpen = issuesModalExpanded === idx;
+          const affectedRuns = (project.runs ?? []).filter((r: any) => issue.runIds.includes(r.id));
+          return (
+            <div style={{ borderBottom: `1px solid ${T.border}` }}>
+              <div style={{ display: "flex", alignItems: "flex-start", gap: 10, padding: "10px 20px" }}>
+                <div style={{ paddingTop: 1 }}>
+                  <SeverityBadge severity={issue.severity} />
+                </div>
+                <span style={{ flex: 1, fontSize: 13, color: T.text, lineHeight: 1.5 }}>
+                  {issue.text}
+                </span>
+                <button
+                  onClick={() => setIssuesModalExpanded(isOpen ? null : idx)}
+                  title="View affected calls"
+                  style={{
+                    flexShrink: 0, fontSize: 12, fontWeight: 700,
+                    color: isOpen ? "#fff" : T.primary,
+                    background: isOpen ? T.primary : T.primary + "18",
+                    border: "none", borderRadius: 12, padding: "2px 11px",
+                    cursor: "pointer", lineHeight: "22px",
+                  }}
+                >
+                  {issue.count} call{issue.count !== 1 ? "s" : ""}
+                </button>
+              </div>
+              {isOpen && (
+                <div style={{ margin: "0 20px 10px", borderRadius: 8, border: `1px solid ${T.border}`, overflow: "hidden" }}>
+                  {affectedRuns.length === 0 ? (
+                    <div style={{ padding: "10px 14px", fontSize: 12, color: T.textMuted }}>
+                      Run details not available in current view.
+                    </div>
+                  ) : (
+                    <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+                      <thead>
+                        <tr style={{ background: T.cardAlt }}>
+                          {["Conv ID", "Date", "Score", "Outcome", ""].map(h => (
+                            <th key={h} style={{ padding: "6px 12px", textAlign: "left", fontWeight: 600, color: T.textMuted }}>{h}</th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {affectedRuns.map((r: any, ri: number) => (
+                          <tr key={r.id} style={{ borderTop: ri > 0 ? `1px solid ${T.border}` : "none" }}>
+                            <td style={{ padding: "7px 12px", fontFamily: "monospace", fontSize: 11, color: T.textMuted }}>
+                              {(r.conversationId || r.id || "—").slice(0, 13)}
+                            </td>
+                            <td style={{ padding: "7px 12px", color: T.textSecondary }}>
+                              {r.callDate ? new Date(r.callDate).toLocaleDateString() : "—"}
+                            </td>
+                            <td style={{ padding: "7px 12px" }}>
+                              {r.overallScore != null
+                                ? <ScorePill score={r.overallScore * 10} />
+                                : <span style={{ color: T.textMuted }}>—</span>}
+                            </td>
+                            <td style={{ padding: "7px 12px", color: T.textSecondary, textTransform: "capitalize" }}>
+                              {(r.callOutcome || "—").replace(/_/g, " ")}
+                            </td>
+                            <td style={{ padding: "7px 12px", textAlign: "right" }}>
+                              <a
+                                href={`/projects/${project.id}/runs/${r.id}`}
+                                onClick={() => setIssuesModalOpen(false)}
+                                style={{ color: T.primary, fontSize: 12, fontWeight: 500, textDecoration: "none" }}
+                              >
+                                View →
+                              </a>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  )}
+                </div>
+              )}
+            </div>
+          );
+        };
+
         return (
           <div
             onClick={(e) => { if (e.target === e.currentTarget) setIssuesModalOpen(false); }}
             style={{
               position: "fixed", inset: 0, zIndex: 1000,
-              background: "rgba(0,0,0,0.4)", display: "flex",
-              alignItems: "center", justifyContent: "center",
+              background: "rgba(0,0,0,0.45)",
+              display: "flex", alignItems: "center", justifyContent: "center",
               padding: 24,
             }}
           >
             <div style={{
               background: T.card, border: `1px solid ${T.border}`,
-              borderRadius: 14, boxShadow: "0 24px 64px rgba(0,0,0,0.18)",
-              width: "100%", maxWidth: 760,
-              maxHeight: "85vh", display: "flex", flexDirection: "column",
+              borderRadius: 14, boxShadow: "0 24px 64px rgba(0,0,0,0.2)",
+              width: "100%", maxWidth: 780,
+              height: "85vh",                    /* fixed height so flex children can scroll */
+              display: "flex", flexDirection: "column",
               overflow: "hidden",
             }}>
               {/* Header */}
-              <div style={{
-                display: "flex", alignItems: "center", gap: 12,
-                padding: "16px 20px", borderBottom: `1px solid ${T.border}`,
-                flexShrink: 0,
-              }}>
-                <div style={{ flex: 1 }}>
-                  <div style={{ fontSize: 15, fontWeight: 700, color: T.text }}>
-                    All Issues
-                    <span style={{ marginLeft: 8, fontSize: 12, fontWeight: 500, color: T.textMuted }}>
-                      {filtered.length} of {dashData.topIssues.length}
-                    </span>
-                  </div>
-                  <div style={{ fontSize: 11, color: T.textMuted, marginTop: 2 }}>
-                    Sorted by frequency · click the count to see affected calls
-                  </div>
+              <div style={{ padding: "16px 20px 0", flexShrink: 0 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 12 }}>
+                  <span style={{ fontSize: 15, fontWeight: 700, color: T.text, flex: 1 }}>Issues</span>
+                  <input
+                    autoFocus
+                    type="text"
+                    placeholder="Search issues..."
+                    value={issuesModalSearch}
+                    onChange={e => { setIssuesModalSearch(e.target.value); setIssuesModalExpanded(null); }}
+                    style={{
+                      padding: "6px 12px", background: T.input, border: `1px solid ${T.borderDark}`,
+                      borderRadius: 7, color: T.text, fontSize: 12, width: 200, outline: "none",
+                    }}
+                  />
+                  <button
+                    onClick={() => setIssuesModalOpen(false)}
+                    style={{
+                      background: T.cardAlt, border: `1px solid ${T.border}`,
+                      borderRadius: 7, width: 32, height: 32, cursor: "pointer",
+                      fontSize: 18, color: T.textMuted, display: "flex",
+                      alignItems: "center", justifyContent: "center", flexShrink: 0,
+                    }}
+                  >
+                    ×
+                  </button>
                 </div>
-                <input
-                  autoFocus
-                  type="text"
-                  placeholder="Search issues..."
-                  value={issuesModalSearch}
-                  onChange={e => { setIssuesModalSearch(e.target.value); setIssuesModalExpanded(null); }}
-                  style={{
-                    padding: "6px 12px", background: T.input, border: `1px solid ${T.borderDark}`,
-                    borderRadius: 7, color: T.text, fontSize: 12, width: 200, outline: "none",
-                  }}
-                />
-                <button
-                  onClick={() => setIssuesModalOpen(false)}
-                  style={{
-                    background: T.cardAlt, border: `1px solid ${T.border}`,
-                    borderRadius: 7, width: 32, height: 32, cursor: "pointer",
-                    fontSize: 16, color: T.textMuted, display: "flex",
-                    alignItems: "center", justifyContent: "center", flexShrink: 0,
-                  }}
-                >
-                  ×
-                </button>
+                {/* Tabs */}
+                <div style={{ display: "flex", gap: 0, borderBottom: `1px solid ${T.border}` }}>
+                  {([
+                    { key: "common", label: "Most Common", count: commonIssues.length, tip: "Issues that appeared in 2+ calls" },
+                    { key: "all",    label: "All Issues",  count: allIssues.length,    tip: "Every unique issue including one-offs" },
+                  ] as const).map(tab => (
+                    <button
+                      key={tab.key}
+                      onClick={() => { setIssuesModalTab(tab.key); setIssuesModalExpanded(null); }}
+                      title={tab.tip}
+                      style={{
+                        padding: "8px 16px", background: "none", border: "none", cursor: "pointer",
+                        fontSize: 13, fontWeight: issuesModalTab === tab.key ? 700 : 500,
+                        color: issuesModalTab === tab.key ? T.primary : T.textSecondary,
+                        borderBottom: issuesModalTab === tab.key ? `2px solid ${T.primary}` : "2px solid transparent",
+                        marginBottom: -1,
+                      }}
+                    >
+                      {tab.label}
+                      <span style={{
+                        marginLeft: 6, fontSize: 11, fontWeight: 600,
+                        color: issuesModalTab === tab.key ? "#fff" : T.textMuted,
+                        background: issuesModalTab === tab.key ? T.primary : T.cardAlt,
+                        borderRadius: 10, padding: "1px 7px",
+                      }}>
+                        {tab.count}
+                      </span>
+                    </button>
+                  ))}
+                  <span style={{ flex: 1 }} />
+                  <span style={{ fontSize: 11, color: T.textMuted, alignSelf: "center", paddingRight: 4 }}>
+                    {filtered.length !== sourceList.length && `${filtered.length} of `}{sourceList.length} shown
+                  </span>
+                </div>
               </div>
 
-              {/* Body */}
-              <div style={{ overflowY: "auto", flex: 1, minHeight: 0, padding: "8px 0" }}>
+              {/* Scrollable body */}
+              <div style={{ overflowY: "auto", flex: 1, minHeight: 0 }}>
                 {filtered.length === 0 ? (
-                  <div style={{ padding: "32px 20px", textAlign: "center", color: T.textMuted, fontSize: 13 }}>
-                    No issues match your search.
+                  <div style={{ padding: "40px 20px", textAlign: "center", color: T.textMuted, fontSize: 13 }}>
+                    {q ? "No issues match your search." : "No issues in this view."}
                   </div>
                 ) : (
-                  filtered.map((issue, idx) => {
-                    const isOpen = issuesModalExpanded === idx;
-                    const affectedRuns = (project.runs ?? []).filter((r: any) => issue.runIds.includes(r.id));
-                    return (
-                      <div key={idx} style={{ borderBottom: `1px solid ${T.border}` }}>
-                        <div style={{
-                          display: "flex", alignItems: "flex-start", gap: 10,
-                          padding: "10px 20px",
-                        }}>
-                          <div style={{ paddingTop: 1 }}>
-                            <SeverityBadge severity={issue.severity} />
-                          </div>
-                          <span style={{ flex: 1, fontSize: 13, color: T.text, lineHeight: 1.5 }}>
-                            {issue.text}
-                          </span>
-                          <button
-                            onClick={() => setIssuesModalExpanded(isOpen ? null : idx)}
-                            title="View affected calls"
-                            style={{
-                              flexShrink: 0, fontSize: 12, fontWeight: 700,
-                              color: isOpen ? "#fff" : T.primary,
-                              background: isOpen ? T.primary : T.primary + "18",
-                              border: "none", borderRadius: 12, padding: "2px 11px",
-                              cursor: "pointer", lineHeight: "22px",
-                            }}
-                          >
-                            {issue.count} call{issue.count !== 1 ? "s" : ""}
-                          </button>
-                        </div>
-                        {isOpen && (
-                          <div style={{ margin: "0 20px 10px", borderRadius: 8, border: `1px solid ${T.border}`, overflow: "hidden" }}>
-                            {affectedRuns.length === 0 ? (
-                              <div style={{ padding: "10px 14px", fontSize: 12, color: T.textMuted }}>
-                                Run details not available in current view.
-                              </div>
-                            ) : (
-                              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
-                                <thead>
-                                  <tr style={{ background: T.cardAlt }}>
-                                    {["Conv ID", "Date", "Score", "Outcome", ""].map(h => (
-                                      <th key={h} style={{ padding: "6px 12px", textAlign: "left", fontWeight: 600, color: T.textMuted }}>{h}</th>
-                                    ))}
-                                  </tr>
-                                </thead>
-                                <tbody>
-                                  {affectedRuns.map((r: any, ri: number) => (
-                                    <tr key={r.id} style={{ borderTop: ri > 0 ? `1px solid ${T.border}` : "none" }}>
-                                      <td style={{ padding: "7px 12px", fontFamily: "monospace", fontSize: 11, color: T.textMuted }}>
-                                        {(r.conversationId || r.id || "—").slice(0, 13)}
-                                      </td>
-                                      <td style={{ padding: "7px 12px", color: T.textSecondary }}>
-                                        {r.callDate ? new Date(r.callDate).toLocaleDateString() : "—"}
-                                      </td>
-                                      <td style={{ padding: "7px 12px" }}>
-                                        {r.overallScore != null
-                                          ? <ScorePill score={r.overallScore * 10} />
-                                          : <span style={{ color: T.textMuted }}>—</span>}
-                                      </td>
-                                      <td style={{ padding: "7px 12px", color: T.textSecondary, textTransform: "capitalize" }}>
-                                        {(r.callOutcome || "—").replace(/_/g, " ")}
-                                      </td>
-                                      <td style={{ padding: "7px 12px", textAlign: "right" }}>
-                                        <a
-                                          href={`/projects/${project.id}/runs/${r.id}`}
-                                          onClick={() => setIssuesModalOpen(false)}
-                                          style={{ color: T.primary, fontSize: 12, fontWeight: 500, textDecoration: "none" }}
-                                        >
-                                          View →
-                                        </a>
-                                      </td>
-                                    </tr>
-                                  ))}
-                                </tbody>
-                              </table>
-                            )}
-                          </div>
-                        )}
-                      </div>
-                    );
-                  })
+                  filtered.map((issue, idx) => <IssueRow key={`${issuesModalTab}-${idx}`} issue={issue} idx={idx} />)
                 )}
               </div>
 
               {/* Footer */}
               <div style={{
-                padding: "12px 20px", borderTop: `1px solid ${T.border}`,
+                padding: "10px 20px", borderTop: `1px solid ${T.border}`,
                 display: "flex", alignItems: "center", justifyContent: "space-between",
                 flexShrink: 0,
               }}>
                 <span style={{ fontSize: 11, color: T.textMuted }}>
-                  {dashData.topIssues.length} unique issues across {(project.runs ?? []).filter((r: any) => r.status === "COMPLETE").length} completed calls
+                  {allIssues.length} unique issues · {completeRuns.length} completed calls
                 </span>
                 <button
                   onClick={() => setIssuesModalOpen(false)}
                   style={{
-                    padding: "6px 16px", background: T.primary, color: "#fff",
+                    padding: "6px 18px", background: T.primary, color: "#fff",
                     border: "none", borderRadius: 7, cursor: "pointer",
                     fontSize: 12, fontWeight: 600,
                   }}
