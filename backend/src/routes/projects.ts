@@ -384,7 +384,7 @@ router.get("/:id/dashboard", async (req: AuthRequest, res) => {
         severity, count, runIds,
       }))
       .sort((a, b) => b.count - a.count)
-      .slice(0, 8);
+      .slice(0, 50); // cap at 50 — frontend controls how many to show
 
     // Build outcome breakdown: for each outcome, top issues sorted by how many of those calls had the issue
     const outcomeBreakdown = Object.entries(outcomeTotals)
