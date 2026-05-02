@@ -557,58 +557,65 @@ export default function ProjectDashboard({ project }: Props) {
           )}
         </div>
 
-        {/* Call Outcomes Donut */}
+        {/* Call Outcomes Bar Chart */}
         <div style={CARD_STYLE}>
-          <div style={SECTION_LABEL_STYLE}>Call Outcomes</div>
+          <div style={{ ...SECTION_LABEL_STYLE, display: "flex", alignItems: "center" }}>
+            Call Outcomes
+            <InfoTip text="Count of calls per outcome. Click a bar or label to filter the run table below." />
+            {selectedOutcome && (
+              <button
+                onClick={() => setSelectedOutcome(null)}
+                style={{ marginLeft: "auto", background: "none", border: "none", fontSize: 11, color: T.primary, cursor: "pointer", fontWeight: 500 }}
+              >
+                ✕ Clear filter
+              </button>
+            )}
+          </div>
           {outcomeCounts.length === 0 ? (
             <div style={{ color: T.textMuted, fontSize: 12 }}>Not enough data</div>
           ) : (
-            <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-              <PieChart width={110} height={110} style={{ cursor: "pointer" }}>
-                <Pie
-                  data={outcomeCounts}
-                  cx={50} cy={50}
-                  innerRadius={35} outerRadius={55}
-                  dataKey="value"
-                  paddingAngle={2}
-                  onClick={(data: any) => selectOutcome(data.name)}
-                >
-                  {outcomeCounts.map((entry, idx) => {
-                    const isSelected = selectedOutcome === entry.name;
-                    const isDimmed = selectedOutcome && !isSelected;
-                    return (
-                      <Cell
-                        key={idx}
-                        fill={getOutcomeColor(entry.name)}
-                        opacity={isDimmed ? 0.3 : 1}
-                        stroke={isSelected ? "#111827" : "none"}
-                        strokeWidth={isSelected ? 2 : 0}
-                      />
-                    );
-                  })}
-                </Pie>
-              </PieChart>
-              <div style={{ display: "flex", flexDirection: "column", gap: 4, flex: 1, minWidth: 0 }}>
-                {outcomeCounts.map((entry, idx) => {
-                  const isSelected = selectedOutcome === entry.name;
-                  const isDimmed = selectedOutcome && !isSelected;
-                  return (
-                    <div
-                      key={idx}
-                      onClick={() => selectOutcome(entry.name)}
-                      style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 11, cursor: "pointer", opacity: isDimmed ? 0.4 : 1, borderRadius: 4, padding: "1px 3px", background: isSelected ? getOutcomeColor(entry.name) + "18" : "none" }}
-                    >
-                      <span style={{ width: 8, height: 8, borderRadius: "50%", background: getOutcomeColor(entry.name), flexShrink: 0 }} />
-                      <span style={{ color: isSelected ? T.text : T.textSecondary, fontWeight: isSelected ? 600 : 400, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1 }}>
-                        {entry.name}
+            <div style={{ display: "flex", flexDirection: "column", gap: 6, marginTop: 4 }}>
+              {outcomeCounts.sort((a, b) => b.value - a.value).map((entry) => {
+                const isSelected = selectedOutcome === entry.name;
+                const isDimmed = selectedOutcome && !isSelected;
+                const pct = Math.round((entry.value / totalRuns) * 100);
+                const color = getOutcomeColor(entry.name);
+                return (
+                  <div
+                    key={entry.name}
+                    onClick={() => selectOutcome(entry.name)}
+                    title={`Filter to "${entry.name}" calls`}
+                    style={{ cursor: "pointer", opacity: isDimmed ? 0.35 : 1, transition: "opacity 0.15s" }}
+                  >
+                    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 3 }}>
+                      <span style={{
+                        fontSize: 11, fontWeight: isSelected ? 700 : 500,
+                        color: isSelected ? color : T.textSecondary,
+                        textTransform: "capitalize",
+                      }}>
+                        {entry.name.replace(/_/g, " ")}
                       </span>
-                      <span style={{ color: T.text, fontWeight: 600, flexShrink: 0 }}>
-                        {Math.round((entry.value / totalRuns) * 100)}%
+                      <span style={{ fontSize: 11, fontWeight: 700, color: isSelected ? color : T.text }}>
+                        {entry.value} <span style={{ fontWeight: 400, color: T.textMuted }}>({pct}%)</span>
                       </span>
                     </div>
-                  );
-                })}
-              </div>
+                    <div style={{ height: 8, background: T.cardAlt, borderRadius: 99, overflow: "hidden" }}>
+                      <div style={{
+                        width: `${pct}%`, height: "100%",
+                        background: color,
+                        borderRadius: 99,
+                        transition: "width 0.3s ease",
+                        boxShadow: isSelected ? `0 0 0 2px ${color}55` : "none",
+                      }} />
+                    </div>
+                  </div>
+                );
+              })}
+              {selectedOutcome && (
+                <div style={{ fontSize: 11, color: T.textMuted, marginTop: 2, textAlign: "right" }}>
+                  Showing {outcomeCounts.find(e => e.name === selectedOutcome)?.value ?? 0} of {totalRuns} calls
+                </div>
+              )}
             </div>
           )}
         </div>
@@ -1047,6 +1054,43 @@ export default function ProjectDashboard({ project }: Props) {
 
       {/* Call Outcomes Table */}
       <div ref={tableRef} style={{ ...CARD_STYLE, scrollMarginTop: 16 }}>
+        {/* Outcome filter chips */}
+        {outcomeCounts.length > 0 && (
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 12 }}>
+            <button
+              onClick={() => { setSelectedOutcome(null); setObjectiveFilter(null); }}
+              style={{
+                fontSize: 11, fontWeight: selectedOutcome == null && objectiveFilter == null ? 700 : 500,
+                color: selectedOutcome == null && objectiveFilter == null ? "#fff" : T.textSecondary,
+                background: selectedOutcome == null && objectiveFilter == null ? T.primary : T.cardAlt,
+                border: `1px solid ${selectedOutcome == null && objectiveFilter == null ? T.primary : T.border}`,
+                borderRadius: 20, padding: "3px 12px", cursor: "pointer",
+              }}
+            >
+              All ({totalRuns})
+            </button>
+            {outcomeCounts.sort((a, b) => b.value - a.value).map((entry) => {
+              const isActive = selectedOutcome === entry.name;
+              const color = getOutcomeColor(entry.name);
+              return (
+                <button
+                  key={entry.name}
+                  onClick={() => selectOutcome(entry.name)}
+                  style={{
+                    fontSize: 11, fontWeight: isActive ? 700 : 500,
+                    color: isActive ? "#fff" : color,
+                    background: isActive ? color : color + "14",
+                    border: `1px solid ${isActive ? color : color + "55"}`,
+                    borderRadius: 20, padding: "3px 12px", cursor: "pointer",
+                    textTransform: "capitalize",
+                  }}
+                >
+                  {entry.name.replace(/_/g, " ")} ({entry.value})
+                </button>
+              );
+            })}
+          </div>
+        )}
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12, flexWrap: "wrap", gap: 8 }}>
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
             <div style={SECTION_LABEL_STYLE}>Call Outcomes</div>
