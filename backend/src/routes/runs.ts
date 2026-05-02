@@ -124,11 +124,12 @@ router.post("/:id/rehydrate", evalRateLimit, async (req: AuthRequest, res) => {
       return res.status(403).json({ error: "Access denied" });
     }
 
-    // hamsaCallId is required — it's the key for fetching execution logs (needed for
-    // node mapping in layered evaluation). conversationId is used for the transcript
-    // but falls back to hamsaCallId if not set.
-    if (!run.hamsaCallId) {
-      return res.status(400).json({ error: "No hamsaCallId on this run — cannot rehydrate" });
+    // Need at least one ID to fetch data from Hamsa.
+    // The logs endpoint (/v1/agent-analytics/logs?jobId=...) requires a UUID —
+    // conversationId is preferred; hamsaCallId is used as a fallback but may not
+    // be a valid UUID for all call types.
+    if (!run.hamsaCallId && !run.conversationId) {
+      return res.status(400).json({ error: "No hamsaCallId or conversationId on this run — cannot rehydrate" });
     }
 
     // Atomic guard: refuse if evaluation is already in progress.
@@ -150,12 +151,15 @@ router.post("/:id/rehydrate", evalRateLimit, async (req: AuthRequest, res) => {
     const warnings: string[] = [];
 
     // 1. Re-fetch call log — REQUIRED for node mapping in layered evaluation.
+    //    Hamsa's logs endpoint requires a UUID jobId. conversationId is always a
+    //    UUID; hamsaCallId may be a short non-UUID identifier for some call types.
     //    If this fails, abort rather than evaluating with stale logs.
+    const logJobId = run.conversationId || run.hamsaCallId!;
     let freshCallLog: any;
     try {
-      freshCallLog = await fetchCallLog(run.hamsaCallId, apiKey);
+      freshCallLog = await fetchCallLog(logJobId, apiKey);
       logEvents = Array.isArray(freshCallLog) ? freshCallLog.length : 0;
-      console.log(`[Rehydrate] Fetched ${logEvents} log events for run ${run.id}`);
+      console.log(`[Rehydrate] Fetched ${logEvents} log events for run ${run.id} (jobId: ${logJobId})`);
     } catch (err) {
       // Release the claimed PENDING back to FAILED so the run is clearly errored,
       // not stuck in PENDING forever.
@@ -167,7 +171,7 @@ router.post("/:id/rehydrate", evalRateLimit, async (req: AuthRequest, res) => {
     //    Failure here is non-fatal: transcript may be embedded in the call log.
     let freshWebhookData: any = undefined;
     let freshTranscript: any[] | undefined = undefined;
-    const convId = run.conversationId || run.hamsaCallId;
+    const convId = run.conversationId || run.hamsaCallId!;
     try {
       const conv = await fetchConversation(convId, apiKey);
       freshWebhookData = conv;

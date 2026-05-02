@@ -25,13 +25,18 @@ function userKeyGenerator(req: Request): string {
  * Evaluation endpoints: 60 evals per user per 10 minutes.
  * Prevents accidental or malicious mass-evaluation loops.
  */
+// express-rate-limit v8 validates that custom keyGenerators don't use req.ip
+// directly without the ipKeyGenerator helper. Our normalizeIp() already handles
+// IPv6 correctly (strips ::ffff: prefix), so suppress the false-positive warning.
+const noIpv6Warn = { xForwardedForHeader: false, ipv6: false } as const;
+
 export const evalRateLimit = rateLimit({
   windowMs: 10 * 60 * 1000,
   max: 60,
   keyGenerator: userKeyGenerator,
   standardHeaders: true,
   legacyHeaders: false,
-  validate: { xForwardedForHeader: false },
+  validate: noIpv6Warn,
   message: { error: "Too many evaluation requests. Please wait before trying again." },
   skip: () => process.env.NODE_ENV === "test",
 });
@@ -46,7 +51,7 @@ export const llmRateLimit = rateLimit({
   keyGenerator: userKeyGenerator,
   standardHeaders: true,
   legacyHeaders: false,
-  validate: { xForwardedForHeader: false },
+  validate: noIpv6Warn,
   message: { error: "Too many AI requests. Please wait a moment before trying again." },
   skip: () => process.env.NODE_ENV === "test",
 });
@@ -61,7 +66,7 @@ export const webhookRateLimit = rateLimit({
   keyGenerator: (req) => normalizeIp(req.ip),
   standardHeaders: true,
   legacyHeaders: false,
-  validate: { xForwardedForHeader: false },
+  validate: noIpv6Warn,
   message: { error: "Webhook rate limit exceeded" },
   skip: () => process.env.NODE_ENV === "test",
 });
