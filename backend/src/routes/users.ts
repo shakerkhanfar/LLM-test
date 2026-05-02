@@ -46,18 +46,21 @@ router.get("/", async (req: AuthRequest, res) => {
 // assigned to it. If omitted, the new user joins the creator's org.
 // Rate-limited: reuses llmRateLimit (20 req / 5 min per user).
 router.post("/", llmRateLimit, async (req: AuthRequest, res) => {
-  // Unaffiliated users have no org context — block creation entirely.
-  if (!req.organizationId) {
-    return res.status(403).json({
-      error: "You must belong to an organization to create users",
-    });
-  }
-
   const { email, password, orgName } = req.body as {
     email?: string;
     password?: string;
     orgName?: string;
   };
+
+  const cleanOrgName = orgName?.trim();
+
+  // Block only when neither the creator has an org nor an explicit org name was given.
+  // If orgName is provided, the new user will be placed in that org regardless.
+  if (!req.organizationId && !cleanOrgName) {
+    return res.status(403).json({
+      error: "You must belong to an organization to create users",
+    });
+  }
 
   const emailError = validateEmail(email ?? "");
   if (emailError) return res.status(400).json({ error: emailError });
@@ -70,11 +73,10 @@ router.post("/", llmRateLimit, async (req: AuthRequest, res) => {
   if (passwordError) return res.status(400).json({ error: passwordError });
 
   const cleanEmail = (email as string).trim().toLowerCase();
-  const cleanOrgName = orgName?.trim();
 
   try {
     // Resolve target org: explicit name → find or create; otherwise creator's org.
-    let targetOrgId = req.organizationId;
+    let targetOrgId = req.organizationId ?? null;
     if (cleanOrgName) {
       const existing = await prisma.organization.findFirst({
         where: { name: { equals: cleanOrgName, mode: "insensitive" } },
