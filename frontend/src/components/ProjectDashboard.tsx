@@ -136,6 +136,8 @@ export default function ProjectDashboard({ project }: Props) {
   const [dashError, setDashError] = useState<string | null>(null);
   const [tableSearch, setTableSearch] = useState("");
   const [expandedIssue, setExpandedIssue] = useState<number | null>(null);
+  const [showAllIssues, setShowAllIssues] = useState(false);
+  const ISSUES_DEFAULT_LIMIT = 8;
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [selectedOutcome, setSelectedOutcome] = useState<string | null>(null);
   const [objectiveFilter, setObjectiveFilter] = useState<"achieved" | "not_achieved" | null>(null);
@@ -682,7 +684,7 @@ export default function ProjectDashboard({ project }: Props) {
             <div style={{ color: T.textMuted, fontSize: 12 }}>No issues found</div>
           ) : (
             <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-              {dashData.topIssues.map((issue, idx) => {
+              {(showAllIssues ? dashData.topIssues : dashData.topIssues.slice(0, ISSUES_DEFAULT_LIMIT)).map((issue, idx) => {
                 const isOpen = expandedIssue === idx;
                 const affectedRuns = (project.runs ?? []).filter((r: any) => issue.runIds.includes(r.id));
                 return (
@@ -758,6 +760,20 @@ export default function ProjectDashboard({ project }: Props) {
                   </div>
                 );
               })}
+              {dashData.topIssues.length > ISSUES_DEFAULT_LIMIT && (
+                <button
+                  onClick={() => setShowAllIssues(v => !v)}
+                  style={{
+                    marginTop: 4, padding: "4px 0", background: "none", border: "none",
+                    color: T.primary, fontSize: 12, cursor: "pointer", textAlign: "left",
+                    fontWeight: 500,
+                  }}
+                >
+                  {showAllIssues
+                    ? "Show less ↑"
+                    : `Show all ${dashData.topIssues.length} issues ↓`}
+                </button>
+              )}
             </div>
           )}
         </div>
