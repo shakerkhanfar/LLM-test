@@ -7,13 +7,14 @@
  * Environment variables (set in Replit Secrets / deployment secrets):
  *   SEED_USER_1_EMAIL     e.g. admin@hamsa.ai
  *   SEED_USER_1_PASSWORD  e.g. Admin@Pass123!
+ *   SEED_USER_1_ORG       e.g. Hamsa           (org name, created if missing)
+ *
  *   SEED_USER_2_EMAIL     e.g. alsalamah@kfaces.ai
  *   SEED_USER_2_PASSWORD  ...
- *   SEED_USER_3_EMAIL     e.g. demo@tryhamsa.com
- *   SEED_USER_3_PASSWORD  ...
+ *   SEED_USER_2_ORG       Al Salama
  *
- * Accounts are also shared within the same organization. If you set
- * SEED_ORG_NAME the seed will create/find that org and link all seed users.
+ *   SEED_USER_3_EMAIL / SEED_USER_3_PASSWORD / SEED_USER_3_ORG ...
+ *   (up to SEED_USER_10_*)
  */
 
 import bcrypt from "bcryptjs";
@@ -27,6 +28,7 @@ const BCRYPT_ROUNDS = parseInt(process.env.BCRYPT_ROUNDS || "12", 10);
 interface SeedAccount {
   email: string;
   password: string;
+  orgName?: string;
 }
 
 function collectAccounts(): SeedAccount[] {
@@ -34,9 +36,26 @@ function collectAccounts(): SeedAccount[] {
   for (let i = 1; i <= 10; i++) {
     const email = process.env[`SEED_USER_${i}_EMAIL`]?.trim().toLowerCase();
     const password = process.env[`SEED_USER_${i}_PASSWORD`]?.trim();
-    if (email && password) accounts.push({ email, password });
+    const orgName = process.env[`SEED_USER_${i}_ORG`]?.trim();
+    if (email && password) accounts.push({ email, password, orgName });
   }
   return accounts;
+}
+
+// Cache org IDs so we don't re-create the same org for multiple users
+const orgCache = new Map<string, string>();
+
+async function getOrCreateOrg(name: string): Promise<string> {
+  if (orgCache.has(name)) return orgCache.get(name)!;
+  const id = `seed-org-${name.toLowerCase().replace(/\s+/g, "-")}`;
+  const org = await prisma.organization.upsert({
+    where: { id },
+    update: { name },
+    create: { id, name },
+  });
+  orgCache.set(name, org.id);
+  console.log(`[Seed] Organization: "${name}" (${org.id})`);
+  return org.id;
 }
 
 async function main() {
@@ -46,27 +65,15 @@ async function main() {
     return;
   }
 
-  // Optionally create / find a shared organization
-  let orgId: string | null = null;
-  const orgName = process.env.SEED_ORG_NAME?.trim();
-  if (orgName) {
-    const org = await prisma.organization.upsert({
-      where: { id: `seed-org-${orgName.toLowerCase().replace(/\s+/g, "-")}` },
-      update: { name: orgName },
-      create: { id: `seed-org-${orgName.toLowerCase().replace(/\s+/g, "-")}`, name: orgName },
-    });
-    orgId = org.id;
-    console.log(`[Seed] Organization: "${orgName}" (${orgId})`);
-  }
-
-  for (const { email, password } of accounts) {
+  for (const { email, password, orgName } of accounts) {
+    const orgId = orgName ? await getOrCreateOrg(orgName) : null;
     const passwordHash = await bcrypt.hash(password, BCRYPT_ROUNDS);
     await prisma.user.upsert({
       where: { email },
-      update: { passwordHash, ...(orgId ? { organizationId: orgId } : {}) },
+      update: { passwordHash, ...(orgId !== null ? { organizationId: orgId } : {}) },
       create: { email, passwordHash, organizationId: orgId },
     });
-    console.log(`[Seed] Upserted ${email}`);
+    console.log(`[Seed] Upserted ${email}${orgName ? ` → ${orgName}` : ""}`);
   }
 }
 
