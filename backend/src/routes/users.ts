@@ -3,14 +3,15 @@ import bcrypt from "bcryptjs";
 import prisma from "../lib/prisma";
 import { AuthRequest } from "../middleware/auth";
 import { BCRYPT_ROUNDS } from "../lib/config";
-import { validatePassword } from "./auth";
+import { validatePassword, validateEmail } from "../lib/password";
+import { llmRateLimit } from "../middleware/rateLimiter";
 
 const router = Router();
 
 /**
  * Return the organization filter clause for the current user.
- * - User has an org → filter to that org
- * - No org → filter to just this user (self-only visibility)
+ * - User has an org  → filter to that org
+ * - No org           → filter to just this user (self-only visibility)
  */
 function orgFilter(req: AuthRequest) {
   if (req.organizationId) {
@@ -24,7 +25,13 @@ router.get("/", async (req: AuthRequest, res) => {
   try {
     const users = await prisma.user.findMany({
       where: orgFilter(req),
-      select: { id: true, email: true, organizationId: true, createdAt: true },
+      select: {
+        id: true,
+        email: true,
+        organizationId: true,
+        organization: { select: { name: true } },
+        createdAt: true,
+      },
       orderBy: { createdAt: "asc" },
     });
     res.json(users);
@@ -35,21 +42,30 @@ router.get("/", async (req: AuthRequest, res) => {
 });
 
 // POST /api/users — create a user in the same org as the requester
-router.post("/", async (req: AuthRequest, res) => {
+// Rate-limited: reuses llmRateLimit (20 req / 5 min per user) — more than enough
+// for legitimate use while blocking automated account-creation loops.
+router.post("/", llmRateLimit, async (req: AuthRequest, res) => {
+  // Unaffiliated users have no org to assign to the new user — they would
+  // create an account they can't subsequently see or manage.
+  if (!req.organizationId) {
+    return res.status(403).json({
+      error: "You must belong to an organization to create users",
+    });
+  }
+
   const { email, password } = req.body as { email?: string; password?: string };
 
-  if (!email || typeof email !== "string" || !email.trim()) {
-    return res.status(400).json({ error: "Email is required" });
-  }
-  if (email.length > 254) return res.status(400).json({ error: "Invalid email" });
+  const emailError = validateEmail(email ?? "");
+  if (emailError) return res.status(400).json({ error: emailError });
+
   if (!password || typeof password !== "string") {
     return res.status(400).json({ error: "Password is required" });
   }
 
-  const validationError = validatePassword(password.trim());
-  if (validationError) return res.status(400).json({ error: validationError });
+  const passwordError = validatePassword(password.trim());
+  if (passwordError) return res.status(400).json({ error: passwordError });
 
-  const cleanEmail = email.trim().toLowerCase();
+  const cleanEmail = (email as string).trim().toLowerCase();
 
   try {
     const hash = await bcrypt.hash(password.trim(), BCRYPT_ROUNDS);
@@ -57,9 +73,15 @@ router.post("/", async (req: AuthRequest, res) => {
       data: {
         email: cleanEmail,
         passwordHash: hash,
-        organizationId: req.organizationId ?? null,
+        organizationId: req.organizationId,
       },
-      select: { id: true, email: true, organizationId: true, createdAt: true },
+      select: {
+        id: true,
+        email: true,
+        organizationId: true,
+        organization: { select: { name: true } },
+        createdAt: true,
+      },
     });
     console.log(`[Users] ${req.userEmail} created user ${user.email}`);
     res.status(201).json(user);
@@ -80,28 +102,25 @@ router.patch("/:id/password", async (req: AuthRequest, res) => {
     return res.status(400).json({ error: "password is required" });
   }
 
-  const validationError = validatePassword(password.trim());
-  if (validationError) return res.status(400).json({ error: validationError });
+  const passwordError = validatePassword(password.trim());
+  if (passwordError) return res.status(400).json({ error: passwordError });
 
   try {
-    // Verify target user is in the same org (or is the requester themselves)
     const target = await prisma.user.findUnique({
       where: { id: req.params.id },
       select: { id: true, email: true, organizationId: true },
     });
     if (!target) return res.status(404).json({ error: "User not found" });
 
-    const sameOrg = req.organizationId
+    // Allow if: same org member, OR changing your own password
+    const authorized = req.organizationId
       ? target.organizationId === req.organizationId
       : target.id === req.userId;
 
-    if (!sameOrg) return res.status(403).json({ error: "Access denied" });
+    if (!authorized) return res.status(403).json({ error: "Access denied" });
 
     const hash = await bcrypt.hash(password.trim(), BCRYPT_ROUNDS);
-    await prisma.user.update({
-      where: { id: target.id },
-      data: { passwordHash: hash },
-    });
+    await prisma.user.update({ where: { id: target.id }, data: { passwordHash: hash } });
     console.log(`[Users] ${req.userEmail} reset password for ${target.email}`);
     res.json({ ok: true });
   } catch (err) {
@@ -116,6 +135,11 @@ router.delete("/:id", async (req: AuthRequest, res) => {
     return res.status(400).json({ error: "You cannot delete your own account" });
   }
 
+  // Unaffiliated users cannot delete others — they can't even see them
+  if (!req.organizationId) {
+    return res.status(403).json({ error: "Access denied" });
+  }
+
   try {
     const target = await prisma.user.findUnique({
       where: { id: req.params.id },
@@ -123,11 +147,9 @@ router.delete("/:id", async (req: AuthRequest, res) => {
     });
     if (!target) return res.status(404).json({ error: "User not found" });
 
-    const sameOrg = req.organizationId
-      ? target.organizationId === req.organizationId
-      : false; // unaffiliated users can't delete others
-
-    if (!sameOrg) return res.status(403).json({ error: "Access denied" });
+    if (target.organizationId !== req.organizationId) {
+      return res.status(403).json({ error: "Access denied" });
+    }
 
     await prisma.user.delete({ where: { id: target.id } });
     console.log(`[Users] ${req.userEmail} deleted user ${target.email}`);

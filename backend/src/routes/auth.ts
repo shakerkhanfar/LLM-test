@@ -2,7 +2,8 @@ import { Router } from "express";
 import bcrypt from "bcryptjs";
 import prisma from "../lib/prisma";
 import { requireAuth, signToken, AuthRequest } from "../middleware/auth";
-import { BCRYPT_ROUNDS, PASSWORD_MIN_LENGTH } from "../lib/config";
+import { BCRYPT_ROUNDS } from "../lib/config";
+import { validatePassword } from "../lib/password";
 
 const router = Router();
 
@@ -37,18 +38,6 @@ setInterval(() => {
 // Uses the same BCRYPT_ROUNDS constant so timing matches real hashes.
 let DUMMY_HASH = "";
 bcrypt.hash("dummy_timing_placeholder", BCRYPT_ROUNDS).then((h) => { DUMMY_HASH = h; });
-
-/** Validates a password meets minimum policy requirements. */
-function validatePassword(password: string): string | null {
-  if (password.length < PASSWORD_MIN_LENGTH) {
-    return `Password must be at least ${PASSWORD_MIN_LENGTH} characters`;
-  }
-  if (!/[A-Z]/.test(password)) return "Password must contain at least one uppercase letter";
-  if (!/[a-z]/.test(password)) return "Password must contain at least one lowercase letter";
-  if (!/[0-9]/.test(password)) return "Password must contain at least one number";
-  if (!/[^A-Za-z0-9]/.test(password)) return "Password must contain at least one special character";
-  return null;
-}
 
 // POST /api/auth/login
 router.post("/login", async (req, res) => {
@@ -172,5 +161,5 @@ router.get("/me", requireAuth, async (req: AuthRequest, res) => {
   }
 });
 
-export { validatePassword, BCRYPT_ROUNDS };
+export { BCRYPT_ROUNDS };
 export default router;

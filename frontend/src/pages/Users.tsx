@@ -3,10 +3,11 @@ import { listUsers, createUser, resetUserPassword, deleteUser } from "../api/cli
 import { useAuth } from "../context/AuthContext";
 import T from "../theme";
 
-interface User {
+interface UserRow {
   id: string;
   email: string;
   organizationId: string | null;
+  organization: { name: string } | null;
   createdAt: string;
 }
 
@@ -18,7 +19,7 @@ function formatDate(iso: string) {
 
 export default function Users() {
   const { user: me } = useAuth();
-  const [users, setUsers] = useState<User[]>([]);
+  const [users, setUsers] = useState<UserRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
 
@@ -30,13 +31,14 @@ export default function Users() {
   const [adding, setAdding] = useState(false);
 
   // Password reset modal
-  const [resetTarget, setResetTarget] = useState<User | null>(null);
+  const [resetTarget, setResetTarget] = useState<UserRow | null>(null);
   const [resetPw, setResetPw] = useState("");
   const [resetError, setResetError] = useState("");
   const [resetting, setResetting] = useState(false);
+  const [resetSuccess, setResetSuccess] = useState(false);
 
   // Delete confirmation
-  const [deleteTarget, setDeleteTarget] = useState<User | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<UserRow | null>(null);
   const [deleting, setDeleting] = useState(false);
 
   async function load() {
@@ -54,6 +56,12 @@ export default function Users() {
 
   useEffect(() => { load(); }, []);
 
+  function parseApiError(err: any): string {
+    const msg = err?.message || "Unknown error";
+    const body = msg.replace(/^API error \d+: /, "");
+    try { return JSON.parse(body).error; } catch { return msg; }
+  }
+
   async function handleAdd(e: React.FormEvent) {
     e.preventDefault();
     setAddError("");
@@ -65,9 +73,7 @@ export default function Users() {
       setShowAdd(false);
       await load();
     } catch (err: any) {
-      const msg = err.message || "";
-      const json = msg.replace(/^API error \d+: /, "");
-      try { setAddError(JSON.parse(json).error); } catch { setAddError(msg); }
+      setAddError(parseApiError(err));
     } finally {
       setAdding(false);
     }
@@ -80,12 +86,15 @@ export default function Users() {
     setResetting(true);
     try {
       await resetUserPassword(resetTarget.id, resetPw);
-      setResetTarget(null);
       setResetPw("");
+      setResetSuccess(true);
+      // Auto-close after showing success for 1.5 s
+      setTimeout(() => {
+        setResetTarget(null);
+        setResetSuccess(false);
+      }, 1500);
     } catch (err: any) {
-      const msg = err.message || "";
-      const json = msg.replace(/^API error \d+: /, "");
-      try { setResetError(JSON.parse(json).error); } catch { setResetError(msg); }
+      setResetError(parseApiError(err));
     } finally {
       setResetting(false);
     }
@@ -99,15 +108,15 @@ export default function Users() {
       setDeleteTarget(null);
       await load();
     } catch (err: any) {
-      alert(err.message);
+      alert(parseApiError(err));
+      setDeleteTarget(null);
     } finally {
       setDeleting(false);
     }
   }
 
-  const orgName = users.find(u => u.organizationId)?.organizationId
-    ? `Organization · ${users[0]?.organizationId?.replace(/^seed-org-/, "").replace(/-/g, " ")}`
-    : null;
+  // Derive org name from the first user that has an organization object
+  const orgDisplayName = users.find(u => u.organization)?.organization?.name ?? null;
 
   return (
     <div style={{ maxWidth: 700 }}>
@@ -115,8 +124,10 @@ export default function Users() {
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 24 }}>
         <div>
           <h1 style={{ fontSize: 22, fontWeight: 700, margin: 0, color: T.text }}>Users</h1>
-          {orgName && (
-            <p style={{ fontSize: 13, color: T.textSecondary, margin: "4px 0 0" }}>{orgName}</p>
+          {orgDisplayName && (
+            <p style={{ fontSize: 13, color: T.textSecondary, margin: "4px 0 0" }}>
+              {orgDisplayName}
+            </p>
           )}
         </div>
         <button
@@ -237,12 +248,12 @@ export default function Users() {
                   key={u.id}
                   style={{
                     borderBottom: i < users.length - 1 ? `1px solid ${T.borderLight}` : "none",
-                    background: "transparent",
                   }}
                 >
                   <td style={{ padding: "12px 16px", fontSize: 14, color: T.text }}>
                     {u.email}
-                    {u.id === me?.id && (
+                    {/* me?.id is set by /api/auth/me on mount — only render badge once that resolves */}
+                    {me?.id && u.id === me.id && (
                       <span style={{ marginLeft: 8, fontSize: 11, background: T.primaryLight, color: T.primary, padding: "2px 7px", borderRadius: 99, fontWeight: 600 }}>
                         you
                       </span>
@@ -253,7 +264,7 @@ export default function Users() {
                   </td>
                   <td style={{ padding: "12px 16px", textAlign: "right" }}>
                     <button
-                      onClick={() => { setResetTarget(u); setResetPw(""); setResetError(""); }}
+                      onClick={() => { setResetTarget(u); setResetPw(""); setResetError(""); setResetSuccess(false); }}
                       style={{
                         fontSize: 13, color: T.textSecondary, background: "none",
                         border: `1px solid ${T.border}`, borderRadius: T.radiusSm,
@@ -264,6 +275,7 @@ export default function Users() {
                     >
                       Reset password
                     </button>
+                    {/* Hide delete button for own account — enforced server-side too */}
                     {u.id !== me?.id && (
                       <button
                         onClick={() => setDeleteTarget(u)}
@@ -305,51 +317,60 @@ export default function Users() {
             <p style={{ margin: "0 0 16px", fontSize: 13, color: T.textSecondary }}>
               {resetTarget.email}
             </p>
-            <input
-              type="password"
-              placeholder="New password"
-              value={resetPw}
-              onChange={e => setResetPw(e.target.value)}
-              required
-              autoFocus
-              style={{
-                width: "100%", boxSizing: "border-box", padding: "8px 12px",
-                borderRadius: T.radiusSm, border: `1px solid ${T.borderDark}`,
-                fontSize: 14, background: T.input, color: T.text,
-                outline: "none", marginBottom: 8,
-              }}
-            />
-            <p style={{ fontSize: 12, color: T.textMuted, margin: "0 0 12px" }}>
-              Min 12 chars · uppercase · lowercase · number · special character
-            </p>
-            {resetError && (
-              <p style={{ color: T.error, fontSize: 13, margin: "0 0 10px" }}>{resetError}</p>
+
+            {resetSuccess ? (
+              <div style={{ padding: "12px 14px", background: T.successBg, borderRadius: T.radiusSm, color: T.success, fontSize: 14, fontWeight: 500, textAlign: "center" }}>
+                Password updated
+              </div>
+            ) : (
+              <>
+                <input
+                  type="password"
+                  placeholder="New password"
+                  value={resetPw}
+                  onChange={e => setResetPw(e.target.value)}
+                  required
+                  autoFocus
+                  style={{
+                    width: "100%", boxSizing: "border-box", padding: "8px 12px",
+                    borderRadius: T.radiusSm, border: `1px solid ${T.borderDark}`,
+                    fontSize: 14, background: T.input, color: T.text,
+                    outline: "none", marginBottom: 8,
+                  }}
+                />
+                <p style={{ fontSize: 12, color: T.textMuted, margin: "0 0 12px" }}>
+                  Min 12 chars · uppercase · lowercase · number · special character
+                </p>
+                {resetError && (
+                  <p style={{ color: T.error, fontSize: 13, margin: "0 0 10px" }}>{resetError}</p>
+                )}
+                <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+                  <button
+                    type="button"
+                    onClick={() => { setResetTarget(null); setResetPw(""); setResetError(""); setResetSuccess(false); }}
+                    style={{
+                      background: "none", color: T.textSecondary,
+                      border: `1px solid ${T.border}`, borderRadius: T.radiusSm,
+                      padding: "7px 16px", fontSize: 14, cursor: "pointer",
+                    }}
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={resetting}
+                    style={{
+                      background: T.primary, color: T.primaryText, border: "none",
+                      borderRadius: T.radiusSm, padding: "7px 16px", fontSize: 14,
+                      fontWeight: 600, cursor: resetting ? "not-allowed" : "pointer",
+                      opacity: resetting ? 0.7 : 1,
+                    }}
+                  >
+                    {resetting ? "Saving…" : "Save"}
+                  </button>
+                </div>
+              </>
             )}
-            <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
-              <button
-                type="button"
-                onClick={() => { setResetTarget(null); setResetPw(""); setResetError(""); }}
-                style={{
-                  background: "none", color: T.textSecondary,
-                  border: `1px solid ${T.border}`, borderRadius: T.radiusSm,
-                  padding: "7px 16px", fontSize: 14, cursor: "pointer",
-                }}
-              >
-                Cancel
-              </button>
-              <button
-                type="submit"
-                disabled={resetting}
-                style={{
-                  background: T.primary, color: T.primaryText, border: "none",
-                  borderRadius: T.radiusSm, padding: "7px 16px", fontSize: 14,
-                  fontWeight: 600, cursor: resetting ? "not-allowed" : "pointer",
-                  opacity: resetting ? 0.7 : 1,
-                }}
-              >
-                {resetting ? "Saving…" : "Save"}
-              </button>
-            </div>
           </form>
         </div>
       )}
@@ -373,10 +394,12 @@ export default function Users() {
             <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
               <button
                 onClick={() => setDeleteTarget(null)}
+                disabled={deleting}
                 style={{
                   background: "none", color: T.textSecondary,
                   border: `1px solid ${T.border}`, borderRadius: T.radiusSm,
-                  padding: "7px 16px", fontSize: 14, cursor: "pointer",
+                  padding: "7px 16px", fontSize: 14, cursor: deleting ? "not-allowed" : "pointer",
+                  opacity: deleting ? 0.5 : 1,
                 }}
               >
                 Cancel
