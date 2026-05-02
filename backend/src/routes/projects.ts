@@ -982,6 +982,118 @@ router.post("/:id/ask", llmRateLimit, async (req: AuthRequest, res) => {
   }
 });
 
+// ─── Tool Result Search ───────────────────────────────────────────
+// POST /:id/tool-search — full-text search through call log tool events.
+// No LLM involved — pure Postgres text search on the callLog JSON column.
+// Returns matching runs with the specific tool events that contain the query.
+router.post("/:id/tool-search", async (req: AuthRequest, res) => {
+  const project = await prisma.project.findUnique({ where: { id: req.params.id } });
+  if (!project) return res.status(404).json({ error: "Project not found" });
+  if (!await canAccess(project.userId ?? null, req)) return res.status(403).json({ error: "Access denied" });
+
+  const { query } = req.body as { query?: string };
+  if (!query || typeof query !== "string" || query.trim().length < 2) {
+    return res.status(400).json({ error: "query must be at least 2 characters" });
+  }
+
+  const cleanQuery = query.trim();
+
+  try {
+    // Use Postgres text cast: callLog is JSONB so ::text is efficient.
+    // The cast produces the full JSON string which ILIKE can search over.
+    type RawRun = {
+      id: string;
+      hamsaCallId: string | null;
+      conversationId: string | null;
+      callDate: Date | null;
+      callDuration: number | null;
+      callOutcome: string | null;
+      callStatus: string | null;
+      overallScore: number | null;
+      callLog: any;
+    };
+    const runs = await prisma.$queryRaw<RawRun[]>`
+      SELECT id, "hamsaCallId", "conversationId", "callDate", "callDuration",
+             "callOutcome", "callStatus", "overallScore", "callLog"
+      FROM "Run"
+      WHERE "projectId" = ${project.id}
+        AND "callLog" IS NOT NULL
+        AND "callLog"::text ILIKE ${'%' + cleanQuery.replace(/'/g, "''") + '%'}
+      ORDER BY "callDate" DESC NULLS LAST
+      LIMIT 100
+    `;
+
+    const queryLower = cleanQuery.toLowerCase();
+
+    // For each matching run, extract the TOOLS events that contain the query
+    const results = runs.map((run) => {
+      const callLog: any[] = Array.isArray(run.callLog) ? run.callLog : [];
+
+      // Collect all TOOLS events and pair Executing + Success/Error events together
+      const toolEventGroups: Array<{
+        toolName: string;
+        request: any;
+        response: any;
+        status: "success" | "error" | "unknown";
+        matchesQuery: boolean;
+      }> = [];
+
+      for (let i = 0; i < callLog.length; i++) {
+        const e = callLog[i];
+        if (e.category !== "TOOLS") continue;
+        if (e.message !== "Executing Tool") continue;
+
+        const toolName = e.payload?.toolName || "unknown";
+        const request = e.payload?.request || e.payload?.params || null;
+
+        // Find the next result event for this tool
+        let response: any = null;
+        let status: "success" | "error" | "unknown" = "unknown";
+        for (let j = i + 1; j < Math.min(i + 5, callLog.length); j++) {
+          const r = callLog[j];
+          if (r.category !== "TOOLS") continue;
+          if (r.message === "Tool Success" || r.message === "Tool API call completed") {
+            response = r.payload?.response ?? r.payload;
+            status = (r.payload?.response?.ok === false) ? "error" : "success";
+            break;
+          }
+          if (r.message === "Tool Error" || r.message === "Tool Failed") {
+            response = r.payload;
+            status = "error";
+            break;
+          }
+        }
+
+        // Check if this tool event contains the query
+        const eventText = JSON.stringify({ toolName, request, response }).toLowerCase();
+        const matchesQuery = eventText.includes(queryLower);
+
+        if (matchesQuery) {
+          toolEventGroups.push({ toolName, request, response, status, matchesQuery: true });
+        }
+      }
+
+      return {
+        id: run.id,
+        hamsaCallId: run.hamsaCallId,
+        conversationId: run.conversationId,
+        callDate: run.callDate,
+        callDuration: run.callDuration,
+        callOutcome: run.callOutcome,
+        callStatus: run.callStatus,
+        overallScore: run.overallScore,
+        matchCount: toolEventGroups.length,
+        toolMatches: toolEventGroups,
+      };
+    }).filter((r) => r.matchCount > 0);
+
+    res.json({ query: cleanQuery, total: results.length, results });
+  } catch (err) {
+    console.error("[ToolSearch] Error:", err);
+    res.status(500).json({ error: (err as Error).message });
+  }
+});
+
 // ─── Eval Context (per-project evaluation rules) ──────────────────
 
 // GET  /:id/eval-context  — return current context

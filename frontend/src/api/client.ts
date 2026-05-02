@@ -299,6 +299,36 @@ export function askProject(projectId: string, question: string) {
   });
 }
 
+// ─── Tool Result Search ───────────────────────────────────────────
+
+export interface ToolMatch {
+  toolName: string;
+  request: any;
+  response: any;
+  status: "success" | "error" | "unknown";
+  matchesQuery: boolean;
+}
+
+export interface ToolSearchResult {
+  id: string;
+  hamsaCallId: string | null;
+  conversationId: string | null;
+  callDate: string | null;
+  callDuration: number | null;
+  callOutcome: string | null;
+  callStatus: string | null;
+  overallScore: number | null;
+  matchCount: number;
+  toolMatches: ToolMatch[];
+}
+
+export function searchToolResults(projectId: string, query: string) {
+  return request<{ query: string; total: number; results: ToolSearchResult[] }>(
+    `/projects/${projectId}/tool-search`,
+    { method: "POST", body: JSON.stringify({ query }) }
+  );
+}
+
 // ─── Eval Context & Prompt Audit ────────────────────────────────────
 
 export function getEvalContext(projectId: string) {

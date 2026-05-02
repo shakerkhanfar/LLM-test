@@ -6,6 +6,7 @@ import {
   askProject, fetchHamsaProjects, reEvaluateProject, reHydrateProject,
   exportCallIds, importByIds,
   getEvalContext, saveEvalContext, runPromptAudit, applyPromptFix,
+  searchToolResults, type ToolSearchResult,
 } from "../api/client";
 import CallAgent from "../components/CallAgent";
 import ProjectDashboard from "../components/ProjectDashboard";
@@ -113,6 +114,14 @@ export default function ProjectDetail() {
   const callIdsRef = useRef<HTMLTextAreaElement>(null);
   const [sortField, setSortField] = useState<string | null>(null);
   const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
+
+  // Tool result search
+  const [toolSearchOpen, setToolSearchOpen] = useState(false);
+  const [toolSearchQuery, setToolSearchQuery] = useState("");
+  const [toolSearchLoading, setToolSearchLoading] = useState(false);
+  const [toolSearchResults, setToolSearchResults] = useState<ToolSearchResult[] | null>(null);
+  const [toolSearchError, setToolSearchError] = useState<string | null>(null);
+  const [toolSearchExpanded, setToolSearchExpanded] = useState<string | null>(null);
 
   const sortedRuns = useMemo(() => {
     const runs = [...(project?.runs ?? [])];
@@ -969,6 +978,15 @@ export default function ProjectDetail() {
               width: 260,
             }}
           />
+          {(isHistory || isWebhook) && (
+            <button
+              onClick={() => { setToolSearchOpen(true); setToolSearchResults(null); setToolSearchError(null); }}
+              title="Search for specific text inside tool request/response payloads across all calls"
+              style={{ padding: "5px 10px", background: T.card, border: `1px solid ${T.border}`, borderRadius: 4, color: T.textSecondary, fontSize: 12, cursor: "pointer", whiteSpace: "nowrap" }}
+            >
+              🔍 Search Tool Results
+            </button>
+          )}
           {(isHistory || isWebhook) && (() => {
             const channels = new Set<string>();
             for (const r of (project.runs ?? [])) {
@@ -2237,6 +2255,168 @@ function PromptAuditPanel({ projectId, agentStruct, onRefresh }: { projectId: st
               </div>
             </div>
           )}
+        </div>
+      )}
+
+      {/* ── Tool Result Search Modal ───────────────────────────── */}
+      {toolSearchOpen && (
+        <div
+          onClick={(e) => { if (e.target === e.currentTarget) setToolSearchOpen(false); }}
+          style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.4)", zIndex: 1000, display: "flex", alignItems: "flex-start", justifyContent: "center", paddingTop: 60 }}
+        >
+          <div style={{ background: T.card, border: `1px solid ${T.border}`, borderRadius: 8, width: "min(860px, 95vw)", height: "80vh", display: "flex", flexDirection: "column", boxShadow: "0 8px 32px rgba(0,0,0,0.18)" }}>
+            {/* Header */}
+            <div style={{ padding: "16px 20px 12px", borderBottom: `1px solid ${T.border}`, flexShrink: 0 }}>
+              <div style={{ display: "flex", alignItems: "flex-start", gap: 8 }}>
+                <div style={{ flex: 1 }}>
+                  <div style={{ fontSize: 14, fontWeight: 600, color: T.text, marginBottom: 8 }}>Search Tool Results</div>
+                  <div style={{ display: "flex", gap: 8 }}>
+                    <input
+                      autoFocus
+                      type="text"
+                      placeholder='e.g. "Invalid startDateTime format" or "No available slots"'
+                      value={toolSearchQuery}
+                      onChange={(e) => setToolSearchQuery(e.target.value)}
+                      onKeyDown={async (e) => {
+                        if (e.key !== "Enter" || !toolSearchQuery.trim() || toolSearchLoading) return;
+                        setToolSearchLoading(true); setToolSearchError(null); setToolSearchResults(null); setToolSearchExpanded(null);
+                        try { const r = await searchToolResults(id!, toolSearchQuery.trim()); setToolSearchResults(r.results); }
+                        catch (err) { setToolSearchError((err as Error).message); }
+                        finally { setToolSearchLoading(false); }
+                      }}
+                      style={{ flex: 1, padding: "6px 10px", background: T.input, border: `1px solid ${T.borderDark}`, borderRadius: 4, color: T.text, fontSize: 13 }}
+                    />
+                    <button
+                      disabled={toolSearchLoading || !toolSearchQuery.trim()}
+                      onClick={async () => {
+                        if (!toolSearchQuery.trim() || toolSearchLoading) return;
+                        setToolSearchLoading(true); setToolSearchError(null); setToolSearchResults(null); setToolSearchExpanded(null);
+                        try { const r = await searchToolResults(id!, toolSearchQuery.trim()); setToolSearchResults(r.results); }
+                        catch (err) { setToolSearchError((err as Error).message); }
+                        finally { setToolSearchLoading(false); }
+                      }}
+                      style={{ padding: "6px 16px", background: toolSearchLoading ? T.cardAlt : T.primary, color: toolSearchLoading ? T.textSecondary : "#fff", border: "none", borderRadius: 4, cursor: toolSearchLoading ? "default" : "pointer", fontSize: 13, fontWeight: 600, whiteSpace: "nowrap" }}
+                    >
+                      {toolSearchLoading ? "Searching…" : "Search"}
+                    </button>
+                  </div>
+                  <div style={{ fontSize: 11, color: T.textMuted, marginTop: 5 }}>
+                    Searches request and response payloads across all calls. Press Enter or click Search.
+                  </div>
+                </div>
+                <button onClick={() => setToolSearchOpen(false)} style={{ background: "none", border: "none", cursor: "pointer", fontSize: 18, color: T.textMuted, padding: "2px 4px" }}>✕</button>
+              </div>
+            </div>
+
+            {/* Body */}
+            <div style={{ flex: 1, overflowY: "auto", minHeight: 0 }}>
+              {toolSearchError && (
+                <div style={{ padding: 20, color: "#ef4444", fontSize: 13 }}>Error: {toolSearchError}</div>
+              )}
+              {toolSearchResults !== null && toolSearchResults.length === 0 && (
+                <div style={{ padding: 40, textAlign: "center", color: T.textMuted, fontSize: 13 }}>
+                  No calls found containing <strong>"{toolSearchQuery}"</strong> in tool results.
+                </div>
+              )}
+              {toolSearchResults !== null && toolSearchResults.length > 0 && (
+                <div>
+                  <div style={{ padding: "8px 20px", fontSize: 12, color: T.textMuted, borderBottom: `1px solid ${T.border}` }}>
+                    {toolSearchResults.length} call{toolSearchResults.length !== 1 ? "s" : ""} matched
+                  </div>
+                  {toolSearchResults.map((run) => {
+                    const isExpanded = toolSearchExpanded === run.id;
+                    const dateStr = run.callDate ? new Date(run.callDate).toLocaleString() : "—";
+                    const scoreColor = run.overallScore == null ? T.textMuted : run.overallScore >= 0.8 ? "#22c55e" : run.overallScore >= 0.5 ? "#f59e0b" : "#ef4444";
+                    return (
+                      <div key={run.id} style={{ borderBottom: `1px solid ${T.border}` }}>
+                        {/* Run row */}
+                        <div style={{ padding: "10px 20px", display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+                          <Link
+                            to={`/projects/${id}/runs/${run.id}`}
+                            onClick={() => setToolSearchOpen(false)}
+                            style={{ color: T.link, fontSize: 13, fontWeight: 600, textDecoration: "none" }}
+                          >
+                            {dateStr}
+                          </Link>
+                          {run.conversationId && (
+                            <span style={{ fontSize: 11, color: T.textMuted, fontFamily: "monospace" }}>{run.conversationId.slice(0, 16)}…</span>
+                          )}
+                          {run.callOutcome && (
+                            <span style={{ fontSize: 11, background: T.cardAlt, border: `1px solid ${T.border}`, borderRadius: 3, padding: "1px 6px", color: T.textSecondary }}>{run.callOutcome}</span>
+                          )}
+                          {run.overallScore != null && (
+                            <span style={{ fontSize: 12, color: scoreColor, fontWeight: 600 }}>{(run.overallScore * 100).toFixed(0)}%</span>
+                          )}
+                          {run.callDuration != null && (
+                            <span style={{ fontSize: 11, color: T.textMuted }}>{run.callDuration}s</span>
+                          )}
+                          <span style={{ marginLeft: "auto", fontSize: 11, color: T.textMuted }}>
+                            {run.matchCount} match{run.matchCount !== 1 ? "es" : ""}
+                          </span>
+                          <button
+                            onClick={() => setToolSearchExpanded(isExpanded ? null : run.id)}
+                            style={{ background: "none", border: `1px solid ${T.border}`, borderRadius: 3, cursor: "pointer", fontSize: 11, color: T.textSecondary, padding: "2px 8px" }}
+                          >
+                            {isExpanded ? "Hide" : "Show"} payload{run.matchCount !== 1 ? "s" : ""}
+                          </button>
+                        </div>
+
+                        {/* Expanded payloads */}
+                        {isExpanded && (
+                          <div style={{ padding: "0 20px 12px", display: "flex", flexDirection: "column", gap: 8 }}>
+                            {run.toolMatches.map((match, mi) => (
+                              <div key={mi} style={{ border: `1px solid ${match.status === "error" ? "#fca5a5" : T.border}`, borderRadius: 6, overflow: "hidden", fontSize: 12 }}>
+                                <div style={{ padding: "5px 12px", background: match.status === "error" ? "#fef2f2" : T.cardAlt, borderBottom: `1px solid ${match.status === "error" ? "#fca5a5" : T.border}`, display: "flex", alignItems: "center", gap: 8 }}>
+                                  <span style={{ fontWeight: 600, color: match.status === "error" ? "#dc2626" : T.text }}>{match.toolName}</span>
+                                  <span style={{ fontSize: 10, padding: "1px 6px", borderRadius: 3, background: match.status === "error" ? "#fca5a5" : match.status === "success" ? "#bbf7d0" : T.border, color: match.status === "error" ? "#991b1b" : match.status === "success" ? "#166534" : T.textMuted }}>
+                                    {match.status}
+                                  </span>
+                                </div>
+                                <div style={{ display: "grid", gridTemplateColumns: match.request != null && match.response != null ? "1fr 1fr" : "1fr" }}>
+                                  {match.request != null && (
+                                    <div style={{ padding: "8px 12px", borderRight: match.response != null ? `1px solid ${T.border}` : "none" }}>
+                                      <div style={{ fontSize: 10, fontWeight: 600, color: T.textMuted, marginBottom: 4, textTransform: "uppercase" as const, letterSpacing: 0.5 }}>Request</div>
+                                      <pre style={{ margin: 0, fontSize: 11, color: T.text, whiteSpace: "pre-wrap", wordBreak: "break-word" as const, fontFamily: "monospace", maxHeight: 180, overflowY: "auto" as const }}>
+                                        {JSON.stringify(match.request, null, 2)}
+                                      </pre>
+                                    </div>
+                                  )}
+                                  {match.response != null && (
+                                    <div style={{ padding: "8px 12px" }}>
+                                      <div style={{ fontSize: 10, fontWeight: 600, color: T.textMuted, marginBottom: 4, textTransform: "uppercase" as const, letterSpacing: 0.5 }}>Response</div>
+                                      <pre style={{ margin: 0, fontSize: 11, color: T.text, whiteSpace: "pre-wrap", wordBreak: "break-word" as const, fontFamily: "monospace", maxHeight: 180, overflowY: "auto" as const }}>
+                                        {JSON.stringify(match.response, null, 2)}
+                                      </pre>
+                                    </div>
+                                  )}
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+              {toolSearchResults === null && !toolSearchLoading && !toolSearchError && (
+                <div style={{ padding: 40, textAlign: "center", color: T.textMuted, fontSize: 13 }}>
+                  Enter a search term to find calls by tool request or response content.
+                  <div style={{ marginTop: 8, fontSize: 11, display: "flex", gap: 6, justifyContent: "center", flexWrap: "wrap" }}>
+                    {["Invalid startDateTime", "No available slots", "statusCode: 400", "ok: false"].map((ex) => (
+                      <code
+                        key={ex}
+                        onClick={() => setToolSearchQuery(ex)}
+                        style={{ background: T.cardAlt, padding: "2px 7px", borderRadius: 3, cursor: "pointer", border: `1px solid ${T.border}` }}
+                      >
+                        {ex}
+                      </code>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
         </div>
       )}
     </div>
