@@ -16,6 +16,7 @@ import labelsRouter from "./routes/labels";
 import webhooksRouter from "./routes/webhooks";
 import historyRouter from "./routes/history";
 import authRouter from "./routes/auth";
+import usersRouter from "./routes/users";
 import { requireAuth } from "./middleware/auth";
 import { requestIdMiddleware } from "./middleware/requestId";
 import { errorHandler } from "./middleware/errorHandler";
@@ -54,6 +55,7 @@ app.use("/api/projects", requireAuth, projectsRouter);
 app.use("/api/runs", requireAuth, runsRouter);
 app.use("/api/labels", requireAuth, labelsRouter);
 app.use("/api/history", requireAuth, historyRouter);
+app.use("/api/users", requireAuth, usersRouter);
 
 // ── Deep health check ────────────────────────────────────────────
 // Returns 503 if database or queue is unavailable so load balancers

@@ -8,6 +8,7 @@ import ProjectAnalyses from "./pages/ProjectAnalyses";
 import AnalysisCompare from "./pages/AnalysisCompare";
 import Preview from "./pages/Preview";
 import Login from "./pages/Login";
+import Users from "./pages/Users";
 import { AuthProvider, useAuth } from "./context/AuthContext";
 import T from "./theme";
 
@@ -62,6 +63,12 @@ function NavBar() {
         style={{ color: T.textSecondary, textDecoration: "none", fontSize: 14 }}
       >
         Projects
+      </Link>
+      <Link
+        to="/users"
+        style={{ color: T.textSecondary, textDecoration: "none", fontSize: 14 }}
+      >
+        Users
       </Link>
 
       {/* Spacer */}
@@ -135,6 +142,10 @@ function AppShell() {
           <Route
             path="/preview"
             element={<RequireAuth><Preview /></RequireAuth>}
+          />
+          <Route
+            path="/users"
+            element={<RequireAuth><Users /></RequireAuth>}
           />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>

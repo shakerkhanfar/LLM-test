@@ -322,3 +322,27 @@ export function applyPromptFix(projectId: string, nodeId: string, prompt: string
 export function getProjectDashboard(projectId: string) {
   return request<any>(`/projects/${projectId}/dashboard`);
 }
+
+// ─── Users ────────────────────────────────────────────────────────
+
+export function listUsers() {
+  return request<any[]>("/users");
+}
+
+export function createUser(email: string, password: string) {
+  return request<any>("/users", {
+    method: "POST",
+    body: JSON.stringify({ email, password }),
+  });
+}
+
+export function resetUserPassword(userId: string, password: string) {
+  return request<any>(`/users/${userId}/password`, {
+    method: "PATCH",
+    body: JSON.stringify({ password }),
+  });
+}
+
+export function deleteUser(userId: string) {
+  return request<any>(`/users/${userId}`, { method: "DELETE" });
+}
