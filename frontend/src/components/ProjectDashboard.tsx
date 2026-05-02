@@ -203,7 +203,8 @@ export default function ProjectDashboard({ project }: Props) {
   }
 
   function selectIntent(intent: string) {
-    setIntentFilter(prev => prev === intent ? null : intent);
+    const normalized = (intent || "").trim().toLowerCase();
+    setIntentFilter(prev => prev === normalized ? null : normalized);
     setSelectedOutcome(null);
     setObjectiveFilter(null);
     setScoreFilter(null);
@@ -289,20 +290,22 @@ export default function ProjectDashboard({ project }: Props) {
     date: r.date,
   }));
 
-  // Outcome donut
+  // Outcome donut — sorted by volume so donut + legend order is consistent
   const outcomeCounts = useMemo(() => {
     const counts: Record<string, number> = {};
     for (const r of completeRuns) {
       const key = r.callOutcome || "unknown";
       counts[key] = (counts[key] || 0) + 1;
     }
-    return Object.entries(counts).map(([name, value]) => ({ name, value }));
+    return Object.entries(counts)
+      .map(([name, value]) => ({ name, value }))
+      .sort((a, b) => b.value - a.value);
   }, [completeRuns]);
 
-  // Primary Intent from outcomeResult.intention
+  // Primary Intent from outcomeResult.intention — uses completeRuns for consistency with other charts
   const intentCounts = useMemo(() => {
     const counts: Record<string, number> = {};
-    for (const r of (project.runs ?? []) as any[]) {
+    for (const r of completeRuns) {
       const intent = (r.outcomeResult?.intention || "").trim().toLowerCase();
       if (!intent) continue;
       counts[intent] = (counts[intent] || 0) + 1;
@@ -310,11 +313,13 @@ export default function ProjectDashboard({ project }: Props) {
     return Object.entries(counts)
       .map(([name, value]) => ({ name, value }))
       .sort((a, b) => b.value - a.value);
-  }, [project.runs]);
+  }, [completeRuns]);
 
   const INTENT_COLORS = [
     "#17B26A", "#3b82f6", "#a78bfa", "#f59e0b", "#ef4444",
     "#06b6d4", "#f97316", "#84cc16", "#ec4899", "#64748b",
+    "#8b5cf6", "#d97706", "#0891b2", "#059669", "#7c3aed",
+    "#e11d48", "#65a30d", "#0284c7", "#f43f5e", "#6366f1",
   ];
 
   // Sentiment donut
@@ -719,7 +724,7 @@ export default function ProjectDashboard({ project }: Props) {
             <InfoTip text="Distribution of caller intentions extracted by the agent at the start of each call. Click a segment or label to filter the run table." />
           </div>
           {intentCounts.length === 0 ? (
-            <div style={{ color: T.textMuted, fontSize: 12 }}>No intent data — the agent must extract an <code style={{ fontFamily: "monospace", background: T.cardAlt, padding: "0 4px", borderRadius: 3 }}>intention</code> variable.</div>
+            <div style={{ color: T.textMuted, fontSize: 12 }}>No intent data — the agent must extract an <span style={{ fontFamily: "monospace", background: T.cardAlt, padding: "0 4px", borderRadius: 3 }}>intention</span> variable.</div>
           ) : (() => {
             const total = intentCounts.reduce((s, e) => s + e.value, 0);
             return (
@@ -1154,18 +1159,27 @@ export default function ProjectDashboard({ project }: Props) {
         {outcomeCounts.length > 0 && (
           <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 12 }}>
             <button
-              onClick={() => { setSelectedOutcome(null); setObjectiveFilter(null); setIntentFilter(null); }}
+              onClick={() => {
+                setSelectedOutcome(null);
+                setObjectiveFilter(null);
+                setIntentFilter(null);
+                setScoreFilter(null);
+                setNodeFilter(null);
+                setIssueFilter(null);
+                setTableSearch("");
+              }}
               style={{
-                fontSize: 11, fontWeight: selectedOutcome == null && objectiveFilter == null && intentFilter == null ? 700 : 500,
-                color: selectedOutcome == null && objectiveFilter == null && intentFilter == null ? "#fff" : T.textSecondary,
-                background: selectedOutcome == null && objectiveFilter == null && intentFilter == null ? T.primary : T.cardAlt,
-                border: `1px solid ${selectedOutcome == null && objectiveFilter == null && intentFilter == null ? T.primary : T.border}`,
+                fontSize: 11,
+                fontWeight: !selectedOutcome && !objectiveFilter && !intentFilter && !scoreFilter && !nodeFilter && !issueFilter ? 700 : 500,
+                color: !selectedOutcome && !objectiveFilter && !intentFilter && !scoreFilter && !nodeFilter && !issueFilter ? "#fff" : T.textSecondary,
+                background: !selectedOutcome && !objectiveFilter && !intentFilter && !scoreFilter && !nodeFilter && !issueFilter ? T.primary : T.cardAlt,
+                border: `1px solid ${!selectedOutcome && !objectiveFilter && !intentFilter && !scoreFilter && !nodeFilter && !issueFilter ? T.primary : T.border}`,
                 borderRadius: 20, padding: "3px 12px", cursor: "pointer",
               }}
             >
               All ({totalRuns})
             </button>
-            {outcomeCounts.sort((a, b) => b.value - a.value).map((entry) => {
+            {outcomeCounts.map((entry) => {
               const isActive = selectedOutcome === entry.name;
               const color = getOutcomeColor(entry.name);
               return (
