@@ -144,6 +144,7 @@ export default function ProjectDashboard({ project }: Props) {
   const [scoreFilter, setScoreFilter] = useState<{ min: number; max: number; label: string } | null>(null);
   const [nodeFilter, setNodeFilter] = useState<{ label: string; runIds: string[] } | null>(null);
   const [issueFilter, setIssueFilter] = useState<{ text: string; outcome: string; runIds: string[] } | null>(null);
+  const [intentFilter, setIntentFilter] = useState<string | null>(null);
   const tableRef = useRef<HTMLDivElement>(null);
 
   function selectOutcome(name: string) {
@@ -152,6 +153,7 @@ export default function ProjectDashboard({ project }: Props) {
     setScoreFilter(null);
     setNodeFilter(null);
     setIssueFilter(null);
+    setIntentFilter(null);
     setTableSearch("");
     setTimeout(() => tableRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }), 50);
   }
@@ -162,6 +164,7 @@ export default function ProjectDashboard({ project }: Props) {
     setScoreFilter(null);
     setNodeFilter(null);
     setIssueFilter(null);
+    setIntentFilter(null);
     setTableSearch("");
     setTimeout(() => tableRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }), 50);
   }
@@ -172,6 +175,7 @@ export default function ProjectDashboard({ project }: Props) {
     setObjectiveFilter(null);
     setNodeFilter(null);
     setIssueFilter(null);
+    setIntentFilter(null);
     setTableSearch("");
     setTimeout(() => tableRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }), 50);
   }
@@ -182,6 +186,7 @@ export default function ProjectDashboard({ project }: Props) {
     setObjectiveFilter(null);
     setScoreFilter(null);
     setIssueFilter(null);
+    setIntentFilter(null);
     setTableSearch("");
     setTimeout(() => tableRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }), 50);
   }
@@ -192,6 +197,18 @@ export default function ProjectDashboard({ project }: Props) {
     setObjectiveFilter(null);
     setScoreFilter(null);
     setNodeFilter(null);
+    setIntentFilter(null);
+    setTableSearch("");
+    setTimeout(() => tableRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }), 50);
+  }
+
+  function selectIntent(intent: string) {
+    setIntentFilter(prev => prev === intent ? null : intent);
+    setSelectedOutcome(null);
+    setObjectiveFilter(null);
+    setScoreFilter(null);
+    setNodeFilter(null);
+    setIssueFilter(null);
     setTableSearch("");
     setTimeout(() => tableRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }), 50);
   }
@@ -282,6 +299,24 @@ export default function ProjectDashboard({ project }: Props) {
     return Object.entries(counts).map(([name, value]) => ({ name, value }));
   }, [completeRuns]);
 
+  // Primary Intent from outcomeResult.intention
+  const intentCounts = useMemo(() => {
+    const counts: Record<string, number> = {};
+    for (const r of (project.runs ?? []) as any[]) {
+      const intent = (r.outcomeResult?.intention || "").trim().toLowerCase();
+      if (!intent) continue;
+      counts[intent] = (counts[intent] || 0) + 1;
+    }
+    return Object.entries(counts)
+      .map(([name, value]) => ({ name, value }))
+      .sort((a, b) => b.value - a.value);
+  }, [project.runs]);
+
+  const INTENT_COLORS = [
+    "#17B26A", "#3b82f6", "#a78bfa", "#f59e0b", "#ef4444",
+    "#06b6d4", "#f97316", "#84cc16", "#ec4899", "#64748b",
+  ];
+
   // Sentiment donut
   const SENTIMENT_COLORS: Record<string, string> = {
     positive: "#17B26A",
@@ -357,6 +392,11 @@ export default function ProjectDashboard({ project }: Props) {
     if (issueFilter) {
       sorted = sorted.filter((r: any) => issueFilter.runIds.includes(r.id));
     }
+    if (intentFilter) {
+      sorted = sorted.filter((r: any) =>
+        (r.outcomeResult?.intention || "").trim().toLowerCase() === intentFilter
+      );
+    }
     if (!tableSearch.trim()) return sorted;
     const q = tableSearch.toLowerCase();
     return sorted.filter((r: any) => {
@@ -370,7 +410,7 @@ export default function ProjectDashboard({ project }: Props) {
         outcomeColumns.some((k) => String((r.outcomeResult || {})[k] || "").toLowerCase().includes(q))
       );
     });
-  }, [project.runs, tableSearch, outcomeColumns, selectedOutcome, objectiveFilter, scoreFilter, nodeFilter, issueFilter, dashData]);
+  }, [project.runs, tableSearch, outcomeColumns, selectedOutcome, objectiveFilter, scoreFilter, nodeFilter, issueFilter, intentFilter, dashData]);
 
   function exportCsv() {
     const headers = ["Conv ID", "Date", "Call Outcome", "Score", "Duration", ...outcomeColumns];
@@ -500,7 +540,7 @@ export default function ProjectDashboard({ project }: Props) {
       )}
 
       {/* Charts Row */}
-      <div style={{ display: "grid", gridTemplateColumns: "1.6fr 1fr 1fr", gap: 12 }}>
+      <div style={{ display: "grid", gridTemplateColumns: "1.6fr 1fr 1fr 1fr", gap: 12 }}>
         {/* Score Over Time */}
         <div style={CARD_STYLE}>
           <div style={{ ...SECTION_LABEL_STYLE, display: "flex", alignItems: "center" }}>Score Over Time<InfoTip text="Each dot is one call's overall score (0–100%). The green line is a 7-call rolling average, smoothing out individual outliers to show the trend." /></div>
@@ -557,65 +597,58 @@ export default function ProjectDashboard({ project }: Props) {
           )}
         </div>
 
-        {/* Call Outcomes Bar Chart */}
+        {/* Call Outcomes Donut */}
         <div style={CARD_STYLE}>
-          <div style={{ ...SECTION_LABEL_STYLE, display: "flex", alignItems: "center" }}>
-            Call Outcomes
-            <InfoTip text="Count of calls per outcome. Click a bar or label to filter the run table below." />
-            {selectedOutcome && (
-              <button
-                onClick={() => setSelectedOutcome(null)}
-                style={{ marginLeft: "auto", background: "none", border: "none", fontSize: 11, color: T.primary, cursor: "pointer", fontWeight: 500 }}
-              >
-                ✕ Clear filter
-              </button>
-            )}
-          </div>
+          <div style={SECTION_LABEL_STYLE}>Call Outcomes</div>
           {outcomeCounts.length === 0 ? (
             <div style={{ color: T.textMuted, fontSize: 12 }}>Not enough data</div>
           ) : (
-            <div style={{ display: "flex", flexDirection: "column", gap: 6, marginTop: 4 }}>
-              {outcomeCounts.sort((a, b) => b.value - a.value).map((entry) => {
-                const isSelected = selectedOutcome === entry.name;
-                const isDimmed = selectedOutcome && !isSelected;
-                const pct = Math.round((entry.value / totalRuns) * 100);
-                const color = getOutcomeColor(entry.name);
-                return (
-                  <div
-                    key={entry.name}
-                    onClick={() => selectOutcome(entry.name)}
-                    title={`Filter to "${entry.name}" calls`}
-                    style={{ cursor: "pointer", opacity: isDimmed ? 0.35 : 1, transition: "opacity 0.15s" }}
-                  >
-                    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 3 }}>
-                      <span style={{
-                        fontSize: 11, fontWeight: isSelected ? 700 : 500,
-                        color: isSelected ? color : T.textSecondary,
-                        textTransform: "capitalize",
-                      }}>
-                        {entry.name.replace(/_/g, " ")}
+            <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+              <PieChart width={110} height={110} style={{ cursor: "pointer" }}>
+                <Pie
+                  data={outcomeCounts}
+                  cx={50} cy={50}
+                  innerRadius={35} outerRadius={55}
+                  dataKey="value"
+                  paddingAngle={2}
+                  onClick={(data: any) => selectOutcome(data.name)}
+                >
+                  {outcomeCounts.map((entry, idx) => {
+                    const isSelected = selectedOutcome === entry.name;
+                    const isDimmed = selectedOutcome && !isSelected;
+                    return (
+                      <Cell
+                        key={idx}
+                        fill={getOutcomeColor(entry.name)}
+                        opacity={isDimmed ? 0.3 : 1}
+                        stroke={isSelected ? "#111827" : "none"}
+                        strokeWidth={isSelected ? 2 : 0}
+                      />
+                    );
+                  })}
+                </Pie>
+              </PieChart>
+              <div style={{ display: "flex", flexDirection: "column", gap: 4, flex: 1, minWidth: 0 }}>
+                {outcomeCounts.map((entry, idx) => {
+                  const isSelected = selectedOutcome === entry.name;
+                  const isDimmed = selectedOutcome && !isSelected;
+                  return (
+                    <div
+                      key={idx}
+                      onClick={() => selectOutcome(entry.name)}
+                      style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 11, cursor: "pointer", opacity: isDimmed ? 0.4 : 1, borderRadius: 4, padding: "1px 3px", background: isSelected ? getOutcomeColor(entry.name) + "18" : "none" }}
+                    >
+                      <span style={{ width: 8, height: 8, borderRadius: "50%", background: getOutcomeColor(entry.name), flexShrink: 0 }} />
+                      <span style={{ color: isSelected ? T.text : T.textSecondary, fontWeight: isSelected ? 600 : 400, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1 }}>
+                        {entry.name}
                       </span>
-                      <span style={{ fontSize: 11, fontWeight: 700, color: isSelected ? color : T.text }}>
-                        {entry.value} <span style={{ fontWeight: 400, color: T.textMuted }}>({pct}%)</span>
+                      <span style={{ color: T.text, fontWeight: 600, flexShrink: 0 }}>
+                        {entry.value} <span style={{ fontWeight: 400, color: T.textMuted, fontSize: 10 }}>({Math.round((entry.value / totalRuns) * 100)}%)</span>
                       </span>
                     </div>
-                    <div style={{ height: 8, background: T.cardAlt, borderRadius: 99, overflow: "hidden" }}>
-                      <div style={{
-                        width: `${pct}%`, height: "100%",
-                        background: color,
-                        borderRadius: 99,
-                        transition: "width 0.3s ease",
-                        boxShadow: isSelected ? `0 0 0 2px ${color}55` : "none",
-                      }} />
-                    </div>
-                  </div>
-                );
-              })}
-              {selectedOutcome && (
-                <div style={{ fontSize: 11, color: T.textMuted, marginTop: 2, textAlign: "right" }}>
-                  Showing {outcomeCounts.find(e => e.name === selectedOutcome)?.value ?? 0} of {totalRuns} calls
-                </div>
-              )}
+                  );
+                })}
+              </div>
             </div>
           )}
         </div>
@@ -673,6 +706,69 @@ export default function ProjectDashboard({ project }: Props) {
                   {unknownPct > 30 && (
                     <span style={{ color: T.textMuted }}> ({unknownPct}% of calls were not scored by the LLM judge.)</span>
                   )}
+                </div>
+              </div>
+            );
+          })()}
+        </div>
+
+        {/* Primary Intent */}
+        <div style={CARD_STYLE}>
+          <div style={{ ...SECTION_LABEL_STYLE, display: "flex", alignItems: "center" }}>
+            Primary Intent
+            <InfoTip text="Distribution of caller intentions extracted by the agent at the start of each call. Click a segment or label to filter the run table." />
+          </div>
+          {intentCounts.length === 0 ? (
+            <div style={{ color: T.textMuted, fontSize: 12 }}>No intent data — the agent must extract an <code style={{ fontFamily: "monospace", background: T.cardAlt, padding: "0 4px", borderRadius: 3 }}>intention</code> variable.</div>
+          ) : (() => {
+            const total = intentCounts.reduce((s, e) => s + e.value, 0);
+            return (
+              <div style={{ display: "flex", alignItems: "flex-start", gap: 12 }}>
+                <PieChart width={110} height={110} style={{ cursor: "pointer", flexShrink: 0 }}>
+                  <Pie
+                    data={intentCounts}
+                    cx={50} cy={50}
+                    innerRadius={35} outerRadius={55}
+                    dataKey="value"
+                    paddingAngle={2}
+                    onClick={(data: any) => selectIntent(data.name)}
+                  >
+                    {intentCounts.map((entry, idx) => {
+                      const isSelected = intentFilter === entry.name;
+                      const isDimmed = intentFilter && !isSelected;
+                      return (
+                        <Cell
+                          key={idx}
+                          fill={INTENT_COLORS[idx % INTENT_COLORS.length]}
+                          opacity={isDimmed ? 0.3 : 1}
+                          stroke={isSelected ? "#111827" : "none"}
+                          strokeWidth={isSelected ? 2 : 0}
+                        />
+                      );
+                    })}
+                  </Pie>
+                </PieChart>
+                <div style={{ display: "flex", flexDirection: "column", gap: 4, flex: 1, minWidth: 0 }}>
+                  {intentCounts.map((entry, idx) => {
+                    const isSelected = intentFilter === entry.name;
+                    const isDimmed = intentFilter && !isSelected;
+                    const color = INTENT_COLORS[idx % INTENT_COLORS.length];
+                    return (
+                      <div
+                        key={entry.name}
+                        onClick={() => selectIntent(entry.name)}
+                        style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 11, cursor: "pointer", opacity: isDimmed ? 0.4 : 1, borderRadius: 4, padding: "1px 3px", background: isSelected ? color + "18" : "none" }}
+                      >
+                        <span style={{ width: 8, height: 8, borderRadius: "50%", background: color, flexShrink: 0 }} />
+                        <span style={{ color: isSelected ? T.text : T.textSecondary, fontWeight: isSelected ? 600 : 400, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1, textTransform: "capitalize" }}>
+                          {entry.name.replace(/_/g, " ")}
+                        </span>
+                        <span style={{ color: T.text, fontWeight: 600, flexShrink: 0 }}>
+                          {entry.value} <span style={{ fontWeight: 400, color: T.textMuted, fontSize: 10 }}>({Math.round((entry.value / total) * 100)}%)</span>
+                        </span>
+                      </div>
+                    );
+                  })}
                 </div>
               </div>
             );
@@ -1058,12 +1154,12 @@ export default function ProjectDashboard({ project }: Props) {
         {outcomeCounts.length > 0 && (
           <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 12 }}>
             <button
-              onClick={() => { setSelectedOutcome(null); setObjectiveFilter(null); }}
+              onClick={() => { setSelectedOutcome(null); setObjectiveFilter(null); setIntentFilter(null); }}
               style={{
-                fontSize: 11, fontWeight: selectedOutcome == null && objectiveFilter == null ? 700 : 500,
-                color: selectedOutcome == null && objectiveFilter == null ? "#fff" : T.textSecondary,
-                background: selectedOutcome == null && objectiveFilter == null ? T.primary : T.cardAlt,
-                border: `1px solid ${selectedOutcome == null && objectiveFilter == null ? T.primary : T.border}`,
+                fontSize: 11, fontWeight: selectedOutcome == null && objectiveFilter == null && intentFilter == null ? 700 : 500,
+                color: selectedOutcome == null && objectiveFilter == null && intentFilter == null ? "#fff" : T.textSecondary,
+                background: selectedOutcome == null && objectiveFilter == null && intentFilter == null ? T.primary : T.cardAlt,
+                border: `1px solid ${selectedOutcome == null && objectiveFilter == null && intentFilter == null ? T.primary : T.border}`,
                 borderRadius: 20, padding: "3px 12px", cursor: "pointer",
               }}
             >
@@ -1089,6 +1185,31 @@ export default function ProjectDashboard({ project }: Props) {
                 </button>
               );
             })}
+            {intentCounts.length > 0 && (
+              <>
+                <span style={{ fontSize: 11, color: T.textMuted, alignSelf: "center", padding: "0 4px" }}>|</span>
+                {intentCounts.map((entry, idx) => {
+                  const isActive = intentFilter === entry.name;
+                  const color = INTENT_COLORS[idx % INTENT_COLORS.length];
+                  return (
+                    <button
+                      key={entry.name}
+                      onClick={() => selectIntent(entry.name)}
+                      style={{
+                        fontSize: 11, fontWeight: isActive ? 700 : 500,
+                        color: isActive ? "#fff" : color,
+                        background: isActive ? color : color + "14",
+                        border: `1px solid ${isActive ? color : color + "55"}`,
+                        borderRadius: 20, padding: "3px 12px", cursor: "pointer",
+                        textTransform: "capitalize",
+                      }}
+                    >
+                      {entry.name.replace(/_/g, " ")} ({entry.value})
+                    </button>
+                  );
+                })}
+              </>
+            )}
           </div>
         )}
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12, flexWrap: "wrap", gap: 8 }}>
@@ -1157,6 +1278,17 @@ export default function ProjectDashboard({ project }: Props) {
                   Issue ({issueFilter.outcome.replace(/_/g, " ")}): {issueFilter.text.length > 40 ? issueFilter.text.slice(0, 40) + "…" : issueFilter.text}
                 </span>
                 <button onClick={() => setIssueFilter(null)} style={{ background: "none", border: "none", cursor: "pointer", padding: 0, fontSize: 12, color: "inherit", lineHeight: 1, flexShrink: 0 }}>×</button>
+              </span>
+            )}
+            {intentFilter && (
+              <span style={{
+                display: "inline-flex", alignItems: "center", gap: 5,
+                fontSize: 11, fontWeight: 600, color: "#a78bfa",
+                background: "#a78bfa18", border: "1px solid #a78bfa44",
+                borderRadius: 20, padding: "2px 10px",
+              }}>
+                Intent: {intentFilter.replace(/_/g, " ")}
+                <button onClick={() => setIntentFilter(null)} style={{ background: "none", border: "none", cursor: "pointer", padding: 0, fontSize: 12, color: "inherit", lineHeight: 1 }}>×</button>
               </span>
             )}
           </div>
