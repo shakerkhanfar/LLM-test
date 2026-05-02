@@ -138,6 +138,19 @@ export default function ProjectDashboard({ project }: Props) {
   const [expandedIssue, setExpandedIssue] = useState<number | null>(null);
   const [showAllIssues, setShowAllIssues] = useState(false);
   const ISSUES_DEFAULT_LIMIT = 8;
+
+  // Reset per-project UI state when the project changes
+  useEffect(() => {
+    setExpandedIssue(null);
+    setShowAllIssues(false);
+    setSelectedOutcome(null);
+    setObjectiveFilter(null);
+    setScoreFilter(null);
+    setNodeFilter(null);
+    setIssueFilter(null);
+    setIntentFilter(null);
+    setTableSearch("");
+  }, [project.id]);
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [selectedOutcome, setSelectedOutcome] = useState<string | null>(null);
   const [objectiveFilter, setObjectiveFilter] = useState<"achieved" | "not_achieved" | null>(null);
@@ -302,22 +315,29 @@ export default function ProjectDashboard({ project }: Props) {
       .sort((a, b) => b.value - a.value);
   }, [completeRuns]);
 
-  // Primary Intent — tries common field names from outcomeResult, falling back to any
-  // key whose name contains "intent". The table column key is found dynamically so
-  // adding new field names in the agent doesn't require a code change here.
-  const intentFieldKey = useMemo(() => {
+  // Primary Intent — scans ALL complete runs to find which candidate key is present,
+  // then picks the highest-priority one. Scanning all runs (not just the first) prevents
+  // incorrect detection when early runs have a different/legacy key name.
+  const intentFieldKey = useMemo((): string | null => {
     const CANDIDATES = ["primary_intent", "intention", "intent", "call_intent", "caller_intent"];
-    for (const r of (project.runs ?? []) as any[]) {
+    const found = new Set<string>();
+    const fallbacks = new Set<string>();
+    for (const r of completeRuns) {
       if (!r.outcomeResult || typeof r.outcomeResult !== "object") continue;
       for (const c of CANDIDATES) {
-        if (r.outcomeResult[c] != null && r.outcomeResult[c] !== "") return c;
+        if (r.outcomeResult[c] != null && String(r.outcomeResult[c]).trim() !== "") found.add(c);
       }
-      // fallback: any key whose name includes "intent"
-      const fallback = Object.keys(r.outcomeResult).find(k => k.toLowerCase().includes("intent"));
-      if (fallback) return fallback;
+      for (const k of Object.keys(r.outcomeResult)) {
+        if (k.toLowerCase().includes("intent") && !CANDIDATES.includes(k)) fallbacks.add(k);
+      }
     }
-    return null;
-  }, [project.runs]);
+    // Return highest-priority candidate present in ANY run
+    for (const c of CANDIDATES) {
+      if (found.has(c)) return c;
+    }
+    // Fall back to first key whose name contains "intent"
+    return fallbacks.size > 0 ? [...fallbacks][0] : null;
+  }, [completeRuns]);
 
   const intentCounts = useMemo(() => {
     if (!intentFieldKey) return [];
@@ -396,10 +416,15 @@ export default function ProjectDashboard({ project }: Props) {
     if (selectedOutcome) {
       sorted = sorted.filter((r: any) => (r.callOutcome || "unknown") === selectedOutcome);
     }
-    if (objectiveFilter === "achieved") {
-      sorted = sorted.filter((r: any) => dashData?.achievedRunIds?.includes(r.id));
-    } else if (objectiveFilter === "not_achieved") {
-      sorted = sorted.filter((r: any) => dashData?.notAchievedRunIds?.includes(r.id));
+    if (objectiveFilter) {
+      // dashData may not be loaded yet — don't filter to empty while loading
+      if (dashData) {
+        if (objectiveFilter === "achieved") {
+          sorted = sorted.filter((r: any) => dashData.achievedRunIds.includes(r.id));
+        } else {
+          sorted = sorted.filter((r: any) => dashData.notAchievedRunIds.includes(r.id));
+        }
+      }
     }
     if (scoreFilter) {
       sorted = sorted.filter((r: any) => {
@@ -429,7 +454,8 @@ export default function ProjectDashboard({ project }: Props) {
         (r.callOutcome || "").toLowerCase().includes(q) ||
         score.includes(q) ||
         dur.includes(q) ||
-        outcomeColumns.some((k) => String((r.outcomeResult || {})[k] || "").toLowerCase().includes(q))
+        outcomeColumns.some((k) => String((r.outcomeResult || {})[k] || "").toLowerCase().includes(q)) ||
+        (intentFieldKey ? String((r.outcomeResult || {})[intentFieldKey] || "").toLowerCase().includes(q) : false)
       );
     });
   }, [project.runs, tableSearch, outcomeColumns, selectedOutcome, objectiveFilter, scoreFilter, nodeFilter, issueFilter, intentFilter, intentFieldKey, dashData]);
@@ -582,7 +608,7 @@ export default function ProjectDashboard({ project }: Props) {
                     return [`${value}`, name];
                   }}
                   labelFormatter={(label: any) => {
-                    const d = trendData[(label as number) - 1];
+                    const d = trendData[Math.max(0, Math.min((label as number) - 1, trendData.length - 1))];
                     return d?.date || `Run ${label}`;
                   }}
                 />
@@ -741,7 +767,7 @@ export default function ProjectDashboard({ project }: Props) {
             <InfoTip text="Distribution of caller intentions extracted by the agent at the start of each call. Click a segment or label to filter the run table." />
           </div>
           {intentCounts.length === 0 ? (
-            <div style={{ color: T.textMuted, fontSize: 12 }}>No intent data — the agent must extract a variable named <span style={{ fontFamily: "monospace", background: T.cardAlt, padding: "0 4px", borderRadius: 3 }}>primary_intent</span> or <span style={{ fontFamily: "monospace", background: T.cardAlt, padding: "0 4px", borderRadius: 3 }}>intention</span>.</div>
+            <div style={{ color: T.textMuted, fontSize: 12 }}>No intent data — the agent must extract a variable whose name contains <span style={{ fontFamily: "monospace", background: T.cardAlt, padding: "0 4px", borderRadius: 3 }}>intent</span> (e.g. <span style={{ fontFamily: "monospace", background: T.cardAlt, padding: "0 4px", borderRadius: 3 }}>primary_intent</span>).</div>
           ) : (() => {
             const total = intentCounts.reduce((s, e) => s + e.value, 0);
             return (
@@ -1172,8 +1198,8 @@ export default function ProjectDashboard({ project }: Props) {
 
       {/* Call Outcomes Table */}
       <div ref={tableRef} style={{ ...CARD_STYLE, scrollMarginTop: 16 }}>
-        {/* Outcome filter chips */}
-        {outcomeCounts.length > 0 && (
+        {/* Outcome + intent filter chips — show whenever at least one set of chips exists */}
+        {(outcomeCounts.length > 0 || intentCounts.length > 0) && (
           <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 12 }}>
             <button
               onClick={() => {
@@ -1311,17 +1337,23 @@ export default function ProjectDashboard({ project }: Props) {
                 <button onClick={() => setIssueFilter(null)} style={{ background: "none", border: "none", cursor: "pointer", padding: 0, fontSize: 12, color: "inherit", lineHeight: 1, flexShrink: 0 }}>×</button>
               </span>
             )}
-            {intentFilter && (
-              <span style={{
-                display: "inline-flex", alignItems: "center", gap: 5,
-                fontSize: 11, fontWeight: 600, color: "#a78bfa",
-                background: "#a78bfa18", border: "1px solid #a78bfa44",
-                borderRadius: 20, padding: "2px 10px",
-              }}>
-                Intent: {intentFilter.replace(/_/g, " ")}
-                <button onClick={() => setIntentFilter(null)} style={{ background: "none", border: "none", cursor: "pointer", padding: 0, fontSize: 12, color: "inherit", lineHeight: 1 }}>×</button>
-              </span>
-            )}
+            {intentFilter && (() => {
+              const intentIdx = intentCounts.findIndex(e => e.name === intentFilter);
+              const intentColor = intentIdx >= 0 ? INTENT_COLORS[intentIdx % INTENT_COLORS.length] : "#a78bfa";
+              return (
+                <span style={{
+                  display: "inline-flex", alignItems: "center", gap: 5,
+                  fontSize: 11, fontWeight: 600,
+                  color: intentColor,
+                  background: intentColor + "18",
+                  border: `1px solid ${intentColor}44`,
+                  borderRadius: 20, padding: "2px 10px",
+                }}>
+                  Intent: {intentFilter.replace(/_/g, " ")}
+                  <button onClick={() => setIntentFilter(null)} style={{ background: "none", border: "none", cursor: "pointer", padding: 0, fontSize: 12, color: "inherit", lineHeight: 1 }}>×</button>
+                </span>
+              );
+            })()}
           </div>
           <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
             <input
