@@ -111,26 +111,28 @@ async function ensureDemoUser() {
   const orgName = process.env.DEMO_ORG_NAME || "Hamsa";
   if (!email || !password) return;
   try {
-    // Find or create the org
-    let org = await prisma.organization.findFirst({
-      where: { name: { equals: orgName, mode: "insensitive" } },
+    // Use a deterministic org ID derived from the name so this upsert is
+    // idempotent and race-safe across simultaneous autoscale startups.
+    const orgId = `startup-org-${orgName.toLowerCase().replace(/\s+/g, "-")}`;
+    const org = await prisma.organization.upsert({
+      where: { id: orgId },
+      update: { name: orgName },
+      create: { id: orgId, name: orgName },
     });
-    if (!org) {
-      org = await prisma.organization.create({ data: { name: orgName } });
-      console.log(`[Seed] Created org "${orgName}" (${org.id})`);
-    }
 
     const existing = await prisma.user.findUnique({ where: { email } });
     if (existing) {
-      // Ensure the existing user is linked to the org (handles re-deploys)
       if (existing.organizationId !== org.id) {
         await prisma.user.update({
           where: { id: existing.id },
           data: { organizationId: org.id },
         });
-        console.log(`[Seed] Linked ${email} to org "${orgName}"`);
+        // NOTE: existing sessions for this user have a JWT without organizationId.
+        // They will only see themselves on the Users page until they log out and
+        // log back in to get a fresh token that embeds the org.
+        console.log(`[Seed] Linked ${email} to org "${orgName}" — active sessions need re-login`);
       } else {
-        console.log(`[Seed] User ${email} already exists in org "${orgName}"`);
+        console.log(`[Seed] User ${email} already in org "${orgName}"`);
       }
       return;
     }
