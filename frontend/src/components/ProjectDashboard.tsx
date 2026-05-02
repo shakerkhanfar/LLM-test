@@ -1585,7 +1585,7 @@ export default function ProjectDashboard({ project }: Props) {
               </div>
 
               {/* Body */}
-              <div style={{ overflowY: "auto", flex: 1, padding: "8px 0" }}>
+              <div style={{ overflowY: "auto", flex: 1, minHeight: 0, padding: "8px 0" }}>
                 {filtered.length === 0 ? (
                   <div style={{ padding: "32px 20px", textAlign: "center", color: T.textMuted, fontSize: 13 }}>
                     No issues match your search.
