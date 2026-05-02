@@ -1418,30 +1418,22 @@ export default function ProjectDetail() {
                                   </span>
                                 </div>
                                 <div style={{ display: "grid", gridTemplateColumns: match.request != null && match.response != null ? "1fr 1fr" : "1fr" }}>
-                                  {match.request != null && (() => {
-                                    const full = JSON.stringify(match.request, null, 2);
-                                    const truncated = full.length > 4000;
-                                    return (
-                                      <div style={{ padding: "8px 12px", borderRight: match.response != null ? `1px solid ${T.border}` : "none" }}>
-                                        <div style={{ fontSize: 10, fontWeight: 600, color: T.textMuted, marginBottom: 4, textTransform: "uppercase" as const, letterSpacing: 0.5 }}>Request</div>
-                                        <pre style={{ margin: 0, fontSize: 11, color: T.text, whiteSpace: "pre-wrap", wordBreak: "break-word" as const, fontFamily: "monospace", maxHeight: 180, overflowY: "auto" as const }}>
-                                          {truncated ? full.slice(0, 4000) + "\n… [truncated]" : full}
-                                        </pre>
+                                  {match.request != null && (
+                                    <div style={{ padding: "8px 12px", borderRight: match.response != null ? `1px solid ${T.border}` : "none", overflowX: "auto" }}>
+                                      <div style={{ fontSize: 10, fontWeight: 600, color: T.textMuted, marginBottom: 6, textTransform: "uppercase" as const, letterSpacing: 0.5 }}>Request</div>
+                                      <div style={{ fontSize: 11, fontFamily: "monospace", lineHeight: 1.6 }}>
+                                        <JsonTree data={match.request} />
                                       </div>
-                                    );
-                                  })()}
-                                  {match.response != null && (() => {
-                                    const full = JSON.stringify(match.response, null, 2);
-                                    const truncated = full.length > 4000;
-                                    return (
-                                      <div style={{ padding: "8px 12px" }}>
-                                        <div style={{ fontSize: 10, fontWeight: 600, color: T.textMuted, marginBottom: 4, textTransform: "uppercase" as const, letterSpacing: 0.5 }}>Response</div>
-                                        <pre style={{ margin: 0, fontSize: 11, color: T.text, whiteSpace: "pre-wrap", wordBreak: "break-word" as const, fontFamily: "monospace", maxHeight: 180, overflowY: "auto" as const }}>
-                                          {truncated ? full.slice(0, 4000) + "\n… [truncated]" : full}
-                                        </pre>
+                                    </div>
+                                  )}
+                                  {match.response != null && (
+                                    <div style={{ padding: "8px 12px", overflowX: "auto" }}>
+                                      <div style={{ fontSize: 10, fontWeight: 600, color: T.textMuted, marginBottom: 6, textTransform: "uppercase" as const, letterSpacing: 0.5 }}>Response</div>
+                                      <div style={{ fontSize: 11, fontFamily: "monospace", lineHeight: 1.6 }}>
+                                        <JsonTree data={match.response} />
                                       </div>
-                                    );
-                                  })()}
+                                    </div>
+                                  )}
                                 </div>
                               </div>
                             ))}
@@ -2129,6 +2121,80 @@ function WebhookUrlBar({ url }: { url: string }) {
         {copied ? "Copied!" : "Copy"}
       </button>
     </div>
+  );
+}
+
+// ─── JSON Tree Viewer ────────────────────────────────────────────
+
+function JsonTree({ data, depth = 0, autoExpandDepth = 2 }: { data: any; depth?: number; autoExpandDepth?: number }) {
+  if (data === null) return <span style={{ color: "#94a3b8" }}>null</span>;
+  if (data === undefined) return <span style={{ color: "#94a3b8" }}>undefined</span>;
+  if (typeof data === "boolean") return <span style={{ color: "#f59e0b" }}>{data ? "true" : "false"}</span>;
+  if (typeof data === "number") return <span style={{ color: "#60a5fa" }}>{data}</span>;
+  if (typeof data === "string") {
+    const display = data.length > 200 ? data.slice(0, 200) + "…" : data;
+    return <span style={{ color: "#4ade80", wordBreak: "break-word" }}>"{display}"</span>;
+  }
+
+  const isArray = Array.isArray(data);
+  const entries: [string, any][] = isArray ? data.map((v: any, i: number) => [String(i), v] as [string, any]) : Object.entries(data);
+  const isEmpty = entries.length === 0;
+  const autoExpand = depth < autoExpandDepth && entries.length <= 10;
+
+  return <JsonNode entries={entries} isArray={isArray} isEmpty={isEmpty} defaultOpen={autoExpand} depth={depth} autoExpandDepth={autoExpandDepth} />;
+}
+
+function JsonNode({ entries, isArray, isEmpty, defaultOpen, depth, autoExpandDepth }: {
+  entries: [string, any][];
+  isArray: boolean;
+  isEmpty: boolean;
+  defaultOpen: boolean;
+  depth: number;
+  autoExpandDepth: number;
+}) {
+  const [open, setOpen] = useState(defaultOpen);
+  const indent = depth * 14;
+  const bracket = isArray ? ["[", "]"] : ["{", "}"];
+  const color = T.text;
+  const keyColor = "#a78bfa";
+  const mutedColor = T.textMuted;
+
+  if (isEmpty) {
+    return <span style={{ color: mutedColor }}>{bracket[0]}{bracket[1]}</span>;
+  }
+
+  return (
+    <span style={{ display: "inline" }}>
+      <button
+        onClick={() => setOpen(o => !o)}
+        style={{ background: "none", border: "none", cursor: "pointer", padding: "0 2px", color: mutedColor, fontSize: 10, verticalAlign: "middle" }}
+      >
+        {open ? "▾" : "▸"}
+      </button>
+      <span style={{ color }}>{bracket[0]}</span>
+      {!open && (
+        <button
+          onClick={() => setOpen(true)}
+          style={{ background: "none", border: "none", cursor: "pointer", padding: "0 4px", color: mutedColor, fontSize: 10 }}
+        >
+          {entries.length} {isArray ? "item" : "key"}{entries.length !== 1 ? "s" : ""}
+        </button>
+      )}
+      {!open && <span style={{ color }}>{bracket[1]}</span>}
+      {open && (
+        <span style={{ display: "block", marginLeft: indent + 14 }}>
+          {entries.map(([k, v], idx) => (
+            <span key={k} style={{ display: "block" }}>
+              {!isArray && <span style={{ color: keyColor }}>"{k}"</span>}
+              {!isArray && <span style={{ color: mutedColor }}>: </span>}
+              <JsonTree data={v} depth={depth + 1} autoExpandDepth={autoExpandDepth} />
+              {idx < entries.length - 1 && <span style={{ color: mutedColor }}>,</span>}
+            </span>
+          ))}
+          <span style={{ display: "block", marginLeft: -14, color }}>{bracket[1]}</span>
+        </span>
+      )}
+    </span>
   );
 }
 
