@@ -3,11 +3,22 @@ import type { Request } from "express";
 import type { AuthRequest } from "./auth";
 
 /**
+ * Normalize an IP address for use as a rate-limit key.
+ * Strips the IPv4-mapped IPv6 prefix (::ffff:1.2.3.4 → 1.2.3.4) so
+ * IPv4 and IPv4-mapped IPv6 requests share the same bucket, and satisfies
+ * express-rate-limit's IPv6 key-generator validation requirement.
+ */
+function normalizeIp(ip: string | undefined): string {
+  if (!ip) return "unknown";
+  return ip.replace(/^::ffff:/i, "");
+}
+
+/**
  * Per-user rate limiter for LLM/evaluation endpoints that have real cost.
- * Falls back to IP if userId is not available.
+ * Falls back to normalized IP if userId is not available.
  */
 function userKeyGenerator(req: Request): string {
-  return (req as AuthRequest).userId || req.ip || "anonymous";
+  return (req as AuthRequest).userId || normalizeIp(req.ip);
 }
 
 /**
@@ -20,6 +31,7 @@ export const evalRateLimit = rateLimit({
   keyGenerator: userKeyGenerator,
   standardHeaders: true,
   legacyHeaders: false,
+  validate: { xForwardedForHeader: false },
   message: { error: "Too many evaluation requests. Please wait before trying again." },
   skip: () => process.env.NODE_ENV === "test",
 });
@@ -34,6 +46,7 @@ export const llmRateLimit = rateLimit({
   keyGenerator: userKeyGenerator,
   standardHeaders: true,
   legacyHeaders: false,
+  validate: { xForwardedForHeader: false },
   message: { error: "Too many AI requests. Please wait a moment before trying again." },
   skip: () => process.env.NODE_ENV === "test",
 });
@@ -45,9 +58,10 @@ export const llmRateLimit = rateLimit({
 export const webhookRateLimit = rateLimit({
   windowMs: 60 * 1000,
   max: 300,
-  keyGenerator: (req) => req.ip || "unknown",
+  keyGenerator: (req) => normalizeIp(req.ip),
   standardHeaders: true,
   legacyHeaders: false,
+  validate: { xForwardedForHeader: false },
   message: { error: "Webhook rate limit exceeded" },
   skip: () => process.env.NODE_ENV === "test",
 });
