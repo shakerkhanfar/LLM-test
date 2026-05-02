@@ -329,10 +329,10 @@ export function listUsers() {
   return request<any[]>("/users");
 }
 
-export function createUser(email: string, password: string) {
+export function createUser(email: string, password: string, orgName?: string) {
   return request<any>("/users", {
     method: "POST",
-    body: JSON.stringify({ email, password }),
+    body: JSON.stringify({ email, password, ...(orgName ? { orgName } : {}) }),
   });
 }
 

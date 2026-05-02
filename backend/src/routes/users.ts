@@ -41,19 +41,23 @@ router.get("/", async (req: AuthRequest, res) => {
   }
 });
 
-// POST /api/users — create a user in the same org as the requester
-// Rate-limited: reuses llmRateLimit (20 req / 5 min per user) — more than enough
-// for legitimate use while blocking automated account-creation loops.
+// POST /api/users — create a user, optionally in a named org
+// If orgName is provided, that org is found-or-created and the new user is
+// assigned to it. If omitted, the new user joins the creator's org.
+// Rate-limited: reuses llmRateLimit (20 req / 5 min per user).
 router.post("/", llmRateLimit, async (req: AuthRequest, res) => {
-  // Unaffiliated users have no org to assign to the new user — they would
-  // create an account they can't subsequently see or manage.
+  // Unaffiliated users have no org context — block creation entirely.
   if (!req.organizationId) {
     return res.status(403).json({
       error: "You must belong to an organization to create users",
     });
   }
 
-  const { email, password } = req.body as { email?: string; password?: string };
+  const { email, password, orgName } = req.body as {
+    email?: string;
+    password?: string;
+    orgName?: string;
+  };
 
   const emailError = validateEmail(email ?? "");
   if (emailError) return res.status(400).json({ error: emailError });
@@ -66,14 +70,34 @@ router.post("/", llmRateLimit, async (req: AuthRequest, res) => {
   if (passwordError) return res.status(400).json({ error: passwordError });
 
   const cleanEmail = (email as string).trim().toLowerCase();
+  const cleanOrgName = orgName?.trim();
 
   try {
+    // Resolve target org: explicit name → find or create; otherwise creator's org.
+    let targetOrgId = req.organizationId;
+    if (cleanOrgName) {
+      const existing = await prisma.organization.findFirst({
+        where: { name: { equals: cleanOrgName, mode: "insensitive" } },
+        select: { id: true },
+      });
+      if (existing) {
+        targetOrgId = existing.id;
+      } else {
+        const created = await prisma.organization.create({
+          data: { name: cleanOrgName },
+          select: { id: true },
+        });
+        targetOrgId = created.id;
+        console.log(`[Users] Created org "${cleanOrgName}" (${targetOrgId})`);
+      }
+    }
+
     const hash = await bcrypt.hash(password.trim(), BCRYPT_ROUNDS);
     const user = await prisma.user.create({
       data: {
         email: cleanEmail,
         passwordHash: hash,
-        organizationId: req.organizationId,
+        organizationId: targetOrgId,
       },
       select: {
         id: true,

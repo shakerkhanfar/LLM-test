@@ -27,6 +27,7 @@ export default function Users() {
   const [showAdd, setShowAdd] = useState(false);
   const [newEmail, setNewEmail] = useState("");
   const [newPassword, setNewPassword] = useState("");
+  const [newOrgName, setNewOrgName] = useState("");
   const [addError, setAddError] = useState("");
   const [adding, setAdding] = useState(false);
 
@@ -67,9 +68,10 @@ export default function Users() {
     setAddError("");
     setAdding(true);
     try {
-      await createUser(newEmail.trim(), newPassword);
+      await createUser(newEmail.trim(), newPassword, newOrgName.trim() || undefined);
       setNewEmail("");
       setNewPassword("");
+      setNewOrgName("");
       setShowAdd(false);
       await load();
     } catch (err: any) {
@@ -182,6 +184,18 @@ export default function Users() {
               }}
             />
           </div>
+          <input
+            type="text"
+            placeholder={`Organization (leave blank to use current org${orgDisplayName ? `: ${orgDisplayName}` : ""})`}
+            value={newOrgName}
+            onChange={e => setNewOrgName(e.target.value)}
+            style={{
+              width: "100%", boxSizing: "border-box",
+              padding: "8px 12px", borderRadius: T.radiusSm,
+              border: `1px solid ${T.borderDark}`, fontSize: 14,
+              background: T.input, color: T.text, outline: "none", marginBottom: 10,
+            }}
+          />
           <p style={{ fontSize: 12, color: T.textMuted, margin: "0 0 10px" }}>
             Min 12 chars · uppercase · lowercase · number · special character
           </p>
@@ -203,7 +217,7 @@ export default function Users() {
             </button>
             <button
               type="button"
-              onClick={() => { setShowAdd(false); setNewEmail(""); setNewPassword(""); setAddError(""); }}
+              onClick={() => { setShowAdd(false); setNewEmail(""); setNewPassword(""); setNewOrgName(""); setAddError(""); }}
               style={{
                 background: "none", color: T.textSecondary,
                 border: `1px solid ${T.border}`, borderRadius: T.radiusSm,
