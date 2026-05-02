@@ -360,6 +360,20 @@ export function getProjectDashboard(projectId: string) {
   return request<any>(`/projects/${projectId}/dashboard`);
 }
 
+export function getProjectReport(projectId: string, weeks = 7) {
+  return request<any>(`/projects/${projectId}/report?weeks=${weeks}`);
+}
+
+export function generateIntelligenceReport(
+  projectId: string,
+  filter?: { from?: string; to?: string }
+) {
+  return request<any>(`/projects/${projectId}/report/intelligence`, {
+    method: "POST",
+    body: JSON.stringify(filter ?? {}),
+  });
+}
+
 // ─── Users ────────────────────────────────────────────────────────
 
 export function listUsers() {

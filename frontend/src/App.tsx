@@ -6,6 +6,7 @@ import Compare from "./pages/Compare";
 import NewProject from "./pages/NewProject";
 import ProjectAnalyses from "./pages/ProjectAnalyses";
 import AnalysisCompare from "./pages/AnalysisCompare";
+import ProjectReport from "./pages/ProjectReport";
 import Preview from "./pages/Preview";
 import Login from "./pages/Login";
 import Users from "./pages/Users";
@@ -138,6 +139,10 @@ function AppShell() {
           <Route
             path="/projects/:id/analyses/compare"
             element={<RequireAuth><AnalysisCompare /></RequireAuth>}
+          />
+          <Route
+            path="/projects/:id/report"
+            element={<RequireAuth><ProjectReport /></RequireAuth>}
           />
           <Route
             path="/preview"

@@ -475,6 +475,11 @@ export default function ProjectDetail() {
             Analyze Project
           </button>
         )}
+        {completedRuns.length >= 3 && (
+          <button onClick={() => navigate(`/projects/${id}/report`)} style={{ ...btnStyle, background: "#0e7490" }}>
+            Report
+          </button>
+        )}
         {(project.runs?.length ?? 0) > 0 && (
           <>
             <button

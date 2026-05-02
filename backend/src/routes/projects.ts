@@ -5,6 +5,7 @@ import { z } from "zod";
 import { getAgent } from "../services/hamsaApi";
 import { generateAgentSummary } from "../services/llmJudge";
 import { analyzeProject, compareAnalyses } from "../services/projectAnalyzer";
+import { getProjectReport, generateIntelligenceReport } from "../services/reportingService";
 import { searchRuns } from "../services/runSearch";
 import { runEvaluationCheck } from "../services/evaluationRunner";
 import { auditAgentPrompts } from "../services/promptAuditor";
@@ -418,6 +419,52 @@ router.get("/:id/dashboard", async (req: AuthRequest, res) => {
   } catch (err) {
     console.error("[Projects] GET /:id/dashboard error:", (err as Error).message);
     res.status(500).json({ error: "Failed to fetch dashboard" });
+  }
+});
+
+// ── Report: KPI metrics + weekly trends ─────────────────────────────────────
+// GET /:id/report?weeks=7
+// Pure DB aggregation — no LLM, no rate limit needed.
+router.get("/:id/report", async (req: AuthRequest, res) => {
+  try {
+    const project = await prisma.project.findUnique({
+      where: { id: req.params.id },
+      select: { userId: true },
+    });
+    if (!project) return res.status(404).json({ error: "Project not found" });
+    if (!await canAccess(project.userId ?? null, req)) {
+      return res.status(403).json({ error: "Access denied" });
+    }
+
+    const weeks = Math.min(Math.max(parseInt(req.query.weeks as string) || 7, 1), 26);
+    const report = await getProjectReport(req.params.id, weeks);
+    res.json(report);
+  } catch (err) {
+    console.error("[Report] KPI error:", (err as Error).message);
+    res.status(500).json({ error: (err as Error).message });
+  }
+});
+
+// ── Report: LLM-generated intelligence ─────────────────────────────────────
+// POST /:id/report/intelligence
+// Body: { from?: "YYYY-MM-DD", to?: "YYYY-MM-DD" }
+router.post("/:id/report/intelligence", llmRateLimit, async (req: AuthRequest, res) => {
+  try {
+    const project = await prisma.project.findUnique({
+      where: { id: req.params.id },
+      select: { userId: true },
+    });
+    if (!project) return res.status(404).json({ error: "Project not found" });
+    if (!await canAccess(project.userId ?? null, req)) {
+      return res.status(403).json({ error: "Access denied" });
+    }
+
+    const { from, to } = req.body as { from?: string; to?: string };
+    const intelligence = await generateIntelligenceReport(req.params.id, from, to);
+    res.json(intelligence);
+  } catch (err) {
+    console.error("[Report] Intelligence error:", (err as Error).message);
+    res.status(500).json({ error: (err as Error).message });
   }
 });
 
