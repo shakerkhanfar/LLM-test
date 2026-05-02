@@ -868,11 +868,15 @@ export default function ProjectDashboard({ project }: Props) {
           </div>
           {!dashData ? (
             <div style={{ color: T.textMuted, fontSize: 12 }}>Loading...</div>
-          ) : dashData.topIssues.length === 0 ? (
-            <div style={{ color: T.textMuted, fontSize: 12 }}>No issues found</div>
+          ) : dashData.topIssues.filter(i => i.count >= 2).length === 0 ? (
+            <div style={{ color: T.textMuted, fontSize: 12 }}>
+              {dashData.topIssues.length > 0
+                ? <span>No repeated issues yet. <button onClick={() => { setIssuesModalOpen(true); setIssuesModalSearch(""); setIssuesModalExpanded(null); setIssuesModalTab("all"); }} style={{ background: "none", border: "none", color: T.primary, cursor: "pointer", fontSize: 12, padding: 0 }}>View all one-off issues →</button></span>
+                : "No issues found"}
+            </div>
           ) : (
             <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-              {(showAllIssues ? dashData.topIssues : dashData.topIssues.slice(0, ISSUES_DEFAULT_LIMIT)).map((issue, idx) => {
+              {(showAllIssues ? dashData.topIssues.filter(i => i.count >= 2) : dashData.topIssues.filter(i => i.count >= 2).slice(0, ISSUES_DEFAULT_LIMIT)).map((issue, idx) => {
                 const isOpen = expandedIssue === idx;
                 const affectedRuns = (project.runs ?? []).filter((r: any) => issue.runIds.includes(r.id));
                 return (
@@ -948,7 +952,7 @@ export default function ProjectDashboard({ project }: Props) {
                   </div>
                 );
               })}
-              {dashData.topIssues.length > ISSUES_DEFAULT_LIMIT && (
+              {dashData.topIssues.filter(i => i.count >= 2).length > ISSUES_DEFAULT_LIMIT && (
                 <button
                   onClick={() => setShowAllIssues(v => !v)}
                   style={{
@@ -959,7 +963,7 @@ export default function ProjectDashboard({ project }: Props) {
                 >
                   {showAllIssues
                     ? "Show less ↑"
-                    : `Show all ${dashData.topIssues.length} issues ↓`}
+                    : `Show all ${dashData.topIssues.filter(i => i.count >= 2).length} common issues ↓`}
                 </button>
               )}
             </div>
