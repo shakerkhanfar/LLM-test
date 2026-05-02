@@ -302,18 +302,35 @@ export default function ProjectDashboard({ project }: Props) {
       .sort((a, b) => b.value - a.value);
   }, [completeRuns]);
 
-  // Primary Intent from outcomeResult.intention — uses completeRuns for consistency with other charts
+  // Primary Intent — tries common field names from outcomeResult, falling back to any
+  // key whose name contains "intent". The table column key is found dynamically so
+  // adding new field names in the agent doesn't require a code change here.
+  const intentFieldKey = useMemo(() => {
+    const CANDIDATES = ["primary_intent", "intention", "intent", "call_intent", "caller_intent"];
+    for (const r of (project.runs ?? []) as any[]) {
+      if (!r.outcomeResult || typeof r.outcomeResult !== "object") continue;
+      for (const c of CANDIDATES) {
+        if (r.outcomeResult[c] != null && r.outcomeResult[c] !== "") return c;
+      }
+      // fallback: any key whose name includes "intent"
+      const fallback = Object.keys(r.outcomeResult).find(k => k.toLowerCase().includes("intent"));
+      if (fallback) return fallback;
+    }
+    return null;
+  }, [project.runs]);
+
   const intentCounts = useMemo(() => {
+    if (!intentFieldKey) return [];
     const counts: Record<string, number> = {};
     for (const r of completeRuns) {
-      const intent = (r.outcomeResult?.intention || "").trim().toLowerCase();
+      const intent = (r.outcomeResult?.[intentFieldKey] || "").toString().trim().toLowerCase();
       if (!intent) continue;
       counts[intent] = (counts[intent] || 0) + 1;
     }
     return Object.entries(counts)
       .map(([name, value]) => ({ name, value }))
       .sort((a, b) => b.value - a.value);
-  }, [completeRuns]);
+  }, [completeRuns, intentFieldKey]);
 
   const INTENT_COLORS = [
     "#17B26A", "#3b82f6", "#a78bfa", "#f59e0b", "#ef4444",
@@ -397,9 +414,9 @@ export default function ProjectDashboard({ project }: Props) {
     if (issueFilter) {
       sorted = sorted.filter((r: any) => issueFilter.runIds.includes(r.id));
     }
-    if (intentFilter) {
+    if (intentFilter && intentFieldKey) {
       sorted = sorted.filter((r: any) =>
-        (r.outcomeResult?.intention || "").trim().toLowerCase() === intentFilter
+        (r.outcomeResult?.[intentFieldKey] || "").toString().trim().toLowerCase() === intentFilter
       );
     }
     if (!tableSearch.trim()) return sorted;
@@ -415,7 +432,7 @@ export default function ProjectDashboard({ project }: Props) {
         outcomeColumns.some((k) => String((r.outcomeResult || {})[k] || "").toLowerCase().includes(q))
       );
     });
-  }, [project.runs, tableSearch, outcomeColumns, selectedOutcome, objectiveFilter, scoreFilter, nodeFilter, issueFilter, intentFilter, dashData]);
+  }, [project.runs, tableSearch, outcomeColumns, selectedOutcome, objectiveFilter, scoreFilter, nodeFilter, issueFilter, intentFilter, intentFieldKey, dashData]);
 
   function exportCsv() {
     const headers = ["Conv ID", "Date", "Call Outcome", "Score", "Duration", ...outcomeColumns];
@@ -724,7 +741,7 @@ export default function ProjectDashboard({ project }: Props) {
             <InfoTip text="Distribution of caller intentions extracted by the agent at the start of each call. Click a segment or label to filter the run table." />
           </div>
           {intentCounts.length === 0 ? (
-            <div style={{ color: T.textMuted, fontSize: 12 }}>No intent data — the agent must extract an <span style={{ fontFamily: "monospace", background: T.cardAlt, padding: "0 4px", borderRadius: 3 }}>intention</span> variable.</div>
+            <div style={{ color: T.textMuted, fontSize: 12 }}>No intent data — the agent must extract a variable named <span style={{ fontFamily: "monospace", background: T.cardAlt, padding: "0 4px", borderRadius: 3 }}>primary_intent</span> or <span style={{ fontFamily: "monospace", background: T.cardAlt, padding: "0 4px", borderRadius: 3 }}>intention</span>.</div>
           ) : (() => {
             const total = intentCounts.reduce((s, e) => s + e.value, 0);
             return (
