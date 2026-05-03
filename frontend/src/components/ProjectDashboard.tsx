@@ -13,6 +13,7 @@ interface DashData {
   passRate: number | null;
   avgDuration: number | null;
   totalEvalCost: number;
+  totalFailed: number;
   /** SQL-level outcome distribution — all complete runs */
   outcomeDist: Record<string, number>;
   /** SQL-level per-day score trend — all complete runs */
