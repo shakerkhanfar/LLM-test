@@ -29,7 +29,7 @@ interface DashData {
 
 interface Props {
   project: any;
-  onDashLoaded?: (data: { totalRuns: number; totalEvalCost: number }) => void;
+  onDashLoaded?: (data: { totalRuns: number; totalEvalCost: number; totalFailed: number }) => void;
 }
 
 const OUTCOME_COLORS: Record<string, string> = {
@@ -331,7 +331,7 @@ export default function ProjectDashboard({ project, onDashLoaded }: Props) {
       .then((data: DashData) => {
         if (cancelled) return;
         setDashData(data);
-        onDashLoadedRef.current?.({ totalRuns: data.totalRuns, totalEvalCost: data.totalEvalCost ?? 0 });
+        onDashLoadedRef.current?.({ totalRuns: data.totalRuns, totalEvalCost: data.totalEvalCost ?? 0, totalFailed: data.totalFailed ?? 0 });
       })
       .catch((err: Error) => { if (!cancelled) setDashError(err.message); });
     return () => { cancelled = true; };
@@ -1591,7 +1591,7 @@ export default function ProjectDashboard({ project, onDashLoaded }: Props) {
           <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
             <thead>
               <tr style={{ borderBottom: `1px solid ${T.border}` }}>
-                {["Conv ID", "Date", "Call Outcome", "Score", "Duration", ...outcomeColumns, ""].map((col) => (
+                {["", "Conv ID", "Date", "Call Outcome", "Score", "Duration", ...outcomeColumns, ""].map((col) => (
                   <th key={col} style={{
                     padding: "6px 10px", textAlign: "left", fontWeight: 600,
                     color: T.textMuted, fontSize: 11, whiteSpace: "nowrap",
@@ -1628,6 +1628,9 @@ export default function ProjectDashboard({ project, onDashLoaded }: Props) {
 
                 return (
                 <tr key={run.id} style={{ borderBottom: `1px solid ${T.borderLight}` }}>
+                  <td style={{ padding: "6px 8px", whiteSpace: "nowrap" }}>
+                    <a href={`/projects/${project.id}/runs/${run.id}`} style={{ color: T.primary, fontSize: 13, fontWeight: 600, textDecoration: "none" }}>→</a>
+                  </td>
                   <td style={{ padding: "6px 10px", fontFamily: "monospace", fontSize: 11, maxWidth: 140, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                     <span
                       onClick={() => run.conversationId && copyToClipboard(run.conversationId, convKey)}
@@ -1675,14 +1678,13 @@ export default function ProjectDashboard({ project, onDashLoaded }: Props) {
                     >
                       {rowCopyFailed ? "✗" : rowCopied ? "✓" : "⎘"}
                     </button>
-                    <a href={`/projects/${project.id}/runs/${run.id}`} style={{ color: T.primary, fontSize: 11, fontWeight: 500, textDecoration: "none", marginLeft: 4 }}>→</a>
                   </td>
                 </tr>
                 );
               })}
               {tableRuns.length === 0 && (
                 <tr>
-                  <td colSpan={5 + outcomeColumns.length} style={{ padding: "20px 10px", textAlign: "center", color: T.textMuted }}>
+                  <td colSpan={7 + outcomeColumns.length} style={{ padding: "20px 10px", textAlign: "center", color: T.textMuted }}>
                     {filterExtraLoading ? "Loading matching calls…" : "No results"}
                   </td>
                 </tr>

@@ -194,11 +194,16 @@ router.get("/:id/full-export", async (req: AuthRequest, res) => {
     res.write(JSON.stringify(preamble).slice(0, -1)); // strip closing "}"
     res.write(',"runs":[');
 
+    // Abort streaming if the client disconnects mid-export
+    let clientGone = false;
+    res.on("close", () => { clientGone = true; });
+
     // Stream runs in batches of 100 to bound memory usage
     const EXPORT_BATCH = 100;
     let cursor: string | undefined;
     let firstRun = true;
     while (true) {
+      if (clientGone) break;
       const batch: any[] = await prisma.run.findMany({
         where:   { projectId: req.params.id },
         orderBy: { createdAt: "asc" },
@@ -330,7 +335,11 @@ router.post("/import-bundle", evalRateLimit, async (req: AuthRequest, res) => {
             data: {
               projectId:      newProject.id,
               conversationId: run.conversationId  || undefined,
-              status:         VALID_RUN_STATUSES.has(run.status) ? run.status : "COMPLETE",
+              // Remap in-flight statuses: an EVALUATING/PENDING run from prod
+              // will never be picked up by a worker in the imported environment.
+              status:         (run.status === "EVALUATING" || run.status === "PENDING")
+                                ? "FAILED"
+                                : VALID_RUN_STATUSES.has(run.status) ? run.status : "COMPLETE",
               overallScore:   run.overallScore    ?? undefined,
               callDate:       run.callDate ? new Date(run.callDate) : undefined,
               callDuration:   run.callDuration    ?? undefined,
@@ -537,6 +546,7 @@ router.get("/:id/dashboard", async (req: AuthRequest, res) => {
     const [kpiAgg] = await prisma.$queryRaw<Array<{
       total_all: bigint;
       total_complete: bigint;
+      total_failed: bigint;
       avg_score: number | null;
       passed: bigint;
       avg_duration: number | null;
@@ -545,6 +555,7 @@ router.get("/:id/dashboard", async (req: AuthRequest, res) => {
       SELECT
         COUNT(*)                                                               AS total_all,
         COUNT(*) FILTER (WHERE status = 'COMPLETE')                            AS total_complete,
+        COUNT(*) FILTER (WHERE status = 'FAILED')                              AS total_failed,
         AVG("overallScore") FILTER (WHERE status = 'COMPLETE')::double precision AS avg_score,
         COUNT(*) FILTER (WHERE "overallScore" >= 0.7)                          AS passed,
         AVG("callDuration") FILTER (WHERE status = 'COMPLETE')::double precision AS avg_duration,
@@ -622,11 +633,14 @@ router.get("/:id/dashboard", async (req: AuthRequest, res) => {
       for (const er of run.evalResults as any[]) {
         if (!er.criterion) continue;
         const cid: string = er.criterionId;
-        const cname: string = er.criterion.name || cid;
+        const cname: string = er.criterion.label || er.criterion.key || cid;
         const ctype: string = er.criterion.type || "UNKNOWN";
         if (!criteriaPerf[cid]) criteriaPerf[cid] = { name: cname, type: ctype, total: 0, passed: 0, failedRunIds: [] };
+        // Only count runs where the criterion was actually evaluated (passed !== null).
+        // null means "not applicable" (e.g. no action claims, call abandoned) — not a failure.
+        if (er.passed === null) continue;
         criteriaPerf[cid].total++;
-        if (er.passed) criteriaPerf[cid].passed++;
+        if (er.passed === true) criteriaPerf[cid].passed++;
         else if (!criteriaPerf[cid].failedRunIds.includes(run.id)) criteriaPerf[cid].failedRunIds.push(run.id);
       }
     }
@@ -745,6 +759,7 @@ router.get("/:id/dashboard", async (req: AuthRequest, res) => {
 
     const totalAll      = Number(kpiAgg?.total_all      ?? 0);
     const totalComplete = Number(kpiAgg?.total_complete ?? 0);
+    const totalFailed   = Number(kpiAgg?.total_failed   ?? 0);
     const avgScore = kpiAgg?.avg_score != null
       ? Math.round(Number(kpiAgg.avg_score) * 100 * 10) / 10
       : null;
@@ -773,6 +788,7 @@ router.get("/:id/dashboard", async (req: AuthRequest, res) => {
 
     res.json({
       totalRuns: totalAll,       // ALL runs (any status) — matches project list count
+      totalFailed,               // FAILED runs — accurate count across all runs (not capped 200)
       totalComplete,             // COMPLETE runs only — denominator for avgScore/passRate
       avgScore,
       passRate,
@@ -1274,6 +1290,53 @@ router.post("/:id/re-evaluate", evalRateLimit, async (req: AuthRequest, res) => 
 
     audit(req, "project.re_evaluate", projectId, { resetCount: result.count });
     res.json({ ok: true, resetCount: result.count });
+  } catch (err) {
+    res.status(500).json({ error: (err as Error).message });
+  }
+});
+
+/**
+ * POST /api/projects/:id/re-evaluate-failed
+ *
+ * Re-queues only FAILED runs for evaluation, preserving COMPLETE run results.
+ * Useful after quota errors where only some calls failed.
+ */
+router.post("/:id/re-evaluate-failed", evalRateLimit, async (req: AuthRequest, res) => {
+  const projectId = req.params.id;
+  const p = await prisma.project.findUnique({ where: { id: projectId }, select: { userId: true } });
+  if (!p) return res.status(404).json({ error: "Project not found" });
+  if (!await canAccess(p.userId, req)) return res.status(403).json({ error: "Access denied" });
+
+  try {
+    // Delete eval results only for failed runs, then reset them to PENDING
+    const failedRuns = await prisma.run.findMany({
+      where: { projectId, status: "FAILED" },
+      select: { id: true },
+    });
+    const failedRunIds = failedRuns.map((r) => r.id);
+
+    if (failedRunIds.length === 0) {
+      return res.json({ ok: true, resetCount: 0 });
+    }
+
+    await prisma.$transaction([
+      prisma.evalResult.deleteMany({ where: { runId: { in: failedRunIds } } }),
+      prisma.run.updateMany({
+        where: { id: { in: failedRunIds } },
+        data: { status: "PENDING", overallScore: null, evalCost: null, errorLog: null },
+      }),
+    ]);
+
+    // Trigger evaluation for each reset run
+    for (const run of failedRuns) {
+      runEvaluationCheck(run.id).catch((err) =>
+        console.error(`[ReEvaluateFailed] Failed to trigger eval for ${run.id}: ${(err as Error).message}`)
+      );
+    }
+
+    audit(req, "project.re_evaluate_failed", projectId, { resetCount: failedRunIds.length });
+    // Return resetCount (all failed runs in the project, not just the 200 loaded in the frontend)
+    res.json({ ok: true, resetCount: failedRunIds.length, totalFailed: failedRunIds.length });
   } catch (err) {
     res.status(500).json({ error: (err as Error).message });
   }

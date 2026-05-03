@@ -3,7 +3,7 @@ import { useParams, Link, useNavigate, useSearchParams } from "react-router-dom"
 import {
   getProject, createRun, deleteRun, triggerEvaluation, switchModel,
   attachCallLog, attachTranscript, importHistory, importHistoryCsv, refreshAgent,
-  askProject, fetchHamsaProjects, reEvaluateProject, reHydrateProject,
+  askProject, fetchHamsaProjects, reEvaluateProject, reEvaluateFailedProject, reHydrateProject,
   exportCallIds, exportProjectBundle, importByIds,
   getEvalContext, saveEvalContext, runPromptAudit, applyPromptFix,
   searchToolResults, type ToolSearchResult,
@@ -88,8 +88,9 @@ export default function ProjectDetail() {
   const [project, setProject] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   // Accurate totals lifted from dashboard aggregate (covers all runs, not just loaded 200)
-  const [dashTotalRuns, setDashTotalRuns]     = useState<number | null>(null);
-  const [dashTotalCost, setDashTotalCost]     = useState<number | null>(null);
+  const [dashTotalRuns, setDashTotalRuns]       = useState<number | null>(null);
+  const [dashTotalCost, setDashTotalCost]       = useState<number | null>(null);
+  const [dashTotalFailed, setDashTotalFailed]   = useState<number | null>(null);
   const [exportingBundle, setExportingBundle] = useState(false);
   const [showNewRun, setShowNewRun] = useState(false);
   const [modelInput, setModelInput] = useState("openai/gpt-4.1");
@@ -107,6 +108,8 @@ export default function ProjectDetail() {
 
   // History import state — always use date range (CUSTOM period)
   const [showHistoryImport, setShowHistoryImport] = useState(false);
+  const [showFailedRuns, setShowFailedRuns] = useState(false);
+  const [reEvalFailedLoading, setReEvalFailedLoading] = useState(false);
   const [historyStartDate, setHistoryStartDate] = useState(() => getPresetRange("THIS_MONTH").start);
   const [historyEndDate, setHistoryEndDate] = useState(() => getPresetRange("THIS_MONTH").end);
   const [historyLimit, setHistoryLimit] = useState(50);
@@ -181,6 +184,9 @@ export default function ProjectDetail() {
   }, [id]);
 
   useEffect(() => { load(); }, [load]);
+
+  // Reset modal state when navigating to a different project
+  useEffect(() => { setShowFailedRuns(false); }, [id]);
 
   // Track when we first saw this project with 0 runs — stop polling after 2 min
   const emptyHistoryFirstSeenRef = useRef<number | null>(null);
@@ -427,6 +433,129 @@ export default function ProjectDetail() {
                   return `Processing: ${complete} evaluated · ${evaluating} evaluating · ${pending} pending${failed ? ` · ${failed} failed` : ""}${remaining > 0 ? ` · ~${estMinLeft} min remaining` : ""}`;
                 })()}
           </div>
+        );
+      })()}
+
+      {/* Failed evaluations banner + modal */}
+      {(() => {
+        // Use server-side accurate total (covers all runs, not just the 200 loaded)
+        const failedRuns = (project.runs ?? []).filter((r: any) => r.status === "FAILED");
+        const totalFailedCount = dashTotalFailed ?? failedRuns.length;
+        if (totalFailedCount === 0) return null;
+        const quotaFailed = failedRuns.filter((r: any) =>
+          typeof r.errorLog === "string" && (r.errorLog.includes("429") || r.errorLog.toLowerCase().includes("quota"))
+        );
+        const label = quotaFailed.length > 0
+          ? `${totalFailedCount} call${totalFailedCount !== 1 ? "s" : ""} failed due to quota exceeded`
+          : `${totalFailedCount} call${totalFailedCount !== 1 ? "s" : ""} failed evaluation`;
+        return (
+          <>
+            <div style={{
+              padding: "10px 16px", borderRadius: 8, marginBottom: 16,
+              background: T.errorBg, border: `1px solid #ef444466`, color: "#ef4444",
+              fontSize: 13, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10,
+            }}>
+              <span>⚠ {label}</span>
+              <div style={{ display: "flex", gap: 8 }}>
+                <button
+                  onClick={() => setShowFailedRuns(true)}
+                  style={{
+                    background: "none", color: "#ef4444", border: "1px solid #ef444466", borderRadius: 6,
+                    padding: "5px 12px", fontSize: 12, fontWeight: 600, cursor: "pointer", whiteSpace: "nowrap",
+                  }}
+                >
+                  View ({totalFailedCount})
+                </button>
+                <button
+                  disabled={reEvalFailedLoading}
+                  onClick={async () => {
+                    if (reEvalFailedLoading) return;
+                    if (!confirm(`Re-evaluate ${failedRuns.length} failed call${failedRuns.length !== 1 ? "s" : ""}?\n\nSuccessfully completed calls will NOT be affected.\n\nThe process runs in the background.`)) return;
+                    setReEvalFailedLoading(true);
+                    try {
+                      const result = await reEvaluateFailedProject(project.id);
+                      alert(`Queued ${result.resetCount} failed call${result.resetCount !== 1 ? "s" : ""} for re-evaluation.`);
+                      load();
+                    } catch (err) {
+                      alert("Failed: " + (err as Error).message);
+                    } finally {
+                      setReEvalFailedLoading(false);
+                    }
+                  }}
+                  style={{
+                    background: reEvalFailedLoading ? "#9ca3af" : "#ef4444", color: "#fff", border: "none", borderRadius: 6,
+                    padding: "5px 12px", fontSize: 12, fontWeight: 600,
+                    cursor: reEvalFailedLoading ? "not-allowed" : "pointer", whiteSpace: "nowrap",
+                  }}
+                >
+                  {reEvalFailedLoading ? "Queuing…" : "Re-evaluate All Failed"}
+                </button>
+              </div>
+            </div>
+
+            {/* Failed runs modal */}
+            {showFailedRuns && (
+              <div
+                onClick={(e) => { if (e.target === e.currentTarget) setShowFailedRuns(false); }}
+                style={{
+                  position: "fixed", inset: 0, background: "rgba(0,0,0,0.4)", zIndex: 1000,
+                  display: "flex", alignItems: "center", justifyContent: "center",
+                }}
+              >
+                <div style={{
+                  background: T.card, borderRadius: 10, border: `1px solid ${T.border}`,
+                  width: "min(680px, 95vw)", maxHeight: "70vh", display: "flex", flexDirection: "column",
+                  boxShadow: "0 8px 32px rgba(0,0,0,0.18)",
+                }}>
+                  <div style={{ padding: "14px 18px", borderBottom: `1px solid ${T.border}`, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                    <span style={{ fontWeight: 700, fontSize: 15, color: T.text }}>Failed Evaluations ({failedRuns.length})</span>
+                    <button onClick={() => setShowFailedRuns(false)} style={{ background: "none", border: "none", cursor: "pointer", fontSize: 20, color: T.textMuted, lineHeight: 1 }}>×</button>
+                  </div>
+                  <div style={{ overflowY: "auto", flex: 1 }}>
+                    <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+                      <thead style={{ position: "sticky", top: 0, background: T.card, zIndex: 1 }}>
+                        <tr style={{ borderBottom: `1px solid ${T.border}` }}>
+                          <th style={{ padding: "8px 14px", textAlign: "left", color: T.textMuted, fontWeight: 600, fontSize: 11 }}>Date</th>
+                          <th style={{ padding: "8px 14px", textAlign: "left", color: T.textMuted, fontWeight: 600, fontSize: 11 }}>Conv ID</th>
+                          <th style={{ padding: "8px 14px", textAlign: "left", color: T.textMuted, fontWeight: 600, fontSize: 11 }}>Error</th>
+                          <th style={{ padding: "8px 14px" }}></th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {failedRuns.map((run: any) => {
+                          const errLog = typeof run.errorLog === "string" ? run.errorLog : null;
+                          const isQuota = errLog && (errLog.includes("429") || errLog.toLowerCase().includes("quota"));
+                          const errSnippet = errLog ? errLog.slice(0, 100) + (errLog.length > 100 ? "…" : "") : "Unknown error";
+                          return (
+                            <tr key={run.id} style={{ borderBottom: `1px solid ${T.borderLight}` }}>
+                              <td style={{ padding: "9px 14px", color: T.textSecondary, whiteSpace: "nowrap" }}>
+                                {run.callDate ? new Date(run.callDate).toLocaleDateString() : run.createdAt ? new Date(run.createdAt).toLocaleDateString() : "—"}
+                              </td>
+                              <td style={{ padding: "9px 14px", fontFamily: "monospace", fontSize: 11, color: T.textMuted, maxWidth: 130, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                                {run.conversationId ? run.conversationId.slice(0, 18) + "…" : run.id.slice(0, 12) + "…"}
+                              </td>
+                              <td style={{ padding: "9px 14px", color: isQuota ? "#f59e0b" : "#ef4444", maxWidth: 260, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
+                                title={errLog || undefined}>
+                                {errSnippet}
+                              </td>
+                              <td style={{ padding: "9px 14px", textAlign: "right", whiteSpace: "nowrap" }}>
+                                <a
+                                  href={`/projects/${id}/runs/${run.id}`}
+                                  style={{ color: T.primary, fontSize: 12, fontWeight: 600, textDecoration: "none" }}
+                                >
+                                  Open →
+                                </a>
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              </div>
+            )}
+          </>
         );
       })()}
 
@@ -1097,9 +1226,10 @@ export default function ProjectDetail() {
       {activeTab === "dashboard" && (isHistory || isWebhook) ? (
         <ProjectDashboard
           project={project}
-          onDashLoaded={({ totalRuns, totalEvalCost }) => {
+          onDashLoaded={({ totalRuns, totalEvalCost, totalFailed }) => {
             setDashTotalRuns(totalRuns);
             setDashTotalCost(totalEvalCost);
+            if (totalFailed != null) setDashTotalFailed(totalFailed);
           }}
         />
       ) : (
