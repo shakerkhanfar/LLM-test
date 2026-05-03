@@ -457,6 +457,12 @@ router.get("/:id", async (req: AuthRequest, res) => {
       console.log(`[Projects] Access denied: project.userId=${project.userId} req.userId=${req.userId}`);
       return res.status(403).json({ error: "Access denied" });
     }
+
+    // Accurate failed-run count across ALL runs (not just the 200 loaded)
+    const failedRunCount = await prisma.run.count({
+      where: { projectId: req.params.id, status: "FAILED" },
+    });
+
     // Strip heavy fields from list response to keep payload under proxy limits.
     // Individual run detail pages load full data via GET /runs/:id.
     const lightRuns = project.runs.map((run: any) => {
@@ -483,7 +489,7 @@ router.get("/:id", async (req: AuthRequest, res) => {
     });
     const responseSize = JSON.stringify({ ...project, runs: lightRuns }).length;
     console.log(`[Projects] Returning project ${project.name} with ${lightRuns.length} runs (~${(responseSize / 1024).toFixed(0)}KB)`);
-    res.json({ ...project, runs: lightRuns });
+    res.json({ ...project, runs: lightRuns, failedRunCount });
   } catch (err) {
     console.error("[Projects] GET /:id error:", (err as Error).message, (err as Error).stack?.slice(0, 300));
     res.status(500).json({ error: "Failed to fetch project" });

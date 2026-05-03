@@ -440,7 +440,7 @@ export default function ProjectDetail() {
       {(() => {
         // Use server-side accurate total (covers all runs, not just the 200 loaded)
         const failedRuns = (project.runs ?? []).filter((r: any) => r.status === "FAILED");
-        const totalFailedCount = dashTotalFailed ?? failedRuns.length;
+        const totalFailedCount = project.failedRunCount ?? dashTotalFailed ?? failedRuns.length;
         if (totalFailedCount === 0) return null;
         const quotaFailed = failedRuns.filter((r: any) =>
           typeof r.errorLog === "string" && (r.errorLog.includes("429") || r.errorLog.toLowerCase().includes("quota"))
