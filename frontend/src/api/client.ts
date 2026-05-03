@@ -256,6 +256,39 @@ export function importHistoryCsv(
   });
 }
 
+export async function exportProjectBundle(projectId: string, projectName: string) {
+  const token = getToken();
+  const res = await fetch(`/api/projects/${projectId}/full-export`, {
+    headers: token ? { Authorization: `Bearer ${token}` } : {},
+  });
+  if (!res.ok) throw new Error(`Export failed: ${res.status}`);
+  const blob = await res.blob();
+  const url = window.URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `${projectName.replace(/[^a-zA-Z0-9]/g, "_")}_export.json`;
+  a.click();
+  window.URL.revokeObjectURL(url);
+}
+
+export async function importProjectBundle(file: File): Promise<{ projectId: string; name: string; imported: number }> {
+  const token = getToken();
+  const text = await file.text();
+  const res = await fetch("/api/projects/import-bundle", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    },
+    body: text,
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.error || `Import failed: ${res.status}`);
+  }
+  return res.json();
+}
+
 export async function exportCallIds(projectId: string, projectName: string) {
   const token = getToken();
   const res = await fetch(`/api/projects/${projectId}/export-call-ids`, {

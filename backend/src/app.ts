@@ -44,7 +44,7 @@ app.use(cors({
 }));
 
 // ── Body parsing ──────────────────────────────────────────────────
-app.use(express.json({ limit: "10mb" }));
+app.use(express.json({ limit: "200mb" }));   // project bundles can be large
 
 // ── Routes ───────────────────────────────────────────────────────
 app.use("/api/auth", authRouter);

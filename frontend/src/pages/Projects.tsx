@@ -1,11 +1,15 @@
-import { useEffect, useState } from "react";
-import { Link } from "react-router-dom";
-import { listProjects, deleteProject } from "../api/client";
+import { useEffect, useState, useRef } from "react";
+import { Link, useNavigate } from "react-router-dom";
+import { listProjects, deleteProject, importProjectBundle } from "../api/client";
 import T from "../theme";
 
 export default function Projects() {
   const [projects, setProjects] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
+  const [importing, setImporting] = useState(false);
+  const [importError, setImportError] = useState<string | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const navigate = useNavigate();
 
   useEffect(() => {
     listProjects()
@@ -13,26 +17,79 @@ export default function Projects() {
       .finally(() => setLoading(false));
   }, []);
 
+  async function handleImport(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (!fileInputRef.current) return;
+    fileInputRef.current.value = "";   // reset so same file can be re-selected
+    if (!file) return;
+    setImporting(true);
+    setImportError(null);
+    try {
+      const result = await importProjectBundle(file);
+      navigate(`/projects/${result.projectId}`);
+    } catch (err) {
+      setImportError((err as Error).message);
+      setImporting(false);
+    }
+  }
+
   if (loading) return <p>Loading...</p>;
 
   return (
     <div>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 24 }}>
         <h1 style={{ margin: 0 }}>Projects</h1>
-        <Link
-          to="/projects/new"
-          style={{
-            background: T.primary,
-            color: T.primaryText,
-            padding: "8px 16px",
-            borderRadius: 6,
-            textDecoration: "none",
-            fontSize: 14,
-          }}
-        >
-          + New Project
-        </Link>
+        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+          {/* Hidden file input for import */}
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept=".json"
+            style={{ display: "none" }}
+            onChange={handleImport}
+          />
+          <button
+            onClick={() => fileInputRef.current?.click()}
+            disabled={importing}
+            style={{
+              background: T.card,
+              color: T.primary,
+              border: `1px solid ${T.primary}`,
+              padding: "8px 16px",
+              borderRadius: 6,
+              fontSize: 14,
+              cursor: importing ? "not-allowed" : "pointer",
+              opacity: importing ? 0.7 : 1,
+            }}
+          >
+            {importing ? "Importing…" : "Import Project"}
+          </button>
+          <Link
+            to="/projects/new"
+            style={{
+              background: T.primary,
+              color: T.primaryText,
+              padding: "8px 16px",
+              borderRadius: 6,
+              textDecoration: "none",
+              fontSize: 14,
+            }}
+          >
+            + New Project
+          </Link>
+        </div>
       </div>
+
+      {importError && (
+        <div style={{
+          background: "#fef2f2", border: "1px solid #fca5a5", borderRadius: 8,
+          padding: "10px 16px", marginBottom: 16, color: "#dc2626", fontSize: 13,
+          display: "flex", justifyContent: "space-between", alignItems: "center",
+        }}>
+          <span>Import failed: {importError}</span>
+          <button onClick={() => setImportError(null)} style={{ background: "none", border: "none", cursor: "pointer", color: "#dc2626", fontSize: 16 }}>×</button>
+        </div>
+      )}
 
       {projects.length === 0 ? (
         <p style={{ color: T.textMuted }}>No projects yet. Create one to get started.</p>
@@ -79,6 +136,7 @@ export default function Projects() {
                 <td style={{ padding: "8px 12px" }}>
                   <button
                     onClick={async () => {
+                      if (!confirm(`Delete project "${p.name}"? This cannot be undone.`)) return;
                       await deleteProject(p.id);
                       setProjects((prev) => prev.filter((x) => x.id !== p.id));
                     }}

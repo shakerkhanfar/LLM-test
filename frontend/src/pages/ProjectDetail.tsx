@@ -4,7 +4,7 @@ import {
   getProject, createRun, deleteRun, triggerEvaluation, switchModel,
   attachCallLog, attachTranscript, importHistory, importHistoryCsv, refreshAgent,
   askProject, fetchHamsaProjects, reEvaluateProject, reHydrateProject,
-  exportCallIds, importByIds,
+  exportCallIds, exportProjectBundle, importByIds,
   getEvalContext, saveEvalContext, runPromptAudit, applyPromptFix,
   searchToolResults, type ToolSearchResult,
 } from "../api/client";
@@ -532,6 +532,16 @@ export default function ProjectDetail() {
             Export Call IDs
           </button>
         )}
+        <button
+          onClick={async () => {
+            if (!confirm(`Export full project bundle?\n\nThis includes all ${trueRunCount} runs, criteria, transcripts, and eval results as a single JSON file.\n\nLarge projects may take a moment to generate.`)) return;
+            try { await exportProjectBundle(project.id, project.name); }
+            catch (err) { alert("Export failed: " + (err as Error).message); }
+          }}
+          style={{ ...btnStyle, background: T.cardAlt, color: T.primary, border: `1px solid ${T.primary}` }}
+        >
+          Export Project
+        </button>
       </div>
 
       {/* History import panel */}
