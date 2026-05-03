@@ -372,8 +372,26 @@ export interface IntelligenceReport {
     peakWindows: string;
     patterns:    string[];
   };
-  failures:        Array<{ title: string; pct?: number; detail: string }>;
+  failures: Array<{
+    title:     string;
+    pct?:      number;
+    detail:    string;
+    /** ISO date of the most-recent occurrence in the sampled calls */
+    lastSeen?:  string;
+    /** ISO date of the earliest occurrence in the sampled calls */
+    firstSeen?: string;
+  }>;
   recommendations: Array<{ title: string; description: string }>;
+  /** Structured improvement roadmap — one entry per category */
+  roadmap: Array<{
+    category:      string;
+    currentStatus: string;
+    items: Array<{
+      opportunity:  string;
+      description:  string;
+      improvement:  string;
+    }>;
+  }>;
   executiveSummary: string;
   cost:         number;
   runsAnalyzed: number;
@@ -537,7 +555,8 @@ export async function generateIntelligenceReport(
     : "";
 
   // ── 3. Extract issues from sampled eval details ───────────────────────────
-  const issueMap: Map<string, number> = new Map();
+  // Track dates per issue so the LLM can include lastSeen/firstSeen in failures
+  const issueMap: Map<string, { count: number; dates: Date[] }> = new Map();
   const nodeMap:  Map<string, { scores: number[]; count: number }> = new Map();
   let detailParseFailures = 0;
 
@@ -548,7 +567,12 @@ export async function generateIntelligenceReport(
       const d = typeof layered.detail === "string" ? JSON.parse(layered.detail) : layered.detail;
       for (const issue of (Array.isArray(d.criticalIssues) ? d.criticalIssues : [])) {
         const text = (typeof issue === "string" ? issue : (issue?.text ?? "")).trim();
-        if (text) issueMap.set(text, (issueMap.get(text) ?? 0) + 1);
+        if (text) {
+          if (!issueMap.has(text)) issueMap.set(text, { count: 0, dates: [] });
+          const entry = issueMap.get(text)!;
+          entry.count++;
+          if (run.callDate) entry.dates.push(new Date(run.callDate as any));
+        }
       }
       for (const node of (Array.isArray(d.perNode) ? d.perNode : [])) {
         const label = ((node.nodeLabel ?? node.label ?? "")).trim() || "Unknown";
@@ -565,10 +589,20 @@ export async function generateIntelligenceReport(
     }
   }
 
-  const topIssues = [...issueMap.entries()]
-    .sort((a, b) => b[1] - a[1])
-    .slice(0, 8)
-    .map(([t, c]) => `"${t}" (${c} of ${sampleRuns.length} sampled runs)`);
+  // Sort issues by count, include date range for the LLM to surface in failures
+  const sortedIssues = [...issueMap.entries()]
+    .sort((a, b) => b[1].count - a[1].count)
+    .slice(0, 8);
+
+  const topIssues = sortedIssues.map(([text, { count, dates }]) => {
+    const sorted = [...dates].sort((a, b) => a.getTime() - b.getTime());
+    const first = sorted[0]?.toISOString().slice(0, 10);
+    const last  = sorted[sorted.length - 1]?.toISOString().slice(0, 10);
+    const dateRange = first && last
+      ? (first === last ? `, seen on ${first}` : `, first seen ${first}, last seen ${last}`)
+      : "";
+    return `"${text}" (${count} of ${sampleRuns.length} sampled runs${dateRange})`;
+  });
 
   const nodePerf = [...nodeMap.entries()]
     .map(([label, { scores, count }]) => ({
@@ -619,7 +653,7 @@ ${nodePerf.length > 0 ? nodePerf.join("\n") : "  No node data available"}
 ${detailParseFailures > 0 ? `\n(${detailParseFailures} sampled runs had unparseable evaluation details)` : ""}
 ── END DATA ──────────────────────────────────────────────────────────────────
 
-Produce a concise operational intelligence report. Respond with JSON only:
+Produce a concise operational intelligence report. Respond with JSON only — no markdown, no code fences:
 {
   "executiveSummary": "2-3 sentences summarizing overall agent performance and most critical finding",
   "insights": {
@@ -628,17 +662,38 @@ Produce a concise operational intelligence report. Respond with JSON only:
     "patterns": ["2-3 key behavioral patterns observed from outcomes and issues"]
   },
   "failures": [
-    { "title": "short failure title", "pct": <number or null>, "detail": "one-line description" }
+    {
+      "title": "short failure title",
+      "pct": <number or null>,
+      "detail": "one-line description",
+      "lastSeen": "YYYY-MM-DD or null — date of most-recent occurrence from the issue data above",
+      "firstSeen": "YYYY-MM-DD or null — date of earliest occurrence from the issue data above"
+    }
   ],
   "recommendations": [
     { "title": "short recommendation title", "description": "one concrete action step" }
+  ],
+  "roadmap": [
+    {
+      "category": "category name (e.g. 'Conversation Flow Enhancements', 'Speech Quality Optimizations', 'Recognition Improvements')",
+      "currentStatus": "one sentence describing current state in this category",
+      "items": [
+        {
+          "opportunity": "short opportunity title",
+          "description": "brief description of the current gap or pattern",
+          "improvement": "concrete action step to address it"
+        }
+      ]
+    }
   ]
 }
 
 Rules:
 - failures: 2-4 items ordered by impact; pct must be a number or null (never a string)
+- lastSeen/firstSeen: use dates from the issue data provided above; null if no date available
 - recommendations: 2-4 items, one per failure
-- All strings under 80 chars
+- roadmap: 2-4 categories based on actual data patterns; each category has 1-3 items
+- All strings under 100 chars
 - Base all claims on the data above; do not fabricate metrics`;
 
   const response = await openai.chat.completions.create({
@@ -646,7 +701,7 @@ Rules:
     messages:        [{ role: "user", content: prompt }],
     response_format: { type: "json_object" },
     temperature:     0.2,
-    max_tokens:      1500,
+    max_tokens:      2500,
   });
 
   if (response.choices[0]?.finish_reason === "length") {
@@ -666,15 +721,21 @@ Rules:
   const usage = response.usage;
   const cost  = usage ? calcCost(usage.prompt_tokens, usage.completion_tokens) : 0;
 
-  // H3/H5 fix: guard all fields — LLM may return null, wrong types, or omit keys
-  const failures: Array<{ title: string; pct?: number; detail: string }> =
+  // ISO date validator for LLM-returned date strings
+  const isIsoDate = (s: any): s is string =>
+    typeof s === "string" && /^\d{4}-\d{2}-\d{2}$/.test(s);
+
+  // Guard all fields — LLM may return null, wrong types, or omit keys
+  const failures: IntelligenceReport["failures"] =
     Array.isArray(result.failures)
       ? result.failures
           .filter((f: any) => f && typeof f.title === "string")
           .map((f: any) => ({
-            title:  String(f.title).slice(0, 120),
-            detail: typeof f.detail === "string" ? f.detail.slice(0, 200) : "",
+            title:    String(f.title).slice(0, 120),
+            detail:   typeof f.detail === "string" ? f.detail.slice(0, 200) : "",
             ...(typeof f.pct === "number" ? { pct: f.pct } : {}),
+            ...(isIsoDate(f.lastSeen)  ? { lastSeen:  f.lastSeen  } : {}),
+            ...(isIsoDate(f.firstSeen) ? { firstSeen: f.firstSeen } : {}),
           }))
       : [];
 
@@ -685,6 +746,27 @@ Rules:
           .map((r: any) => ({
             title:       String(r.title).slice(0, 120),
             description: typeof r.description === "string" ? r.description.slice(0, 300) : "",
+          }))
+      : [];
+
+  const roadmap: IntelligenceReport["roadmap"] =
+    Array.isArray(result.roadmap)
+      ? result.roadmap
+          .filter((cat: any) => cat && typeof cat.category === "string")
+          .slice(0, 5)
+          .map((cat: any) => ({
+            category:      String(cat.category).slice(0, 100),
+            currentStatus: typeof cat.currentStatus === "string" ? cat.currentStatus.slice(0, 200) : "",
+            items: Array.isArray(cat.items)
+              ? cat.items
+                  .filter((it: any) => it && typeof it.opportunity === "string")
+                  .slice(0, 4)
+                  .map((it: any) => ({
+                    opportunity:  String(it.opportunity).slice(0, 100),
+                    description:  typeof it.description  === "string" ? it.description.slice(0, 200) : "",
+                    improvement:  typeof it.improvement  === "string" ? it.improvement.slice(0, 200) : "",
+                  }))
+              : [],
           }))
       : [];
 
@@ -702,6 +784,7 @@ Rules:
     },
     failures,
     recommendations,
+    roadmap,
     executiveSummary: typeof result.executiveSummary === "string"
       ? result.executiveSummary
       : "",

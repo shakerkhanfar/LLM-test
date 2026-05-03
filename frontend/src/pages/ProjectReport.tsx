@@ -482,6 +482,7 @@ export default function ProjectReport() {
           )}
 
           {intel && !intelLoading && (
+            <>
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 0, borderRadius: 12, overflow: "hidden", border: `1px solid ${T.border}`, boxShadow: T.shadowMd }}>
 
               {/* Insights — dark card */}
@@ -525,19 +526,45 @@ export default function ProjectReport() {
                 </div>
                 {intel.failures.length === 0 ? (
                   <div style={{ fontSize: 13, color: T.textMuted, fontStyle: "italic" }}>No significant failure patterns detected.</div>
-                ) : intel.failures.map((f: any, i: number) => (
-                  <div key={i} style={{ marginBottom: 14 }}>
-                    <div style={{ fontSize: 13, fontWeight: 600, color: T.text, display: "flex", alignItems: "center", gap: 8 }}>
-                      {typeof f.pct === "number" && (
-                        <span style={{ fontSize: 11, background: "#fef2f2", color: "#dc2626", border: "1px solid #fca5a5", borderRadius: 4, padding: "1px 6px", fontWeight: 700 }}>
-                          {f.pct}%
-                        </span>
+                ) : intel.failures.map((f: any, i: number) => {
+                  // Determine recency status based on lastSeen date
+                  const lastSeenMs  = f.lastSeen  ? new Date(f.lastSeen).getTime()  : null;
+                  const firstSeenMs = f.firstSeen ? new Date(f.firstSeen).getTime() : null;
+                  const nowMs = Date.now();
+                  const daysSinceLast = lastSeenMs ? Math.floor((nowMs - lastSeenMs) / 86_400_000) : null;
+                  const isRecent   = daysSinceLast != null && daysSinceLast <= 7;
+                  const isResolved = daysSinceLast != null && daysSinceLast > 30;
+                  const statusColor = isRecent ? "#dc2626" : isResolved ? "#16a34a" : "#d97706";
+                  const statusLabel = isRecent ? "Active" : isResolved ? "Possibly resolved" : "Recent";
+
+                  return (
+                    <div key={i} style={{ marginBottom: 16, paddingBottom: 14, borderBottom: i < intel.failures.length - 1 ? `1px solid ${T.border}` : "none" }}>
+                      <div style={{ fontSize: 13, fontWeight: 600, color: T.text, display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                        {typeof f.pct === "number" && (
+                          <span style={{ fontSize: 11, background: "#fef2f2", color: "#dc2626", border: "1px solid #fca5a5", borderRadius: 4, padding: "1px 6px", fontWeight: 700 }}>
+                            {f.pct}%
+                          </span>
+                        )}
+                        {daysSinceLast != null && (
+                          <span style={{ fontSize: 10, background: isRecent ? "#fef2f2" : isResolved ? "#f0fdf4" : "#fffbeb", color: statusColor, border: `1px solid ${isRecent ? "#fca5a5" : isResolved ? "#86efac" : "#fcd34d"}`, borderRadius: 4, padding: "1px 6px", fontWeight: 600 }}>
+                            {statusLabel}
+                          </span>
+                        )}
+                        {f.title}
+                      </div>
+                      <div style={{ fontSize: 12, color: T.textSecondary, marginTop: 3 }}>{f.detail}</div>
+                      {(f.lastSeen || f.firstSeen) && (
+                        <div style={{ marginTop: 5, fontSize: 11, color: T.textMuted, display: "flex", gap: 12 }}>
+                          {f.firstSeen && <span>First seen: <strong style={{ color: T.text }}>{f.firstSeen}</strong></span>}
+                          {f.lastSeen  && <span>Last seen: <strong style={{ color: statusColor }}>{f.lastSeen}</strong></span>}
+                          {firstSeenMs && lastSeenMs && firstSeenMs < lastSeenMs && (
+                            <span style={{ color: T.textMuted }}>({Math.floor((lastSeenMs - firstSeenMs) / 86_400_000)}d span)</span>
+                          )}
+                        </div>
                       )}
-                      {f.title}
                     </div>
-                    <div style={{ fontSize: 12, color: T.textSecondary, marginTop: 2 }}>{f.detail}</div>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
 
               {/* Recommendations — green card */}
@@ -561,6 +588,56 @@ export default function ProjectReport() {
                 )}
               </div>
             </div>
+
+            {/* Optimization Roadmap — below the 3-column grid, full width */}
+            {(intel?.roadmap?.length ?? 0) > 0 && (
+              <div style={{ marginTop: 20, background: T.card, border: `1px solid ${T.border}`, borderRadius: 12, padding: "28px 32px", boxShadow: T.shadowMd }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 24 }}>
+                  <div style={{ width: 28, height: 28, background: T.primary, borderRadius: 6, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 13, color: "#fff" }}>↗</div>
+                  <div>
+                    <div style={{ fontSize: 10, fontWeight: 700, color: T.textMuted, letterSpacing: 1, textTransform: "uppercase" }}>
+                      {project?.name ?? "Agent"} | Optimization Roadmap
+                    </div>
+                    <div style={{ fontSize: 17, fontWeight: 700, color: T.text, marginTop: 2 }}>
+                      Enhancement Opportunities
+                    </div>
+                  </div>
+                </div>
+
+                {intel.roadmap.map((cat: any, ci: number) => (
+                  <div key={ci} style={{ marginBottom: ci < intel.roadmap.length - 1 ? 28 : 0 }}>
+                    <div style={{ display: "flex", alignItems: "baseline", gap: 10, marginBottom: 6 }}>
+                      <span style={{ fontSize: 15, fontWeight: 700, color: T.text }}>{ci + 1}. {cat.category}</span>
+                      {cat.currentStatus && (
+                        <span style={{ fontSize: 12, color: T.textSecondary }}>— {cat.currentStatus}</span>
+                      )}
+                    </div>
+                    <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+                      <thead>
+                        <tr>
+                          <th style={{ background: "#1a2332", color: "#fff", padding: "7px 14px", textAlign: "left", fontWeight: 600, width: "45%", fontSize: 12 }}>Enhancement Opportunity</th>
+                          <th style={{ background: "#1a2332", color: "#fff", padding: "7px 14px", textAlign: "left", fontWeight: 600, fontSize: 12 }}>Planned Improvement</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {cat.items.map((item: any, ii: number) => (
+                          <tr key={ii} style={{ background: ii % 2 === 0 ? T.cardAlt : T.card }}>
+                            <td style={{ padding: "9px 14px", borderBottom: `1px solid ${T.border}`, verticalAlign: "top" }}>
+                              <div style={{ fontWeight: 600, color: T.text }}>{item.opportunity}</div>
+                              {item.description && <div style={{ fontSize: 12, color: T.textSecondary, marginTop: 2 }}>{item.description}</div>}
+                            </td>
+                            <td style={{ padding: "9px 14px", borderBottom: `1px solid ${T.border}`, color: T.textSecondary, verticalAlign: "top" }}>
+                              {item.improvement}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                ))}
+              </div>
+            )}
+            </>
           )}
         </div>
 
@@ -701,9 +778,18 @@ export default function ProjectReport() {
                   ))}
                   {morePoor > 0 && <div style={{ fontSize: 12, color: "#888", fontStyle: "italic", marginBottom: 8 }}>…and {morePoor} more criteria below threshold.</div>}
                   {intel?.failures?.map((f: any, i: number) => (
-                    <div key={`f${i}`} style={{ marginBottom: 8, fontSize: 13, lineHeight: 1.6 }}>
-                      <span style={{ color: "#c0392b", fontWeight: 700 }}>✗ {f.title}{typeof f.pct === "number" ? ` (${f.pct}%)` : ""}: </span>
-                      <span style={{ color: "#333" }}>{f.detail}</span>
+                    <div key={`f${i}`} style={{ marginBottom: 10, fontSize: 13, lineHeight: 1.6 }}>
+                      <div>
+                        <span style={{ color: "#c0392b", fontWeight: 700 }}>✗ {f.title}{typeof f.pct === "number" ? ` (${f.pct}%)` : ""}: </span>
+                        <span style={{ color: "#333" }}>{f.detail}</span>
+                      </div>
+                      {(f.firstSeen || f.lastSeen) && (
+                        <div style={{ fontSize: 11, color: "#888", marginTop: 2 }}>
+                          {f.firstSeen && <>First seen: {f.firstSeen}</>}
+                          {f.firstSeen && f.lastSeen && " · "}
+                          {f.lastSeen  && <>Last seen: <strong style={{ color: f.lastSeen === f.firstSeen ? "#888" : "#c0392b" }}>{f.lastSeen}</strong></>}
+                        </div>
+                      )}
                     </div>
                   ))}
                 </>
@@ -722,6 +808,51 @@ export default function ProjectReport() {
                   ))}
                 </>
               )}
+            </>
+          )}
+
+          {/* Optimization Roadmap — printable version */}
+          {(intel?.roadmap?.length ?? 0) > 0 && (
+            <>
+              <h2 style={{ fontSize: 22, fontWeight: 800, color: "#1a5276", margin: "40px 0 4px" }}>
+                Optimization Roadmap
+              </h2>
+              <p style={{ fontSize: 12, color: "#666", marginBottom: 20, fontStyle: "italic" }}>
+                {project?.name} — AI-generated enhancement opportunities based on call analysis
+              </p>
+              {intel.roadmap.map((cat: any, ci: number) => (
+                <div key={ci} style={{ marginBottom: 24 }}>
+                  <h3 style={{ fontSize: 15, fontWeight: 700, color: "#1a5276", marginBottom: 4 }}>
+                    {ci + 1}. {cat.category}
+                  </h3>
+                  {cat.currentStatus && (
+                    <div style={{ fontSize: 12, color: "#555", fontStyle: "italic", marginBottom: 8 }}>
+                      Current Status: {cat.currentStatus}
+                    </div>
+                  )}
+                  <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+                    <thead>
+                      <tr>
+                        <th style={{ background: "#1a2332", color: "#fff", padding: "7px 12px", textAlign: "left", fontWeight: 600, width: "45%", fontSize: 12 }}>Enhancement Opportunity</th>
+                        <th style={{ background: "#1a2332", color: "#fff", padding: "7px 12px", textAlign: "left", fontWeight: 600, fontSize: 12 }}>Planned Improvement</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {cat.items.map((item: any, ii: number) => (
+                        <tr key={ii} style={{ background: ii % 2 === 0 ? "#ffffff" : "#f0f4f8" }}>
+                          <td style={{ padding: "8px 12px", borderBottom: "1px solid #e5e7eb", verticalAlign: "top" }}>
+                            <div style={{ fontWeight: 600, color: "#111827" }}>{item.opportunity}</div>
+                            {item.description && <div style={{ fontSize: 11, color: "#555", marginTop: 2 }}>{item.description}</div>}
+                          </td>
+                          <td style={{ padding: "8px 12px", borderBottom: "1px solid #e5e7eb", color: "#374151", verticalAlign: "top" }}>
+                            {item.improvement}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              ))}
             </>
           )}
 
