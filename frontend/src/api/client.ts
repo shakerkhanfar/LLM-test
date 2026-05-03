@@ -271,9 +271,9 @@ export async function exportProjectBundle(projectId: string, projectName: string
   window.URL.revokeObjectURL(url);
 }
 
-export async function importProjectBundle(file: File): Promise<{ projectId: string; name: string; imported: number }> {
+export async function importProjectBundle(file: File, preloadedText?: string): Promise<{ projectId: string; name: string; imported: number; warning?: string }> {
   const token = getToken();
-  const text = await file.text();
+  const text = preloadedText ?? await file.text();
   const res = await fetch("/api/projects/import-bundle", {
     method: "POST",
     headers: {

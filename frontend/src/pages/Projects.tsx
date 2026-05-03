@@ -19,16 +19,37 @@ export default function Projects() {
 
   async function handleImport(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
-    if (!fileInputRef.current) return;
-    fileInputRef.current.value = "";   // reset so same file can be re-selected
     if (!file) return;
+    // Reset input so the same file can be re-selected after an error
+    if (fileInputRef.current) fileInputRef.current.value = "";
+
+    // Warn on very large files before reading into memory
+    const MB = file.size / (1024 * 1024);
+    if (MB > 200) {
+      setImportError(`File is ${MB.toFixed(0)} MB — too large (max 200 MB). Try exporting without transcripts.`);
+      return;
+    }
+
     setImporting(true);
     setImportError(null);
     try {
-      const result = await importProjectBundle(file);
+      // Quick client-side structure check before sending
+      const text = await file.text();
+      let bundle: any;
+      try { bundle = JSON.parse(text); } catch { throw new Error("File is not valid JSON."); }
+      if (!bundle?.project || !Array.isArray(bundle.criteria) || !Array.isArray(bundle.runs)) {
+        throw new Error("File is not a valid Hamsa export bundle.");
+      }
+
+      const result = await importProjectBundle(file, text);
+      if (result.warning) console.warn("[Import]", result.warning);
       navigate(`/projects/${result.projectId}`);
     } catch (err) {
-      setImportError((err as Error).message);
+      const msg = (err as Error).message;
+      const friendly = msg.includes("Unique constraint")
+        ? "Import failed: duplicate key conflict — try importing again."
+        : msg;
+      setImportError(friendly);
       setImporting(false);
     }
   }

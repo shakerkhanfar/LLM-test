@@ -18,7 +18,9 @@ import { audit } from "../middleware/auditLog";
 const router = Router();
 
 const VALID_CRITERION_TYPES = new Set<string>(Object.values(CriterionType));
-const VALID_PROJECT_TYPES = new Set(["LIVE", "HISTORY", "WEBHOOK"]);
+const VALID_PROJECT_TYPES   = new Set(["LIVE", "HISTORY", "WEBHOOK"]);
+const VALID_RUN_STATUSES    = new Set(["PENDING","RUNNING","AWAITING_DATA","EVALUATING","COMPLETE","FAILED"]);
+const VALID_RUN_SOURCES     = new Set(["LIVE","HISTORY","WEBHOOK"]);
 
 // ─── Criterion expectedValue schemas ──────────────────────────────
 // Validate the shape of each criterion type's expectedValue to prevent
@@ -147,174 +149,234 @@ router.get("/:id/export-call-ids", async (req: AuthRequest, res) => {
   res.send(csv);
 });
 
-// Full project bundle export — includes project config, criteria, all runs, eval results, transcripts
+// Full project bundle export — streams runs in batches to avoid loading everything into memory
 router.get("/:id/full-export", async (req: AuthRequest, res) => {
   try {
-    const project: any = await prisma.project.findUnique({
+    const project = await prisma.project.findUnique({
       where: { id: req.params.id },
-      include: {
-        criteria: { orderBy: { createdAt: "asc" } },
-        runs: {
-          orderBy: { createdAt: "asc" },
-          include: { evalResults: true },
-        },
-      },
+      include: { criteria: { orderBy: { createdAt: "asc" } } },
     });
     if (!project) return res.status(404).json({ error: "Project not found" });
     if (!await canAccess(project.userId ?? null, req)) return res.status(403).json({ error: "Access denied" });
 
-    const bundle = {
-      version: "1.0",
+    const safeName = (project.name.replace(/[^a-zA-Z0-9]/g, "_") || "project");
+    res.setHeader("Content-Type", "application/json");
+    res.setHeader("Content-Disposition", `attachment; filename="${safeName}_export.json"`);
+
+    // Stream JSON manually so we never load all runs into memory at once
+    const preamble = {
+      version:    "1.0",
       exportedAt: new Date().toISOString(),
       project: {
-        name:        project.name,
-        description: project.description  ?? null,
-        projectType: project.projectType  ?? null,
-        agentId:     project.agentId      ?? null,
-        hamsaApiKey: project.hamsaApiKey  ?? null,
-        evalContext: project.evalContext  ?? null,
-        agentStructure:  project.agentStructure  ?? null,
-        flowDefinition:  project.flowDefinition  ?? null,
-        agentSummary:    project.agentSummary    ?? null,
-        webhookSecret:   project.webhookSecret   ?? null,
+        name:           project.name,
+        description:    (project as any).description    ?? null,
+        projectType:    (project as any).projectType    ?? null,
+        agentId:        (project as any).agentId        ?? null,
+        hamsaApiKey:    (project as any).hamsaApiKey    ?? null,
+        evalContext:    (project as any).evalContext    ?? null,
+        agentStructure: (project as any).agentStructure ?? null,
+        flowDefinition: (project as any).flowDefinition ?? null,
+        agentSummary:   (project as any).agentSummary   ?? null,
+        webhookSecret:  (project as any).webhookSecret  ?? null,
+        historyStartDate: (project as any).historyStartDate?.toISOString() ?? null,
+        historyEndDate:   (project as any).historyEndDate?.toISOString()   ?? null,
       },
       criteria: project.criteria.map((c: any) => ({
-        _exportId:     c.id,        // used to re-link evalResults on import
+        _exportId:     c.id,
         key:           c.key,
-        label:         c.label      ?? null,
+        label:         c.label           ?? null,
         type:          c.type,
-        expectedValue: c.expectedValue ?? null,
-        weight:        c.weight     ?? null,
-      })),
-      runs: project.runs.map((run: any) => ({
-        conversationId: run.conversationId ?? null,
-        status:         run.status,
-        overallScore:   run.overallScore   ?? null,
-        callDate:       run.callDate?.toISOString() ?? null,
-        callDuration:   run.callDuration   ?? null,
-        callOutcome:    run.callOutcome     ?? null,
-        callStatus:     run.callStatus      ?? null,
-        evalCost:       run.evalCost        ?? null,
-        modelUsed:      run.modelUsed       ?? null,
-        source:         run.source          ?? null,
-        outcomeResult:  run.outcomeResult   ?? null,
-        webhookData:    run.webhookData     ?? null,
-        transcript:     run.transcript      ?? null,
-        callLog:        run.callLog         ?? null,
-        evalResults: run.evalResults.map((er: any) => ({
-          _criterionExportId: er.criterionId,
-          score:    er.score    ?? null,
-          passed:   er.passed   ?? null,
-          detail:   er.detail   ?? null,
-          metadata: er.metadata ?? null,
-        })),
+        expectedValue: c.expectedValue   ?? null,
+        weight:        c.weight          ?? null,
       })),
     };
 
-    const safeName = project.name.replace(/[^a-zA-Z0-9]/g, "_");
-    res.setHeader("Content-Type", "application/json");
-    res.setHeader("Content-Disposition", `attachment; filename="${safeName}_export.json"`);
-    res.json(bundle);
+    res.write(JSON.stringify(preamble).slice(0, -1)); // strip closing "}"
+    res.write(',"runs":[');
+
+    // Stream runs in batches of 100 to bound memory usage
+    const EXPORT_BATCH = 100;
+    let cursor: string | undefined;
+    let firstRun = true;
+    while (true) {
+      const batch: any[] = await prisma.run.findMany({
+        where:   { projectId: req.params.id },
+        orderBy: { createdAt: "asc" },
+        take:    EXPORT_BATCH,
+        ...(cursor ? { cursor: { id: cursor }, skip: 1 } : {}),
+        include: { evalResults: true },
+      });
+      if (batch.length === 0) break;
+
+      for (const run of batch) {
+        const runJson = JSON.stringify({
+          conversationId: run.conversationId ?? null,
+          status:         run.status,
+          overallScore:   run.overallScore   ?? null,
+          callDate:       run.callDate?.toISOString() ?? null,
+          callDuration:   run.callDuration   ?? null,
+          callOutcome:    run.callOutcome     ?? null,
+          callStatus:     run.callStatus      ?? null,
+          evalCost:       run.evalCost        ?? null,
+          modelUsed:      run.modelUsed       ?? null,
+          source:         run.source          ?? null,
+          hamsaCallId:    run.hamsaCallId     ?? null,
+          errorLog:       run.errorLog        ?? null,
+          startedAt:      run.startedAt?.toISOString()   ?? null,
+          completedAt:    run.completedAt?.toISOString() ?? null,
+          outcomeResult:  run.outcomeResult  ?? null,
+          webhookData:    run.webhookData    ?? null,
+          transcript:     run.transcript     ?? null,
+          callLog:        run.callLog        ?? null,
+          evalResults: run.evalResults
+            .filter((er: any) => er.criterionId)
+            .map((er: any) => ({
+              _criterionExportId: er.criterionId,
+              score:    er.score    ?? null,
+              passed:   er.passed   ?? null,
+              detail:   er.detail   ?? null,
+              metadata: er.metadata ?? null,
+            })),
+        });
+        res.write((firstRun ? "" : ",") + runJson);
+        firstRun = false;
+      }
+
+      cursor = batch[batch.length - 1].id;
+      if (batch.length < EXPORT_BATCH) break;
+    }
+
+    res.write("]}"); // close runs array + root object
+    res.end();
   } catch (err) {
     console.error("[Projects] full-export error:", (err as Error).message);
-    res.status(500).json({ error: "Export failed" });
+    // If headers already sent we can't send a JSON error — just close
+    if (!res.headersSent) res.status(500).json({ error: "Export failed" });
+    else res.end();
   }
 });
 
-// Import a full project bundle
-router.post("/import-bundle", async (req: AuthRequest, res) => {
+// Import a full project bundle — rate-limited to prevent abuse
+router.post("/import-bundle", evalRateLimit, async (req: AuthRequest, res) => {
   try {
+    // Auth check before any processing
+    if (!req.userId) return res.status(401).json({ error: "Unauthorized" });
+
     const bundle = req.body;
     if (!bundle?.project || !Array.isArray(bundle.criteria) || !Array.isArray(bundle.runs)) {
       return res.status(400).json({ error: "Invalid bundle: missing project, criteria, or runs" });
     }
-    if (!req.userId) return res.status(401).json({ error: "Unauthorized" });
+    if (typeof bundle.project.name !== "string" || !bundle.project.name.trim()) {
+      return res.status(400).json({ error: "Invalid bundle: project.name is required" });
+    }
 
-    const VALID_CRITERION_TYPES = [
-      "DETERMINISTIC","LLM_JUDGE","STRUCTURAL","WORD_ACCURACY","LATENCY",
-      "FLOW_PROGRESSION","ACTION_CONSISTENCY","ACTION_HALLUCINATION","LAYERED_EVALUATION",
-    ];
-    const VALID_PROJECT_TYPES = ["LIVE","HISTORY","WEBHOOK"];
-    const VALID_RUN_STATUSES  = ["PENDING","RUNNING","AWAITING_DATA","EVALUATING","COMPLETE","FAILED"];
-
-    // 1. Create project
-    const newProject = await prisma.project.create({
-      data: {
-        name:           `${bundle.project.name} (imported)`,
-        description:    bundle.project.description    || undefined,
-        projectType:    VALID_PROJECT_TYPES.includes(bundle.project.projectType) ? bundle.project.projectType : "HISTORY",
-        agentId:        bundle.project.agentId        || "",
-        hamsaApiKey:    bundle.project.hamsaApiKey    || undefined,
-        evalContext:    bundle.project.evalContext     || undefined,
-        agentStructure: bundle.project.agentStructure || undefined,
-        flowDefinition: bundle.project.flowDefinition || undefined,
-        agentSummary:   bundle.project.agentSummary   || undefined,
-        webhookSecret:  bundle.project.webhookSecret  || undefined,
-        userId:         req.userId,
-      },
-    });
-
-    // 2. Create criteria — build _exportId → new ID map
-    const criterionIdMap: Record<string, string> = {};
-    for (const c of bundle.criteria) {
-      if (!VALID_CRITERION_TYPES.includes(c.type)) continue;
-      const newC = await prisma.criterion.create({
+    // Wrap everything in a transaction so partial failures roll back cleanly
+    // Timeout: 10 min — large projects with 1000s of runs can take time
+    const result = await prisma.$transaction(async (tx) => {
+      // 1. Create project
+      const newProject = await tx.project.create({
         data: {
-          projectId:     newProject.id,
-          key:           String(c.key || c._exportId || "criterion"),
-          label:         c.label     || undefined,
-          type:          c.type      as any,
-          expectedValue: c.expectedValue ?? {},
-          weight:        typeof c.weight === "number" ? c.weight : 1.0,
+          name:           `${bundle.project.name.trim()} (imported)`,
+          description:    bundle.project.description    || undefined,
+          projectType:    VALID_PROJECT_TYPES.has(bundle.project.projectType) ? bundle.project.projectType : "HISTORY",
+          agentId:        bundle.project.agentId        || "",
+          hamsaApiKey:    bundle.project.hamsaApiKey    || undefined,
+          evalContext:    bundle.project.evalContext     || undefined,
+          agentStructure: bundle.project.agentStructure || undefined,
+          flowDefinition: bundle.project.flowDefinition || undefined,
+          agentSummary:   bundle.project.agentSummary   || undefined,
+          webhookSecret:  bundle.project.webhookSecret  || undefined,
+          historyStartDate: bundle.project.historyStartDate ? new Date(bundle.project.historyStartDate) : undefined,
+          historyEndDate:   bundle.project.historyEndDate   ? new Date(bundle.project.historyEndDate)   : undefined,
+          userId:         req.userId!,
         },
       });
-      if (c._exportId) criterionIdMap[c._exportId] = newC.id;
-    }
 
-    // 3. Create runs + eval results — batched to avoid overwhelming DB
-    let imported = 0;
-    const BATCH = 20;
-    for (let i = 0; i < bundle.runs.length; i += BATCH) {
-      await Promise.all(bundle.runs.slice(i, i + BATCH).map(async (run: any) => {
-        const validEvals = (run.evalResults ?? []).filter(
-          (er: any) => er._criterionExportId && criterionIdMap[er._criterionExportId]
-        );
-        await prisma.run.create({
+      // 2. Create criteria — build _exportId → new ID map
+      const criterionIdMap: Record<string, string> = {};
+      let criterionIndex = 0;
+      for (const c of bundle.criteria) {
+        if (!VALID_CRITERION_TYPES.has(c.type)) continue;
+        const newC = await tx.criterion.create({
           data: {
-            projectId:      newProject.id,
-            conversationId: run.conversationId  || undefined,
-            status:         VALID_RUN_STATUSES.includes(run.status) ? run.status : "COMPLETE",
-            overallScore:   run.overallScore    ?? undefined,
-            callDate:       run.callDate ? new Date(run.callDate) : undefined,
-            callDuration:   run.callDuration    ?? undefined,
-            callOutcome:    run.callOutcome      || undefined,
-            callStatus:     run.callStatus       || undefined,
-            evalCost:       run.evalCost         ?? undefined,
-            modelUsed:      run.modelUsed        || undefined,
-            source:         run.source           || undefined,
-            outcomeResult:  run.outcomeResult    ?? undefined,
-            webhookData:    run.webhookData      ?? undefined,
-            transcript:     run.transcript       ?? undefined,
-            callLog:        run.callLog          ?? undefined,
-            evalResults: {
-              create: validEvals.map((er: any) => ({
-                criterionId: criterionIdMap[er._criterionExportId],
-                score:       er.score    ?? undefined,
-                passed:      er.passed   ?? undefined,
-                detail:      er.detail   ?? undefined,
-                metadata:    er.metadata ?? undefined,
-              })),
-            },
+            projectId:     newProject.id,
+            // Ensure key uniqueness within the project even if source bundle has duplicates
+            key:           String(c.key || c._exportId || `criterion_${criterionIndex}`),
+            label:         c.label     || undefined,
+            type:          c.type      as any,
+            expectedValue: c.expectedValue ?? {},
+            weight:        typeof c.weight === "number" ? c.weight : 1.0,
           },
         });
-        imported++;
-      }));
-    }
+        if (c._exportId) criterionIdMap[c._exportId] = newC.id;
+        criterionIndex++;
+      }
 
-    res.json({ projectId: newProject.id, name: newProject.name, imported });
+      // 3. Create runs + eval results — sequential batches inside transaction
+      let imported = 0;
+      const BATCH = 20;
+      for (let i = 0; i < bundle.runs.length; i += BATCH) {
+        await Promise.all(bundle.runs.slice(i, i + BATCH).map(async (run: any) => {
+          // Dedupe eval results: one per criterion (schema @@unique([runId, criterionId]))
+          const seenCriteria = new Set<string>();
+          const validEvals = (run.evalResults ?? []).filter((er: any) => {
+            const newCid = criterionIdMap[er._criterionExportId];
+            if (!newCid || seenCriteria.has(newCid)) return false;
+            seenCriteria.add(newCid);
+            return true;
+          });
+
+          await tx.run.create({
+            data: {
+              projectId:      newProject.id,
+              conversationId: run.conversationId  || undefined,
+              status:         VALID_RUN_STATUSES.has(run.status) ? run.status : "COMPLETE",
+              overallScore:   run.overallScore    ?? undefined,
+              callDate:       run.callDate ? new Date(run.callDate) : undefined,
+              callDuration:   run.callDuration    ?? undefined,
+              callOutcome:    run.callOutcome      || undefined,
+              callStatus:     run.callStatus       || undefined,
+              evalCost:       run.evalCost         ?? undefined,
+              modelUsed:      run.modelUsed        || undefined,
+              source:         VALID_RUN_SOURCES.has(run.source) ? run.source : "HISTORY",
+              // hamsaCallId intentionally omitted — unique per project, would collide on re-import
+              errorLog:       run.errorLog         || undefined,
+              startedAt:      run.startedAt   ? new Date(run.startedAt)   : undefined,
+              completedAt:    run.completedAt ? new Date(run.completedAt) : undefined,
+              outcomeResult:  run.outcomeResult    ?? undefined,
+              webhookData:    run.webhookData      ?? undefined,
+              transcript:     run.transcript       ?? undefined,
+              callLog:        run.callLog          ?? undefined,
+              evalResults: {
+                create: validEvals.map((er: any) => ({
+                  criterionId: criterionIdMap[er._criterionExportId],
+                  score:       er.score    ?? undefined,
+                  passed:      er.passed   ?? undefined,
+                  detail:      er.detail   ?? undefined,
+                  metadata:    er.metadata ?? undefined,
+                })),
+              },
+            },
+          });
+          imported++;
+        }));
+      }
+
+      return { projectId: newProject.id, name: newProject.name, imported, total: bundle.runs.length };
+    }, { timeout: 600_000 }); // 10 min timeout for large projects
+
+    const warning = result.imported < result.total
+      ? `Only ${result.imported} of ${result.total} runs imported`
+      : undefined;
+    res.json({ projectId: result.projectId, name: result.name, imported: result.imported, warning });
   } catch (err) {
     console.error("[Projects] import-bundle error:", (err as Error).message);
-    res.status(500).json({ error: "Import failed: " + (err as Error).message });
+    const msg = (err as Error).message;
+    // Surface constraint violations with a friendlier message
+    const friendly = msg.includes("Unique constraint")
+      ? "Import failed: duplicate key conflict. Try importing again (a new project will be created)."
+      : `Import failed: ${msg}`;
+    res.status(500).json({ error: friendly });
   }
 });
 
