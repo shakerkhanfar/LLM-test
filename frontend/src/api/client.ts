@@ -323,6 +323,10 @@ export function reEvaluateFailedProject(projectId: string) {
   return request<{ ok: boolean; resetCount: number }>(`/projects/${projectId}/re-evaluate-failed`, { method: "POST" });
 }
 
+export function reEvaluateErrorsProject(projectId: string) {
+  return request<{ ok: boolean; resetCount: number }>(`/projects/${projectId}/re-evaluate-errors`, { method: "POST" });
+}
+
 export function reHydrateProject(projectId: string) {
   return request<any>(`/projects/${projectId}/re-hydrate`, { method: "POST" });
 }

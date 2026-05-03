@@ -458,10 +458,17 @@ router.get("/:id", async (req: AuthRequest, res) => {
       return res.status(403).json({ error: "Access denied" });
     }
 
-    // Accurate failed-run count across ALL runs (not just the 200 loaded)
-    const failedRunCount = await prisma.run.count({
-      where: { projectId: req.params.id, status: "FAILED" },
-    });
+    // Accurate counts across ALL runs (not just the 200 loaded)
+    const [failedRunCount, errorRunCount] = await Promise.all([
+      prisma.run.count({ where: { projectId: req.params.id, status: "FAILED" } }),
+      prisma.run.count({
+        where: {
+          projectId: req.params.id,
+          status: "COMPLETE",
+          evalResults: { some: { detail: { contains: "Evaluation error" } } },
+        },
+      }),
+    ]);
 
     // Strip heavy fields from list response to keep payload under proxy limits.
     // Individual run detail pages load full data via GET /runs/:id.
@@ -489,7 +496,7 @@ router.get("/:id", async (req: AuthRequest, res) => {
     });
     const responseSize = JSON.stringify({ ...project, runs: lightRuns }).length;
     console.log(`[Projects] Returning project ${project.name} with ${lightRuns.length} runs (~${(responseSize / 1024).toFixed(0)}KB)`);
-    res.json({ ...project, runs: lightRuns, failedRunCount });
+    res.json({ ...project, runs: lightRuns, failedRunCount, errorRunCount });
   } catch (err) {
     console.error("[Projects] GET /:id error:", (err as Error).message, (err as Error).stack?.slice(0, 300));
     res.status(500).json({ error: "Failed to fetch project" });
@@ -1343,6 +1350,60 @@ router.post("/:id/re-evaluate-failed", evalRateLimit, async (req: AuthRequest, r
     audit(req, "project.re_evaluate_failed", projectId, { resetCount: failedRunIds.length });
     // Return resetCount (all failed runs in the project, not just the 200 loaded in the frontend)
     res.json({ ok: true, resetCount: failedRunIds.length, totalFailed: failedRunIds.length });
+  } catch (err) {
+    res.status(500).json({ error: (err as Error).message });
+  }
+});
+
+/**
+ * POST /api/projects/:id/re-evaluate-errors
+ *
+ * Finds COMPLETE runs that have one or more eval results with quota/rate-limit
+ * errors (detail contains "429" or "Evaluation error") and re-queues them.
+ * These runs are COMPLETE but have partial/null scores on some criteria.
+ */
+router.post("/:id/re-evaluate-errors", evalRateLimit, async (req: AuthRequest, res) => {
+  const projectId = req.params.id;
+  const p = await prisma.project.findUnique({ where: { id: projectId }, select: { userId: true } });
+  if (!p) return res.status(404).json({ error: "Project not found" });
+  if (!await canAccess(p.userId, req)) return res.status(403).json({ error: "Access denied" });
+
+  try {
+    // Find COMPLETE runs that have at least one eval result with an error detail
+    const errorRuns = await prisma.run.findMany({
+      where: {
+        projectId,
+        status: "COMPLETE",
+        evalResults: {
+          some: {
+            detail: { contains: "Evaluation error" },
+          },
+        },
+      },
+      select: { id: true },
+    });
+    const errorRunIds = errorRuns.map((r) => r.id);
+
+    if (errorRunIds.length === 0) {
+      return res.json({ ok: true, resetCount: 0 });
+    }
+
+    await prisma.$transaction([
+      prisma.evalResult.deleteMany({ where: { runId: { in: errorRunIds } } }),
+      prisma.run.updateMany({
+        where: { id: { in: errorRunIds } },
+        data: { status: "PENDING", overallScore: null, evalCost: null },
+      }),
+    ]);
+
+    for (const run of errorRuns) {
+      runEvaluationCheck(run.id).catch((err) =>
+        console.error(`[ReEvaluateErrors] Failed to trigger eval for ${run.id}: ${(err as Error).message}`)
+      );
+    }
+
+    audit(req, "project.re_evaluate_errors", projectId, { resetCount: errorRunIds.length });
+    res.json({ ok: true, resetCount: errorRunIds.length });
   } catch (err) {
     res.status(500).json({ error: (err as Error).message });
   }

@@ -3,7 +3,7 @@ import { useParams, Link, useNavigate, useSearchParams } from "react-router-dom"
 import {
   getProject, createRun, deleteRun, triggerEvaluation, switchModel,
   attachCallLog, attachTranscript, importHistory, importHistoryCsv, refreshAgent,
-  askProject, fetchHamsaProjects, reEvaluateProject, reEvaluateFailedProject, reHydrateProject,
+  askProject, fetchHamsaProjects, reEvaluateProject, reEvaluateFailedProject, reEvaluateErrorsProject, reHydrateProject,
   exportCallIds, exportProjectBundle, importByIds,
   getEvalContext, saveEvalContext, runPromptAudit, applyPromptFix,
   searchToolResults, type ToolSearchResult,
@@ -110,6 +110,7 @@ export default function ProjectDetail() {
   const [showHistoryImport, setShowHistoryImport] = useState(false);
   const [showFailedRuns, setShowFailedRuns] = useState(false);
   const [reEvalFailedLoading, setReEvalFailedLoading] = useState(false);
+  const [reEvalErrorsLoading, setReEvalErrorsLoading] = useState(false);
   const [historyStartDate, setHistoryStartDate] = useState(() => getPresetRange("THIS_MONTH").start);
   const [historyEndDate, setHistoryEndDate] = useState(() => getPresetRange("THIS_MONTH").end);
   const [historyLimit, setHistoryLimit] = useState(50);
@@ -556,6 +557,45 @@ export default function ProjectDetail() {
               </div>
             )}
           </>
+        );
+      })()}
+
+      {/* Quota-error banner — COMPLETE runs with partial eval errors */}
+      {(() => {
+        const errorCount = project.errorRunCount ?? 0;
+        if (errorCount === 0) return null;
+        return (
+          <div style={{
+            padding: "10px 16px", borderRadius: 8, marginBottom: 16,
+            background: "#fffbeb", border: "1px solid #f59e0b66", color: "#b45309",
+            fontSize: 13, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10,
+          }}>
+            <span>⚠ {errorCount} call{errorCount !== 1 ? "s" : ""} completed with quota errors — some criteria were not evaluated</span>
+            <button
+              disabled={reEvalErrorsLoading}
+              onClick={async () => {
+                if (reEvalErrorsLoading) return;
+                if (!confirm(`Re-evaluate ${errorCount} call${errorCount !== 1 ? "s" : ""} that had quota errors?\n\nThis will re-run all criteria for these calls.\n\nThe process runs in the background.`)) return;
+                setReEvalErrorsLoading(true);
+                try {
+                  const result = await reEvaluateErrorsProject(project.id);
+                  alert(`Queued ${result.resetCount} call${result.resetCount !== 1 ? "s" : ""} for re-evaluation.`);
+                  load();
+                } catch (err) {
+                  alert("Failed: " + (err as Error).message);
+                } finally {
+                  setReEvalErrorsLoading(false);
+                }
+              }}
+              style={{
+                background: reEvalErrorsLoading ? "#9ca3af" : "#f59e0b", color: "#fff", border: "none", borderRadius: 6,
+                padding: "5px 12px", fontSize: 12, fontWeight: 600,
+                cursor: reEvalErrorsLoading ? "not-allowed" : "pointer", whiteSpace: "nowrap",
+              }}
+            >
+              {reEvalErrorsLoading ? "Queuing…" : `Re-evaluate (${errorCount})`}
+            </button>
+          </div>
         );
       })()}
 
