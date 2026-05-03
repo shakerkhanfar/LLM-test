@@ -561,11 +561,22 @@ export default function ProjectReport() {
             title=""
             headerColor="#2980b9"
             rows={[
-              { label: "Total Calls Analyzed", value: `${report?.totalRuns ?? 0} calls`, highlight: "normal" },
-              { label: "Average Call Duration", value: fmtDuration(doc.avgDurationSec), highlight: "normal" },
-              { label: "Call Success Rate",    value: pct(successRate),    highlight: scoreHighlight(successRate)    },
-              { label: "Escalation Rate",      value: pct(escalationRate), highlight: escalationRate <= 5 ? "green" : "amber" },
-              { label: "Drop-Off Rate",        value: pct(dropOffRate),    highlight: dropOffRate    <= 5 ? "green" : "amber" },
+              { label: "Total Calls Analyzed",  value: `${report?.totalRuns ?? 0} calls`, highlight: "normal" },
+              { label: "Average Call Duration",  value: fmtDuration(doc.avgDurationSec),   highlight: "normal" },
+              // These two match the dashboard definitions exactly:
+              ...(doc.overallPassRate != null ? [{
+                label: `Pass Rate (score ≥ 70%, ${doc.overallPassRateScored} scored calls)`,
+                value: pct(doc.overallPassRate),
+                highlight: scoreHighlight(doc.overallPassRate) as any,
+              }] : []),
+              ...(doc.objectiveAchievedRate != null ? [{
+                label: `Objective Achieved (${doc.objectiveAchievedTotal} evaluated calls)`,
+                value: pct(doc.objectiveAchievedRate),
+                highlight: scoreHighlight(doc.objectiveAchievedRate) as any,
+              }] : []),
+              { label: "Call Completion Rate",  value: pct(successRate),    highlight: scoreHighlight(successRate)    },
+              { label: "Escalation Rate",       value: pct(escalationRate), highlight: escalationRate <= 5 ? "green" : "amber" },
+              { label: "Drop-Off Rate",         value: pct(dropOffRate),    highlight: dropOffRate    <= 5 ? "green" : "amber" },
             ]}
           />
 
@@ -579,9 +590,8 @@ export default function ProjectReport() {
             rows={[
               { label: "Average User Turns per Call",   value: doc.avgTurnsPerCall != null ? `${doc.avgTurnsPerCall}` : "—", highlight: "normal" },
               { label: "Total Conversation Turns",      value: doc.totalTurns > 0 ? doc.totalTurns.toLocaleString() : "—", highlight: "normal" },
-              { label: "Call Objective Success Rate",   value: pct(successRate),     highlight: scoreHighlight(successRate)     },
-              // Natural Completion = not dropped off AND not escalated (resolved by the bot)
-              { label: "Natural Completion Rate",       value: pct(naturalCompRate), highlight: scoreHighlight(naturalCompRate) },
+              { label: "Call Completion Rate (not dropped/escalated)", value: pct(successRate),     highlight: scoreHighlight(successRate)     },
+              { label: "Natural Completion Rate (no dropoff/escalation)",  value: pct(naturalCompRate), highlight: scoreHighlight(naturalCompRate) },
             ]}
           />
 

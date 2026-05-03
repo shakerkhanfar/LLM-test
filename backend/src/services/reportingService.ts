@@ -107,6 +107,12 @@ export interface KpiReport {
     avgDurationSec:    number | null;
     avgTurnsPerCall:   number | null;
     totalTurns:        number;
+    // Matches dashboard "Pass Rate" definition: % of runs with overallScore >= 0.7
+    overallPassRate:        number | null;
+    overallPassRateScored:  number; // denominator (runs with a score)
+    // Matches dashboard "Objective Achieved": objectiveAchieved=true in LAYERED_EVALUATION
+    objectiveAchievedRate:  number | null;
+    objectiveAchievedTotal: number; // denominator (runs with objectiveAchieved field)
     llmPassRate:       number | null;
     latencyPassRate:   number | null;
     genderAccuracy:    number | null;
@@ -128,8 +134,8 @@ export async function getProjectReport(projectId: string, weeksBack = 7): Promis
   const buckets     = getWeekBuckets(weeksBack);
   const windowStart = buckets[0].start;
 
-  // ── Run 5 queries in parallel — all aggregate at DB level, no row limits ──
-  const [overallRows, dayRows, critRows, labelRows, turnRows] = await Promise.all([
+  // ── Run 7 queries in parallel — all aggregate at DB level, no row limits ──
+  const [overallRows, dayRows, critRows, labelRows, turnRows, passRateRows, objRows] = await Promise.all([
 
     // 1. Overall KPIs — single row, counts entire project history
     prisma.$queryRaw<Array<{
@@ -215,6 +221,38 @@ export async function getProjectReport(projectId: string, weeksBack = 7): Promis
       return [{ total_turns: null, run_count: BigInt(0) }];
     }),
 
+    // 6. Overall pass rate — same definition as dashboard: % of runs with overallScore >= 0.7
+    prisma.$queryRaw<Array<{ scored: bigint; passed: bigint }>>`
+      SELECT
+        COUNT(*) FILTER (WHERE "overallScore" IS NOT NULL) AS scored,
+        COUNT(*) FILTER (WHERE "overallScore" >= 0.7)      AS passed
+      FROM "Run"
+      WHERE "projectId" = ${projectId} AND status = 'COMPLETE'
+    `,
+
+    // 7. Objective achieved rate — same definition as dashboard: objectiveAchieved=true
+    //    in the LAYERED_EVALUATION detail JSON (EvalResult.detail is TEXT, cast to jsonb)
+    prisma.$queryRaw<Array<{ obj_total: bigint; obj_achieved: bigint }>>`
+      SELECT
+        COUNT(*) FILTER (
+          WHERE er.detail IS NOT NULL
+            AND er.detail::jsonb ? 'objectiveAchieved'
+        ) AS obj_total,
+        COUNT(*) FILTER (
+          WHERE er.detail IS NOT NULL
+            AND (
+              er.detail::jsonb->>'objectiveAchieved' = 'true'
+              OR er.detail::jsonb->>'objectiveAchieved' = '1'
+            )
+        ) AS obj_achieved
+      FROM "EvalResult" er
+      JOIN "Criterion" c ON er."criterionId" = c.id
+      JOIN "Run"       r ON er."runId"       = r.id
+      WHERE r."projectId" = ${projectId}
+        AND r.status = 'COMPLETE'
+        AND c.type = 'LAYERED_EVALUATION'
+    `.catch(() => [{ obj_total: 0n, obj_achieved: 0n }]),
+
   ]);
 
   // ── Derive overall KPIs ───────────────────────────────────────────────────
@@ -293,6 +331,22 @@ export async function getProjectReport(projectId: string, weeksBack = 7): Promis
   const turnRunCount  = n(tr.run_count);
   const avgTurnsPerCall = turnRunCount > 0 ? parseFloat((totalTurns / turnRunCount).toFixed(1)) : null;
 
+  // ── Overall pass rate (dashboard definition: overallScore >= 0.7) ─────────
+  const pr             = passRateRows[0] ?? { scored: 0n, passed: 0n };
+  const scoredCount    = n(pr.scored);
+  const passedCount    = n(pr.passed);
+  const overallPassRate = scoredCount > 0
+    ? parseFloat(((passedCount / scoredCount) * 100).toFixed(1))
+    : null;
+
+  // ── Objective achieved rate (dashboard definition: objectiveAchieved=true) ─
+  const or              = objRows[0] ?? { obj_total: 0n, obj_achieved: 0n };
+  const objTotal        = n(or.obj_total);
+  const objAchieved     = n(or.obj_achieved);
+  const objectiveAchievedRate = objTotal > 0
+    ? parseFloat(((objAchieved / objTotal) * 100).toFixed(1))
+    : null;
+
   return {
     kpis: {
       successRate:    { current: currentSuccess,    trend: successTrend    },
@@ -306,6 +360,10 @@ export async function getProjectReport(projectId: string, weeksBack = 7): Promis
       avgDurationSec,
       avgTurnsPerCall,
       totalTurns,
+      overallPassRate,
+      overallPassRateScored:   scoredCount,
+      objectiveAchievedRate,
+      objectiveAchievedTotal:  objTotal,
       llmPassRate:       avgPassRate(llmRows),
       latencyPassRate:   avgPassRate(latencyRows),
       genderAccuracy:    genderErrorRate != null ? parseFloat((100 - genderErrorRate).toFixed(2)) : null,
