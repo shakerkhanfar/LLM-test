@@ -87,6 +87,9 @@ export default function ProjectDetail() {
   const importWarning = searchParams.get("importWarning");
   const [project, setProject] = useState<any>(null);
   const [loading, setLoading] = useState(true);
+  // Accurate totals lifted from dashboard aggregate (covers all runs, not just loaded 200)
+  const [dashTotalRuns, setDashTotalRuns]     = useState<number | null>(null);
+  const [dashTotalCost, setDashTotalCost]     = useState<number | null>(null);
   const [showNewRun, setShowNewRun] = useState(false);
   const [modelInput, setModelInput] = useState("openai/gpt-4.1");
   const [showUpload, setShowUpload] = useState<string | null>(null);
@@ -273,8 +276,9 @@ export default function ProjectDetail() {
     }
   }
 
-  // Compute total eval cost across all runs
-  const totalEvalCost = (project.runs ?? []).reduce((sum: number, r: any) => sum + (r.evalCost ?? 0), 0);
+  // Use server-side accurate total (all runs). Fall back to loaded-run sum while dashboard loads.
+  const totalEvalCost = dashTotalCost ?? (project.runs ?? []).reduce((sum: number, r: any) => sum + (r.evalCost ?? 0), 0);
+  const trueRunCount  = dashTotalRuns ?? project._count?.runs ?? project.runs?.length ?? 0;
 
   // Find best and worst run
   const completedRuns = project.runs?.filter((r: any) => r.status === "COMPLETE" && r.overallScore != null) || [];
@@ -366,7 +370,7 @@ export default function ProjectDetail() {
 
       {/* Summary cards */}
       <div style={{ display: "flex", gap: 16, marginBottom: 24, flexWrap: "wrap" }}>
-        <Card label={isWebhook ? "Total Calls" : "Total Runs"} value={project._count?.runs ?? project.runs?.length ?? 0} />
+        <Card label={isWebhook ? "Total Calls" : "Total Runs"} value={trueRunCount} />
         <Card label="Criteria" value={project.criteria?.length ?? 0} />
         {bestRun && <Card label={(isHistory || isWebhook) ? "Best Call" : "Best Model"} value={`${(isHistory || isWebhook) ? formatDate(bestRun.callDate) : bestRun.modelUsed} (${(bestRun.overallScore * 100).toFixed(0)}%)`} href={`/projects/${id}/runs/${bestRun.id}`} />}
         {worstRun && worstRun.id !== bestRun?.id && (
@@ -480,11 +484,11 @@ export default function ProjectDetail() {
             Report
           </button>
         )}
-        {(project.runs?.length ?? 0) > 0 && (
+        {trueRunCount > 0 && (
           <>
             <button
               onClick={async () => {
-                const count = project.runs?.length ?? 0;
+                const count = trueRunCount;
                 const estMinutes = Math.ceil(count * 45 / 60); // ~45s per call (fetch + eval)
                 if (!confirm(`Re-fetch and re-evaluate all ${count} calls?\n\nEstimated time: ~${estMinutes} minutes\n(~45 seconds per call: fetch from Hamsa + 8-12 LLM evaluation calls)\n\nThe process runs in the background — you can close this page.`)) return;
                 try {
@@ -501,7 +505,7 @@ export default function ProjectDetail() {
             </button>
             <button
               onClick={async () => {
-                const count = project.runs?.length ?? 0;
+                const count = trueRunCount;
                 const estMinutes = Math.ceil(count * 35 / 60); // ~35s per call (eval only, no fetch)
                 if (!confirm(`Re-evaluate all ${count} calls?\n\nEstimated time: ~${estMinutes} minutes\n(~35 seconds per call: 8-12 LLM evaluation calls)\n\nExisting scores will be cleared. The process runs in the background.`)) return;
                 try {
@@ -518,7 +522,7 @@ export default function ProjectDetail() {
             </button>
           </>
         )}
-        {(project.runs?.length ?? 0) > 0 && (
+        {trueRunCount > 0 && (
           <button
             onClick={async () => {
               try { await exportCallIds(project.id, project.name); } catch (err) { alert("Export failed: " + (err as Error).message); }
@@ -766,7 +770,7 @@ export default function ProjectDetail() {
       <ImportProgressBanner runs={project.runs ?? []} />
 
       {/* Ask AI */}
-      {project.runs?.length >= 3 && (
+      {trueRunCount >= 3 && (
         <div style={{ marginBottom: 20 }}>
           <form
             onSubmit={async (e) => {
@@ -980,15 +984,14 @@ export default function ProjectDetail() {
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8, flexWrap: "wrap", gap: 8 }}>
         <h2 style={{ fontSize: 16, margin: 0 }}>
           {isWebhook ? "Incoming Calls" : isHistory ? "Imported Calls" : "Runs"}
-          {project.runs?.length > 0 && (() => {
-            const trueTotal = project._count?.runs ?? project.runs.length;
-            const loaded    = project.runs.length;
-            const truncated = loaded < trueTotal;
+          {trueRunCount > 0 && (() => {
+            const loaded    = project.runs?.length ?? 0;
+            const truncated = loaded < trueRunCount;
             return (
               <span style={{ fontSize: 12, color: T.textMuted, fontWeight: 400, marginLeft: 8 }}>
                 ({truncated
-                  ? `showing ${loaded} of ${trueTotal}`
-                  : `${trueTotal} total`}
+                  ? `showing ${loaded} of ${trueRunCount}`
+                  : `${trueRunCount} total`}
                 {(isHistory || isWebhook) ? ", latest first" : ""})
               </span>
             );
@@ -1078,7 +1081,13 @@ export default function ProjectDetail() {
         )}
       </div>
       {activeTab === "dashboard" && (isHistory || isWebhook) ? (
-        <ProjectDashboard project={project} />
+        <ProjectDashboard
+          project={project}
+          onDashLoaded={({ totalRuns, totalEvalCost }) => {
+            setDashTotalRuns(totalRuns);
+            setDashTotalCost(totalEvalCost);
+          }}
+        />
       ) : (
       <table style={{ width: "100%", borderCollapse: "collapse" }}>
         <thead>

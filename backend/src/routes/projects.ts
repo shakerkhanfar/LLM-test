@@ -260,26 +260,60 @@ router.get("/:id/dashboard", async (req: AuthRequest, res) => {
       return res.status(403).json({ error: "Access denied" });
     }
 
-    // Accurate KPI aggregates over ALL complete runs — no row limit
+    // Accurate KPI aggregates over ALL runs — no row limit
+    // total_all   = every run regardless of status (shown as "Total Runs/Calls")
+    // total_complete / avg_score / passed = stats for COMPLETE runs only (for KPI cards)
+    // total_eval_cost = sum of eval spend across all runs
     const [kpiAgg] = await prisma.$queryRaw<Array<{
-      total: bigint;
+      total_all: bigint;
+      total_complete: bigint;
       avg_score: number | null;
       passed: bigint;
       avg_duration: number | null;
+      total_eval_cost: number | null;
     }>>`
       SELECT
-        COUNT(*)                                                  AS total,
-        AVG("overallScore")::double precision                     AS avg_score,
-        COUNT(*) FILTER (WHERE "overallScore" >= 0.7)             AS passed,
-        AVG("callDuration")::double precision                     AS avg_duration
+        COUNT(*)                                                               AS total_all,
+        COUNT(*) FILTER (WHERE status = 'COMPLETE')                            AS total_complete,
+        AVG("overallScore") FILTER (WHERE status = 'COMPLETE')::double precision AS avg_score,
+        COUNT(*) FILTER (WHERE "overallScore" >= 0.7)                          AS passed,
+        AVG("callDuration") FILTER (WHERE status = 'COMPLETE')::double precision AS avg_duration,
+        SUM("evalCost")::double precision                                       AS total_eval_cost
+      FROM "Run"
+      WHERE "projectId" = ${req.params.id}
+    `;
+
+    // SQL-level: outcome distribution over ALL runs (callOutcome is a plain column, no JSON)
+    const outcomeDistRows = await prisma.$queryRaw<Array<{ outcome: string | null; cnt: bigint }>>`
+      SELECT "callOutcome" AS outcome, COUNT(*) AS cnt
       FROM "Run"
       WHERE "projectId" = ${req.params.id} AND status = 'COMPLETE'
+      GROUP BY "callOutcome"
+      ORDER BY cnt DESC
+      LIMIT 30
+    `;
+
+    // SQL-level: per-day score trend over ALL complete runs (used for Score Over Time chart)
+    const scoreTrendRows = await prisma.$queryRaw<Array<{
+      day: Date; avg_score: number; run_count: bigint;
+    }>>`
+      SELECT
+        DATE_TRUNC('day', "callDate")            AS day,
+        AVG("overallScore")::double precision    AS avg_score,
+        COUNT(*)                                 AS run_count
+      FROM "Run"
+      WHERE "projectId" = ${req.params.id}
+        AND status = 'COMPLETE'
+        AND "callDate" IS NOT NULL
+        AND "overallScore" IS NOT NULL
+      GROUP BY DATE_TRUNC('day', "callDate")
+      ORDER BY day
     `;
 
     const runs = await prisma.run.findMany({
       where: { projectId: req.params.id, status: "COMPLETE" },
       orderBy: { callDate: "asc" },
-      take: 1000,   // cap at 1000 for detailed in-memory analysis (sentiment, nodes, issues)
+      take: 1000,   // cap at 1000 for detailed JSON analysis (sentiment, issues, node perf)
       select: {
         id: true,
         overallScore: true,
@@ -423,7 +457,8 @@ router.get("/:id/dashboard", async (req: AuthRequest, res) => {
       })
       .filter(b => b.issues.length > 0);
 
-    const totalComplete = Number(kpiAgg?.total ?? 0);
+    const totalAll      = Number(kpiAgg?.total_all      ?? 0);
+    const totalComplete = Number(kpiAgg?.total_complete ?? 0);
     const avgScore = kpiAgg?.avg_score != null
       ? Math.round(Number(kpiAgg.avg_score) * 100 * 10) / 10
       : null;
@@ -433,12 +468,32 @@ router.get("/:id/dashboard", async (req: AuthRequest, res) => {
     const avgDuration = kpiAgg?.avg_duration != null
       ? Math.round(Number(kpiAgg.avg_duration))
       : null;
+    const totalEvalCost = kpiAgg?.total_eval_cost != null
+      ? Number(kpiAgg.total_eval_cost)
+      : 0;
+
+    // Outcome distribution from SQL (all runs, plain column — no JSON parsing)
+    const outcomeDist: Record<string, number> = {};
+    for (const row of outcomeDistRows) {
+      outcomeDist[row.outcome ?? "unknown"] = Number(row.cnt);
+    }
+
+    // Score trend from SQL (all runs, per-day averages)
+    const scoreTrend = scoreTrendRows.map(r => ({
+      day:      r.day instanceof Date ? r.day.toISOString().slice(0, 10) : String(r.day),
+      avgScore: r.avg_score != null ? Math.round(Number(r.avg_score) * 100 * 10) / 10 : null,
+      count:    Number(r.run_count),
+    }));
 
     res.json({
-      totalRuns: totalComplete,
+      totalRuns: totalAll,       // ALL runs (any status) — matches project list count
+      totalComplete,             // COMPLETE runs only — denominator for avgScore/passRate
       avgScore,
       passRate,
       avgDuration,
+      totalEvalCost,
+      outcomeDist,               // Full outcome distribution (all runs, SQL-level)
+      scoreTrend,                // Per-day score averages (all runs, SQL-level)
       sentiment: sentimentCounts,
       objectiveRate: objectiveTotal > 0 ? Math.round((objectiveCount / objectiveTotal) * 100) / 100 : null,
       achievedRunIds,

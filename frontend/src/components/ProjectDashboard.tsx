@@ -8,9 +8,15 @@ import T from "../theme";
 
 interface DashData {
   totalRuns: number;
+  totalComplete: number;
   avgScore: number | null;
   passRate: number | null;
   avgDuration: number | null;
+  totalEvalCost: number;
+  /** SQL-level outcome distribution — all complete runs */
+  outcomeDist: Record<string, number>;
+  /** SQL-level per-day score trend — all complete runs */
+  scoreTrend: Array<{ day: string; avgScore: number | null; count: number }>;
   sentiment: Record<string, number>;
   objectiveRate: number | null;
   nodePerformance: Array<{ label: string; avg: number; count: number; runIds: string[] }>;
@@ -22,6 +28,7 @@ interface DashData {
 
 interface Props {
   project: any;
+  onDashLoaded?: (data: { totalRuns: number; totalEvalCost: number }) => void;
 }
 
 const OUTCOME_COLORS: Record<string, string> = {
@@ -60,13 +67,6 @@ function fmtDuration(seconds: number): string {
   return `${m}:${String(s).padStart(2, "0")}`;
 }
 
-function rollingAvg(data: number[], window: number): (number | null)[] {
-  return data.map((_, i) => {
-    if (i < window - 1) return null;
-    const slice = data.slice(i - window + 1, i + 1);
-    return Math.round((slice.reduce((a, b) => a + b, 0) / slice.length) * 10) / 10;
-  });
-}
 
 function scoreColor(score: number): string {
   if (score >= 70) return "#17B26A";
@@ -134,7 +134,7 @@ function ScorePill({ score }: { score: number }) {
   );
 }
 
-export default function ProjectDashboard({ project }: Props) {
+export default function ProjectDashboard({ project, onDashLoaded }: Props) {
   const [dashData, setDashData] = useState<DashData | null>(null);
   const [dashError, setDashError] = useState<string | null>(null);
   const [tableSearch, setTableSearch] = useState("");
@@ -283,7 +283,10 @@ export default function ProjectDashboard({ project }: Props) {
 
   useEffect(() => {
     getProjectDashboard(project.id)
-      .then((data: DashData) => setDashData(data))
+      .then((data: DashData) => {
+        setDashData(data);
+        onDashLoaded?.({ totalRuns: data.totalRuns, totalEvalCost: data.totalEvalCost ?? 0 });
+      })
       .catch((err: Error) => setDashError(err.message));
   }, [project.id]);
 
@@ -302,29 +305,37 @@ export default function ProjectDashboard({ project }: Props) {
     return fmtDuration(withDur.reduce((s: number, r: any) => s + r.callDuration, 0) / withDur.length);
   })();
 
-  // Score trend data
-  const trendRuns = useMemo(() => {
+  // Score trend — use SQL per-day aggregates (all runs) when available,
+  // fall back to loaded completeRuns while dashData is loading
+  const trendData = useMemo(() => {
+    if (dashData?.scoreTrend && dashData.scoreTrend.length > 0) {
+      return dashData.scoreTrend.map((r, i) => ({
+        idx: i + 1,
+        score: r.avgScore,
+        count: r.count,
+        date: new Date(r.day).toLocaleDateString(),
+      }));
+    }
+    // Fallback: individual points from loaded runs
     return [...completeRuns]
       .sort((a: any, b: any) => new Date(a.callDate || a.createdAt).getTime() - new Date(b.callDate || b.createdAt).getTime())
       .map((r: any, i: number) => ({
         idx: i + 1,
         score: r.overallScore != null ? Math.round(r.overallScore * 100) : null,
+        count: 1,
         date: r.callDate ? new Date(r.callDate).toLocaleDateString() : "",
       }));
-  }, [completeRuns]);
+  }, [dashData?.scoreTrend, completeRuns]);
 
-  const rawScores = trendRuns.map((r) => r.score ?? 0);
-  const rolling = rollingAvg(rawScores, 7);
-
-  const trendData = trendRuns.map((r, i) => ({
-    idx: r.idx,
-    score: r.score,
-    rolling: rolling[i],
-    date: r.date,
-  }));
-
-  // Outcome donut — sorted by volume so donut + legend order is consistent
+  // Outcome donut — use SQL-level distribution (all runs) when available
   const outcomeCounts = useMemo(() => {
+    const dist = dashData?.outcomeDist;
+    if (dist && Object.keys(dist).length > 0) {
+      return Object.entries(dist)
+        .map(([name, value]) => ({ name, value }))
+        .sort((a, b) => b.value - a.value);
+    }
+    // Fallback while dashData loads
     const counts: Record<string, number> = {};
     for (const r of completeRuns) {
       const key = r.callOutcome || "unknown";
@@ -333,7 +344,7 @@ export default function ProjectDashboard({ project }: Props) {
     return Object.entries(counts)
       .map(([name, value]) => ({ name, value }))
       .sort((a, b) => b.value - a.value);
-  }, [completeRuns]);
+  }, [dashData?.outcomeDist, completeRuns]);
 
   // Primary Intent — scans ALL complete runs to find which candidate key is present,
   // then picks the highest-priority one. Scanning all runs (not just the first) prevents
@@ -611,7 +622,10 @@ export default function ProjectDashboard({ project }: Props) {
       <div style={{ display: "grid", gridTemplateColumns: "1.6fr 1fr 1fr 1fr", gap: 12 }}>
         {/* Score Over Time */}
         <div style={CARD_STYLE}>
-          <div style={{ ...SECTION_LABEL_STYLE, display: "flex", alignItems: "center" }}>Score Over Time<InfoTip text="Each dot is one call's overall score (0–100%). The green line is a 7-call rolling average, smoothing out individual outliers to show the trend." /></div>
+          <div style={{ ...SECTION_LABEL_STYLE, display: "flex", alignItems: "center" }}>
+            Score Over Time
+            <InfoTip text="Daily average score across all calls. Each point represents one day's average. All calls are included (not just the latest 200)." />
+          </div>
           {trendData.length < 2 ? (
             <div style={{ color: T.textMuted, fontSize: 12 }}>Not enough data</div>
           ) : (
@@ -623,19 +637,19 @@ export default function ProjectDashboard({ project }: Props) {
                   contentStyle={{ background: T.card, border: `1px solid ${T.border}`, borderRadius: 6, fontSize: 11 }}
                   formatter={(value: any, name: any) => {
                     if (value == null) return ["—", name];
-                    if (name === "score") return [`${value}%`, "Score"];
-                    if (name === "rolling") return [`${value}%`, "7-run avg"];
+                    if (name === "score") return [`${Number(value).toFixed(1)}%`, "Daily avg score"];
                     return [`${value}`, name];
                   }}
-                  labelFormatter={(label: any) => {
-                    const d = trendData[Math.max(0, Math.min((label as number) - 1, trendData.length - 1))];
-                    return d?.date || `Run ${label}`;
+                  labelFormatter={(_: any, payload: any) => {
+                    const d = payload?.[0]?.payload;
+                    return d ? `${d.date}${d.count > 1 ? ` (${d.count} calls)` : ""}` : "";
                   }}
                 />
                 <Line
                   type="monotone"
                   dataKey="score"
-                  stroke="none"
+                  stroke="#17B26A"
+                  strokeWidth={2}
                   dot={(props: any) => {
                     const { cx, cy, payload } = props;
                     if (payload.score == null) return <g key={`dot-${cx}-${cy}`} />;
@@ -650,15 +664,6 @@ export default function ProjectDashboard({ project }: Props) {
                   }}
                   activeDot={{ r: 5 }}
                   connectNulls={false}
-                />
-                <Line
-                  type="monotone"
-                  dataKey="rolling"
-                  stroke="#17B26A"
-                  strokeWidth={2}
-                  dot={false}
-                  connectNulls={false}
-                  strokeDasharray="4 2"
                 />
               </LineChart>
             </ResponsiveContainer>
