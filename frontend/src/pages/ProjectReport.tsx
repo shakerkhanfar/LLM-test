@@ -101,7 +101,7 @@ function MetricTable({
 }) {
   return (
     <div style={{ marginBottom: 28 }}>
-      <h3 style={{ fontSize: 16, fontWeight: 700, color: "#1a5276", marginBottom: 8 }}>{title}</h3>
+      {title && <h3 style={{ fontSize: 16, fontWeight: 700, color: "#1a5276", marginBottom: 8 }}>{title}</h3>}
       <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
         <thead>
           <tr>
@@ -112,10 +112,10 @@ function MetricTable({
         <tbody>
           {rows.map((row, i) => {
             const bg = i % 2 === 0 ? "#ffffff" : "#f0f4f8";
-            const valColor = row.highlight === "green" ? "#27ae60"
-              : row.highlight === "amber" ? "#e67e22"
-              : row.highlight === "muted" ? "#888"
-              : T.text;
+            const valColor = row.highlight === "green"  ? "#27ae60"
+                           : row.highlight === "amber"  ? "#e67e22"
+                           : row.highlight === "muted"  ? "#888"
+                           : T.text;
             return (
               <tr key={i}>
                 <td style={{ padding: "7px 12px", background: bg, fontStyle: row.italic ? "italic" : "normal", color: row.italic ? "#666" : T.text }}>
@@ -144,12 +144,18 @@ function fmtDuration(sec: number | null): string {
 
 function pct(n: number | null, suffix = "%"): string {
   if (n == null) return "—";
-  return `${n.toFixed(2)}${suffix}`;
+  return `${n.toFixed(1)}${suffix}`;
 }
 
-function scoreHighlight(n: number | null): "green" | "amber" | "normal" {
-  if (n == null) return "normal";
+// L2 fix: null → "muted" so missing metrics don't appear highlighted in tables
+function scoreHighlight(n: number | null): "green" | "amber" | "normal" | "muted" {
+  if (n == null) return "muted";
   return n >= 85 ? "green" : n >= 65 ? "amber" : "normal";
+}
+
+// Clamp a % value to [0, 100] to prevent display glitches from float arithmetic
+function clampPct(v: number): number {
+  return Math.min(100, Math.max(0, v));
 }
 
 // ─── Main Page ───────────────────────────────────────────────────────────────
@@ -167,8 +173,15 @@ export default function ProjectReport() {
 
   const [weeks, setWeeks] = useState(7);
   const printRef = useRef<HTMLDivElement>(null);
-  // Tracks the latest in-flight report request to discard stale responses
+
+  // H1 fix: track latest report request to discard stale responses when weeks changes
   const reqRef = useRef(0);
+  // H2 fix: track whether component is still mounted for intelligence request
+  const mountedRef = useRef(true);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => { mountedRef.current = false; };
+  }, []);
 
   const loadReport = useCallback(async () => {
     if (!id) return;
@@ -178,7 +191,7 @@ export default function ProjectReport() {
     setReport(null);
     try {
       const [proj, rep] = await Promise.all([getProject(id), getProjectReport(id, weeks)]);
-      if (req !== reqRef.current) return; // stale — a newer request superseded this one
+      if (req !== reqRef.current) return; // stale — newer request superseded this
       setProject(proj);
       setReport(rep);
     } catch (err) {
@@ -195,22 +208,35 @@ export default function ProjectReport() {
     if (!id) return;
     setIntelLoading(true);
     setIntelError(null);
+    // M5 fix: clear previous intel on regenerate so stale data doesn't persist on error
+    setIntel(null);
     try {
-      // Pass the same date window used by the KPI report
-      const to = new Date();
-      const from = new Date();
-      from.setUTCDate(from.getUTCDate() - weeks * 7);
+      // C2 fix: use UTC dates so window aligns with the backend's UTC-midnight bucketing
+      const toDate   = new Date();
+      const fromDate = new Date();
+      fromDate.setUTCDate(fromDate.getUTCDate() - weeks * 7);
       const fmt = (d: Date) => d.toISOString().slice(0, 10);
-      const result = await generateIntelligenceReport(id, { from: fmt(from), to: fmt(to) });
+      const result = await generateIntelligenceReport(id, { from: fmt(fromDate), to: fmt(toDate) });
+      if (!mountedRef.current) return; // H2 fix: ignore if unmounted
       setIntel(result);
     } catch (err) {
-      setIntelError((err as Error).message);
+      if (!mountedRef.current) return;
+      // M3 fix: friendlier error message for the "not enough runs" case
+      const raw = (err as Error).message;
+      const msg = raw.includes("At least 3 evaluated runs")
+        ? "Not enough evaluated calls in this window. Try a wider date range."
+        : raw.replace(/^API error \d+: /, "");
+      setIntelError(msg);
     } finally {
-      setIntelLoading(false);
+      if (mountedRef.current) setIntelLoading(false);
     }
   };
 
-  const handlePrint = () => window.print();
+  // M4 fix: only print when report is loaded and print section exists
+  const handlePrint = () => {
+    if (!report || !printRef.current) return;
+    window.print();
+  };
 
   // ── Render ───────────────────────────────────────────────────────
 
@@ -233,19 +259,21 @@ export default function ProjectReport() {
     );
   }
 
-  const doc = report?.doc ?? {};
-  const kpis = report?.kpis ?? {};
+  const doc          = report?.doc  ?? {};
+  const kpis         = report?.kpis ?? {};
   const weekLabels: string[] = report?.weekLabels ?? [];
   const criterionRows: any[] = report?.criterionRows ?? [];
 
-  // doc metrics helpers
-  const successRate    = kpis.successRate?.current    ?? 0;
-  const dropOffRate    = kpis.dropOffRate?.current    ?? 0;
-  const escalationRate = kpis.escalationRate?.current ?? 0;
+  const successRate    = clampPct(kpis.successRate?.current    ?? 0);
+  const dropOffRate    = clampPct(kpis.dropOffRate?.current    ?? 0);
+  const escalationRate = clampPct(kpis.escalationRate?.current ?? 0);
+  const naturalCompRate = clampPct(100 - dropOffRate - escalationRate);
 
-  // ── Exceptional & Needs Improvement buckets ──
-  const excRows = criterionRows.filter((r) => (r.passRate ?? 0) >= 85).slice(0, 5);
-  const poorRows = criterionRows.filter((r) => r.passRate != null && r.passRate < 65).slice(0, 5);
+  // Exceptional (≥85%) and needs attention (<65%)
+  const excRows  = criterionRows.filter(r => (r.passRate ?? 0) >= 85).slice(0, 5);
+  const poorRows = criterionRows.filter(r => r.passRate != null && r.passRate < 65).slice(0, 5);
+  const moreExc  = criterionRows.filter(r => (r.passRate ?? 0) >= 85).length - excRows.length;
+  const morePoor = criterionRows.filter(r => r.passRate != null && r.passRate < 65).length - poorRows.length;
 
   return (
     <>
@@ -269,10 +297,18 @@ export default function ProjectReport() {
           <span style={{ color: T.textMuted, fontSize: 13 }}>/</span>
           <span style={{ fontSize: 13, color: T.text }}>Report</span>
           <div style={{ marginLeft: "auto", display: "flex", gap: 8, alignItems: "center" }}>
+            {/* H1 fix: disable selector while loading to prevent race condition */}
             <select
               value={weeks}
+              disabled={reportLoading}
               onChange={(e) => setWeeks(Number(e.target.value))}
-              style={{ fontSize: 12, padding: "4px 8px", border: `1px solid ${T.borderDark}`, borderRadius: T.radiusSm, background: T.card, color: T.text }}
+              style={{
+                fontSize: 12, padding: "4px 8px",
+                border: `1px solid ${T.borderDark}`,
+                borderRadius: T.radiusSm,
+                background: T.card, color: T.text,
+                opacity: reportLoading ? 0.5 : 1,
+              }}
             >
               {[4, 7, 12, 26].map((w) => (
                 <option key={w} value={w}>Last {w} weeks</option>
@@ -280,7 +316,14 @@ export default function ProjectReport() {
             </select>
             <button
               onClick={handlePrint}
-              style={{ padding: "6px 14px", background: T.card, border: `1px solid ${T.border}`, borderRadius: T.radiusSm, cursor: "pointer", fontSize: 13, color: T.textSecondary }}
+              disabled={!report}
+              style={{
+                padding: "6px 14px", background: T.card,
+                border: `1px solid ${T.border}`,
+                borderRadius: T.radiusSm, cursor: report ? "pointer" : "default",
+                fontSize: 13, color: T.textSecondary,
+                opacity: report ? 1 : 0.4,
+              }}
             >
               Export / Print
             </button>
@@ -334,15 +377,21 @@ export default function ProjectReport() {
             </div>
           )}
 
-          {/* Totals bar */}
+          {/* Totals + null-date notice */}
           {report?.totalRuns > 0 && (
-            <div style={{ marginTop: 16, display: "flex", gap: 24, fontSize: 12, color: T.textMuted }}>
+            <div style={{ marginTop: 16, display: "flex", gap: 24, fontSize: 12, color: T.textMuted, flexWrap: "wrap" }}>
               <span><strong style={{ color: T.text }}>{report.totalRuns}</strong> completed calls</span>
               {doc.avgDurationSec != null && (
                 <span>avg duration <strong style={{ color: T.text }}>{fmtDuration(doc.avgDurationSec)}</strong></span>
               )}
               {doc.avgTurnsPerCall != null && (
                 <span>avg <strong style={{ color: T.text }}>{doc.avgTurnsPerCall}</strong> user turns/call</span>
+              )}
+              {/* H7 fix: surface null-callDate runs so user knows trend bars may undercount */}
+              {report.nullDateRuns > 0 && (
+                <span style={{ color: T.textMuted }}>
+                  ⚠ {report.nullDateRuns} calls have no date — included in KPI totals but not in weekly trend
+                </span>
               )}
             </div>
           )}
@@ -365,7 +414,8 @@ export default function ProjectReport() {
               {!intel && !intelLoading && (
                 <button
                   onClick={handleGenerateIntel}
-                  style={{ padding: "10px 20px", background: T.primary, color: "#fff", border: "none", borderRadius: T.radiusSm, cursor: "pointer", fontSize: 14, fontWeight: 600 }}
+                  disabled={report?.totalRuns === 0}
+                  style={{ padding: "10px 20px", background: T.primary, color: "#fff", border: "none", borderRadius: T.radiusSm, cursor: report?.totalRuns > 0 ? "pointer" : "default", fontSize: 14, fontWeight: 600, opacity: report?.totalRuns > 0 ? 1 : 0.4 }}
                 >
                   Generate Report
                 </button>
@@ -373,10 +423,9 @@ export default function ProjectReport() {
               {intelLoading && (
                 <span style={{ fontSize: 13, color: T.textMuted }}>Analyzing calls…</span>
               )}
-              {intel && (
+              {intel && !intelLoading && (
                 <button
                   onClick={handleGenerateIntel}
-                  disabled={intelLoading}
                   style={{ padding: "6px 14px", background: T.card, border: `1px solid ${T.border}`, borderRadius: T.radiusSm, cursor: "pointer", fontSize: 12, color: T.textSecondary }}
                 >
                   Regenerate
@@ -397,29 +446,36 @@ export default function ProjectReport() {
             </div>
           )}
 
-          {intel && (
+          {intelLoading && (
+            <div style={{ padding: 40, textAlign: "center", background: T.card, border: `1px solid ${T.border}`, borderRadius: 12, color: T.textMuted, fontSize: 14 }}>
+              Analyzing calls — this may take 15–30 seconds…
+            </div>
+          )}
+
+          {intel && !intelLoading && (
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 0, borderRadius: 12, overflow: "hidden", border: `1px solid ${T.border}`, boxShadow: T.shadowMd }}>
+
               {/* Insights — dark card */}
               <div style={{ background: "#1a2332", color: "#fff", padding: "24px 20px" }}>
                 <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 16 }}>
-                  <div style={{ width: 28, height: 28, background: "rgba(255,255,255,0.1)", borderRadius: 6, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 14 }}>
-                    ◎
-                  </div>
+                  <div style={{ width: 28, height: 28, background: "rgba(255,255,255,0.1)", borderRadius: 6, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 14 }}>◎</div>
                   <span style={{ fontWeight: 700, fontSize: 15 }}>Insights</span>
                 </div>
-                <div style={{ fontSize: 12, color: "rgba(255,255,255,0.6)", fontWeight: 600, marginBottom: 4, textTransform: "uppercase", letterSpacing: 0.5 }}>
-                  Top performing intents
-                </div>
-                <div style={{ fontSize: 13, color: "rgba(255,255,255,0.9)", marginBottom: 14 }}>
-                  {(intel.insights.topIntents?.length ?? 0) > 0 ? intel.insights.topIntents.join(", ") : "—"}
-                </div>
-                <div style={{ fontSize: 12, color: "rgba(255,255,255,0.6)", fontWeight: 600, marginBottom: 4, textTransform: "uppercase", letterSpacing: 0.5 }}>
-                  Peak usage windows
-                </div>
-                <div style={{ fontSize: 13, color: "rgba(255,255,255,0.9)", marginBottom: 14 }}>
-                  {intel.insights.peakWindows || "—"}
-                </div>
-                {intel.insights.patterns?.map((p: string, i: number) => (
+                {(intel.insights.topIntents?.length ?? 0) > 0 && (
+                  <>
+                    <div style={{ fontSize: 12, color: "rgba(255,255,255,0.6)", fontWeight: 600, marginBottom: 4, textTransform: "uppercase", letterSpacing: 0.5 }}>Top performing intents</div>
+                    <div style={{ fontSize: 13, color: "rgba(255,255,255,0.9)", marginBottom: 14 }}>
+                      {intel.insights.topIntents.join(", ")}
+                    </div>
+                  </>
+                )}
+                {intel.insights.peakWindows && (
+                  <>
+                    <div style={{ fontSize: 12, color: "rgba(255,255,255,0.6)", fontWeight: 600, marginBottom: 4, textTransform: "uppercase", letterSpacing: 0.5 }}>Peak usage windows</div>
+                    <div style={{ fontSize: 13, color: "rgba(255,255,255,0.9)", marginBottom: 14 }}>{intel.insights.peakWindows}</div>
+                  </>
+                )}
+                {(intel.insights.patterns?.length ?? 0) > 0 && intel.insights.patterns.map((p: string, i: number) => (
                   <div key={i} style={{ fontSize: 12, color: "rgba(255,255,255,0.75)", marginBottom: 6, display: "flex", gap: 6 }}>
                     <span style={{ color: T.primary, flexShrink: 0 }}>→</span>
                     <span>{p}</span>
@@ -435,9 +491,7 @@ export default function ProjectReport() {
               {/* Failures — white card */}
               <div style={{ background: T.card, padding: "24px 20px", borderLeft: `1px solid ${T.border}`, borderRight: `1px solid ${T.border}` }}>
                 <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 16 }}>
-                  <div style={{ width: 28, height: 28, background: T.cardAlt, borderRadius: 6, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 14 }}>
-                    ✕
-                  </div>
+                  <div style={{ width: 28, height: 28, background: T.cardAlt, borderRadius: 6, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 14 }}>✕</div>
                   <span style={{ fontWeight: 700, fontSize: 15, color: T.text }}>Failures</span>
                 </div>
                 {intel.failures.length === 0 ? (
@@ -445,7 +499,7 @@ export default function ProjectReport() {
                 ) : intel.failures.map((f: any, i: number) => (
                   <div key={i} style={{ marginBottom: 14 }}>
                     <div style={{ fontSize: 13, fontWeight: 600, color: T.text, display: "flex", alignItems: "center", gap: 8 }}>
-                      {f.pct != null && (
+                      {typeof f.pct === "number" && (
                         <span style={{ fontSize: 11, background: "#fef2f2", color: "#dc2626", border: "1px solid #fca5a5", borderRadius: 4, padding: "1px 6px", fontWeight: 700 }}>
                           {f.pct}%
                         </span>
@@ -460,9 +514,7 @@ export default function ProjectReport() {
               {/* Recommendations — green card */}
               <div style={{ background: T.primaryLight, padding: "24px 20px", border: `1px solid ${T.primary}20` }}>
                 <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 16 }}>
-                  <div style={{ width: 28, height: 28, background: T.primary, borderRadius: 6, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 14, color: "#fff" }}>
-                    ☑
-                  </div>
+                  <div style={{ width: 28, height: 28, background: T.primary, borderRadius: 6, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 14, color: "#fff" }}>☑</div>
                   <span style={{ fontWeight: 700, fontSize: 15, color: T.text }}>Recommendations</span>
                 </div>
                 {intel.recommendations.length === 0 ? (
@@ -511,9 +563,9 @@ export default function ProjectReport() {
             rows={[
               { label: "Total Calls Analyzed", value: `${report?.totalRuns ?? 0} calls`, highlight: "normal" },
               { label: "Average Call Duration", value: fmtDuration(doc.avgDurationSec), highlight: "normal" },
-              { label: "Call Success Rate", value: pct(successRate), highlight: scoreHighlight(successRate) },
-              { label: "Escalation Rate", value: pct(escalationRate), highlight: escalationRate <= 5 ? "green" : "amber" },
-              { label: "Drop-Off Rate", value: pct(dropOffRate), highlight: dropOffRate <= 5 ? "green" : "amber" },
+              { label: "Call Success Rate",    value: pct(successRate),    highlight: scoreHighlight(successRate)    },
+              { label: "Escalation Rate",      value: pct(escalationRate), highlight: escalationRate <= 5 ? "green" : "amber" },
+              { label: "Drop-Off Rate",        value: pct(dropOffRate),    highlight: dropOffRate    <= 5 ? "green" : "amber" },
             ]}
           />
 
@@ -525,10 +577,11 @@ export default function ProjectReport() {
             title=""
             headerColor="#2980b9"
             rows={[
-              { label: "Average User Turns per Call", value: doc.avgTurnsPerCall != null ? `${doc.avgTurnsPerCall}` : "—", highlight: "normal" },
-              { label: "Total Conversation Turns", value: doc.totalTurns > 0 ? doc.totalTurns.toLocaleString() : "—", highlight: "normal" },
-              { label: "Call Objective Success Rate", value: pct(successRate), highlight: scoreHighlight(successRate) },
-              { label: "Natural Completion Rate", value: pct(Math.max(0, 100 - dropOffRate - escalationRate)), highlight: scoreHighlight(Math.max(0, 100 - dropOffRate - escalationRate)) },
+              { label: "Average User Turns per Call",   value: doc.avgTurnsPerCall != null ? `${doc.avgTurnsPerCall}` : "—", highlight: "normal" },
+              { label: "Total Conversation Turns",      value: doc.totalTurns > 0 ? doc.totalTurns.toLocaleString() : "—", highlight: "normal" },
+              { label: "Call Objective Success Rate",   value: pct(successRate),     highlight: scoreHighlight(successRate)     },
+              // Natural Completion = not dropped off AND not escalated (resolved by the bot)
+              { label: "Natural Completion Rate",       value: pct(naturalCompRate), highlight: scoreHighlight(naturalCompRate) },
             ]}
           />
 
@@ -542,10 +595,10 @@ export default function ProjectReport() {
               title="Language Model Performance"
               headerColor="#5dade2"
               rows={([
-                doc.llmPassRate    != null ? { label: "LLM Pass Rate",                              value: pct(doc.llmPassRate),    highlight: scoreHighlight(doc.llmPassRate)    } : null,
-                doc.latencyPassRate != null ? { label: "Latency (Response Time)",                   value: pct(doc.latencyPassRate), highlight: scoreHighlight(doc.latencyPassRate) } : null,
-                doc.genderAccuracy  != null ? { label: "Gender Recognition Accuracy",               value: pct(doc.genderAccuracy),  highlight: scoreHighlight(doc.genderAccuracy) } : null,
-                doc.genderErrorRate != null ? { label: "Gender Error Rate (mistakes per turn)",     value: pct(doc.genderErrorRate), highlight: "muted" as const, italic: true } : null,
+                doc.llmPassRate     != null ? { label: "LLM Pass Rate",                          value: pct(doc.llmPassRate),    highlight: scoreHighlight(doc.llmPassRate)    } : null,
+                doc.latencyPassRate != null ? { label: "Latency (Response Time)",                value: pct(doc.latencyPassRate), highlight: scoreHighlight(doc.latencyPassRate) } : null,
+                doc.genderAccuracy  != null ? { label: "Gender Recognition Accuracy",            value: pct(doc.genderAccuracy),  highlight: scoreHighlight(doc.genderAccuracy)  } : null,
+                doc.genderErrorRate != null ? { label: "Gender Error Rate (per total calls)",    value: pct(doc.genderErrorRate), highlight: "muted" as const, italic: true      } : null,
               ] as const).filter(Boolean) as any}
             />
           )}
@@ -555,8 +608,8 @@ export default function ProjectReport() {
               title="Speech Recognition & Synthesis"
               headerColor="#5dade2"
               rows={([
-                doc.asrAccuracy != null ? { label: "ASR Accuracy",              value: pct(doc.asrAccuracy),  highlight: scoreHighlight(doc.asrAccuracy)  } : null,
-                doc.ttsAccuracy != null ? { label: "TTS Pronunciation Accuracy", value: pct(doc.ttsAccuracy), highlight: scoreHighlight(doc.ttsAccuracy) } : null,
+                doc.asrAccuracy != null ? { label: "ASR Accuracy",               value: pct(doc.asrAccuracy),  highlight: scoreHighlight(doc.asrAccuracy)  } : null,
+                doc.ttsAccuracy != null ? { label: "TTS Pronunciation Accuracy",  value: pct(doc.ttsAccuracy),  highlight: scoreHighlight(doc.ttsAccuracy)  } : null,
               ] as const).filter(Boolean) as any}
             />
           )}
@@ -564,25 +617,25 @@ export default function ProjectReport() {
           {/* Low word-label coverage note */}
           {doc.wordLabelCoverage != null && doc.wordLabelCoverage < 20 && (
             <div style={{ fontSize: 11, color: "#888", fontStyle: "italic", marginBottom: 12 }}>
-              Note: Word-level labels (gender, ASR, TTS) are available for only {doc.wordLabelCoverage.toFixed(1)}% of calls — accuracy metrics may not be representative.
+              Note: Word-level labels (gender, ASR, TTS) are available for only {doc.wordLabelCoverage.toFixed(1)}% of calls — accuracy metrics above may not be representative.
             </div>
           )}
 
-          {/* Criterion breakdown (always shown) */}
+          {/* Criterion breakdown */}
           {criterionRows.length > 0 && (
             <MetricTable
               title="Evaluation Criteria Performance"
               headerColor="#5dade2"
               rows={criterionRows.map((r) => ({
-                label: r.label,
-                value: r.passRate != null ? pct(r.passRate) : (r.avgScore != null ? `${r.avgScore}% avg score` : "—"),
+                label:     r.label,
+                value:     r.passRate != null ? pct(r.passRate) : (r.avgScore != null ? `${r.avgScore.toFixed(1)}% avg score` : "—"),
                 highlight: scoreHighlight(r.passRate ?? r.avgScore),
               }))}
             />
           )}
 
           {/* Performance Summary */}
-          {(excRows.length > 0 || poorRows.length > 0 || intel?.failures?.length > 0) && (
+          {(excRows.length > 0 || poorRows.length > 0 || (intel?.failures?.length ?? 0) > 0) && (
             <>
               <h2 style={{ fontSize: 22, fontWeight: 800, color: "#1a5276", margin: "32px 0 12px" }}>
                 Performance Summary &amp; Insights
@@ -599,10 +652,11 @@ export default function ProjectReport() {
                       <span style={{ color: "#333" }}>Pass rate above 85% across evaluated calls.</span>
                     </div>
                   ))}
+                  {moreExc > 0 && <div style={{ fontSize: 12, color: "#888", fontStyle: "italic", marginBottom: 8 }}>…and {moreExc} more criteria above threshold.</div>}
                 </>
               )}
 
-              {(poorRows.length > 0 || intel?.failures?.length > 0) && (
+              {(poorRows.length > 0 || (intel?.failures?.length ?? 0) > 0) && (
                 <>
                   <h3 style={{ fontSize: 15, fontWeight: 700, color: "#1a5276", margin: "20px 0 8px" }}>
                     Areas Requiring Attention
@@ -613,16 +667,17 @@ export default function ProjectReport() {
                       <span style={{ color: "#333" }}>Below 65% — review and address.</span>
                     </div>
                   ))}
+                  {morePoor > 0 && <div style={{ fontSize: 12, color: "#888", fontStyle: "italic", marginBottom: 8 }}>…and {morePoor} more criteria below threshold.</div>}
                   {intel?.failures?.map((f: any, i: number) => (
                     <div key={`f${i}`} style={{ marginBottom: 8, fontSize: 13, lineHeight: 1.6 }}>
-                      <span style={{ color: "#c0392b", fontWeight: 700 }}>✗ {f.title}{f.pct != null ? ` (${f.pct}%)` : ""}: </span>
+                      <span style={{ color: "#c0392b", fontWeight: 700 }}>✗ {f.title}{typeof f.pct === "number" ? ` (${f.pct}%)` : ""}: </span>
                       <span style={{ color: "#333" }}>{f.detail}</span>
                     </div>
                   ))}
                 </>
               )}
 
-              {intel?.recommendations?.length > 0 && (
+              {(intel?.recommendations?.length ?? 0) > 0 && (
                 <>
                   <h3 style={{ fontSize: 15, fontWeight: 700, color: "#1a5276", margin: "20px 0 8px" }}>
                     Recommendations
@@ -638,10 +693,10 @@ export default function ProjectReport() {
             </>
           )}
 
-          {/* Footer */}
+          {/* Footer — M2 fix: use ISO date (UTC) so it matches server-side generation date */}
           <div style={{ borderTop: `1px solid ${T.border}`, marginTop: 40, paddingTop: 14, display: "flex", justifyContent: "space-between", fontSize: 11, color: "#aaa" }}>
             <span>Hamsa Eval — {project?.name}</span>
-            <span>Generated {new Date().toLocaleDateString()}</span>
+            <span>Generated {new Date().toISOString().slice(0, 10)}</span>
           </div>
         </div>
       </div>
