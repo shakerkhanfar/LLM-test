@@ -8,6 +8,9 @@ import T from "../theme";
 
 interface DashData {
   totalRuns: number;
+  avgScore: number | null;
+  passRate: number | null;
+  avgDuration: number | null;
   sentiment: Record<string, number>;
   objectiveRate: number | null;
   nodePerformance: Array<{ label: string; avg: number; count: number; runIds: string[] }>;
@@ -289,19 +292,14 @@ export default function ProjectDashboard({ project }: Props) {
     [project.runs]
   );
 
-  // KPI computations
-  const totalRuns = completeRuns.length;
-  const avgScore = totalRuns === 0
-    ? null
-    : Math.round((completeRuns.reduce((s: number, r: any) => s + (r.overallScore ?? 0), 0) / totalRuns) * 100 * 10) / 10;
-  const passRate = totalRuns === 0
-    ? null
-    : Math.round((completeRuns.filter((r: any) => (r.overallScore ?? 0) >= 0.7).length / totalRuns) * 100);
-  const avgDuration = (() => {
+  // KPIs come from server-side aggregates (covers ALL runs, not just the 200 loaded)
+  const totalRuns     = dashData?.totalRuns ?? completeRuns.length;
+  const avgScore      = dashData?.avgScore  ?? null;
+  const passRate      = dashData?.passRate  ?? null;
+  const avgDuration   = dashData?.avgDuration != null ? fmtDuration(dashData.avgDuration) : (() => {
     const withDur = completeRuns.filter((r: any) => r.callDuration != null);
     if (!withDur.length) return null;
-    const avg = withDur.reduce((s: number, r: any) => s + r.callDuration, 0) / withDur.length;
-    return fmtDuration(avg);
+    return fmtDuration(withDur.reduce((s: number, r: any) => s + r.callDuration, 0) / withDur.length);
   })();
 
   // Score trend data

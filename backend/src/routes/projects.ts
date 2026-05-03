@@ -200,6 +200,7 @@ router.get("/:id", async (req: AuthRequest, res) => {
       where: { id: req.params.id },
       include: {
         criteria: true,
+        _count: { select: { runs: true } },
         runs: {
           orderBy: { createdAt: "desc" },
           take: 200,
@@ -259,10 +260,26 @@ router.get("/:id/dashboard", async (req: AuthRequest, res) => {
       return res.status(403).json({ error: "Access denied" });
     }
 
+    // Accurate KPI aggregates over ALL complete runs — no row limit
+    const [kpiAgg] = await prisma.$queryRaw<Array<{
+      total: bigint;
+      avg_score: number | null;
+      passed: bigint;
+      avg_duration: number | null;
+    }>>`
+      SELECT
+        COUNT(*)                                                  AS total,
+        AVG("overallScore")::double precision                     AS avg_score,
+        COUNT(*) FILTER (WHERE "overallScore" >= 0.7)             AS passed,
+        AVG("callDuration")::double precision                     AS avg_duration
+      FROM "Run"
+      WHERE "projectId" = ${req.params.id} AND status = 'COMPLETE'
+    `;
+
     const runs = await prisma.run.findMany({
       where: { projectId: req.params.id, status: "COMPLETE" },
       orderBy: { callDate: "asc" },
-      take: 1000,   // cap at 1000 complete runs to avoid memory/timeout on large projects
+      take: 1000,   // cap at 1000 for detailed in-memory analysis (sentiment, nodes, issues)
       select: {
         id: true,
         overallScore: true,
@@ -406,8 +423,22 @@ router.get("/:id/dashboard", async (req: AuthRequest, res) => {
       })
       .filter(b => b.issues.length > 0);
 
+    const totalComplete = Number(kpiAgg?.total ?? 0);
+    const avgScore = kpiAgg?.avg_score != null
+      ? Math.round(Number(kpiAgg.avg_score) * 100 * 10) / 10
+      : null;
+    const passRate = totalComplete > 0
+      ? Math.round((Number(kpiAgg?.passed ?? 0) / totalComplete) * 100)
+      : null;
+    const avgDuration = kpiAgg?.avg_duration != null
+      ? Math.round(Number(kpiAgg.avg_duration))
+      : null;
+
     res.json({
-      totalRuns: runs.length,
+      totalRuns: totalComplete,
+      avgScore,
+      passRate,
+      avgDuration,
       sentiment: sentimentCounts,
       objectiveRate: objectiveTotal > 0 ? Math.round((objectiveCount / objectiveTotal) * 100) / 100 : null,
       achievedRunIds,

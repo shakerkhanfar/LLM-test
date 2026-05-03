@@ -366,7 +366,7 @@ export default function ProjectDetail() {
 
       {/* Summary cards */}
       <div style={{ display: "flex", gap: 16, marginBottom: 24, flexWrap: "wrap" }}>
-        <Card label={isWebhook ? "Total Calls" : "Total Runs"} value={project.runs?.length ?? 0} />
+        <Card label={isWebhook ? "Total Calls" : "Total Runs"} value={project._count?.runs ?? project.runs?.length ?? 0} />
         <Card label="Criteria" value={project.criteria?.length ?? 0} />
         {bestRun && <Card label={(isHistory || isWebhook) ? "Best Call" : "Best Model"} value={`${(isHistory || isWebhook) ? formatDate(bestRun.callDate) : bestRun.modelUsed} (${(bestRun.overallScore * 100).toFixed(0)}%)`} href={`/projects/${id}/runs/${bestRun.id}`} />}
         {worstRun && worstRun.id !== bestRun?.id && (
@@ -980,11 +980,19 @@ export default function ProjectDetail() {
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8, flexWrap: "wrap", gap: 8 }}>
         <h2 style={{ fontSize: 16, margin: 0 }}>
           {isWebhook ? "Incoming Calls" : isHistory ? "Imported Calls" : "Runs"}
-          {project.runs?.length > 0 && (
-            <span style={{ fontSize: 12, color: T.textMuted, fontWeight: 400, marginLeft: 8 }}>
-              ({project.runs.length} total{(isHistory || isWebhook) ? ", latest first" : ""})
-            </span>
-          )}
+          {project.runs?.length > 0 && (() => {
+            const trueTotal = project._count?.runs ?? project.runs.length;
+            const loaded    = project.runs.length;
+            const truncated = loaded < trueTotal;
+            return (
+              <span style={{ fontSize: 12, color: T.textMuted, fontWeight: 400, marginLeft: 8 }}>
+                ({truncated
+                  ? `showing ${loaded} of ${trueTotal}`
+                  : `${trueTotal} total`}
+                {(isHistory || isWebhook) ? ", latest first" : ""})
+              </span>
+            );
+          })()}
         </h2>
         <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
           <input
