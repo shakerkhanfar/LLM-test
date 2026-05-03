@@ -208,8 +208,7 @@ export default function ProjectReport() {
     if (!id) return;
     setIntelLoading(true);
     setIntelError(null);
-    // M5 fix: clear previous intel on regenerate so stale data doesn't persist on error
-    setIntel(null);
+    // Preserve previous intel while loading — only replace on success, keep on error
     try {
       // C2 fix: use UTC dates so window aligns with the backend's UTC-midnight bucketing
       const toDate   = new Date();
@@ -234,6 +233,7 @@ export default function ProjectReport() {
         msg = "Not enough evaluated calls in this window. Try a wider date range.";
       }
       setIntelError(msg);
+      // Intel is preserved (not cleared) — user still sees previous report with error overlay
     } finally {
       if (mountedRef.current) setIntelLoading(false);
     }
@@ -348,43 +348,63 @@ export default function ProjectReport() {
             Performance Overview
           </h2>
 
-          {report?.totalRuns === 0 ? (
-            <div style={{ padding: 40, textAlign: "center", color: T.textMuted, background: T.card, borderRadius: 12, border: `1px solid ${T.border}` }}>
-              No completed calls found in this window. Try extending the date range.
-            </div>
-          ) : (
-            <div style={{ display: "flex", gap: 20, flexWrap: "wrap" }}>
-              <KpiCard
-                title="Success Rate"
-                value={successRate.toFixed(1)}
-                subtitle="Calls resolved without escalation or drop-off"
-                trend={kpis.successRate?.trend ?? []}
-                weekLabels={weekLabels}
-                barColor={T.primary}
-                valueColor={T.text}
-              />
-              <KpiCard
-                title="Drop-Off Rate"
-                value={dropOffRate.toFixed(1)}
-                subtitle="Sessions abandoned before completion"
-                trend={kpis.dropOffRate?.trend ?? []}
-                weekLabels={weekLabels}
-                barColor="#1e2d3a"
-                valueColor={T.text}
-              />
-              <KpiCard
-                title="Escalation Rate"
-                value={escalationRate.toFixed(1)}
-                subtitle="Transferred to human agents"
-                trend={kpis.escalationRate?.trend ?? []}
-                weekLabels={weekLabels}
-                barColor="#b8d4b0"
-                valueColor={T.text}
-              />
+          {/* H7 fix: null-date warning above charts so user understands the data before reading bars */}
+          {report?.nullDateRuns > 0 && (
+            <div style={{ marginBottom: 12, padding: "8px 14px", background: "#fffbeb", border: "1px solid #fbbf24", borderRadius: 8, fontSize: 12, color: "#92400e" }}>
+              ⚠ {report.nullDateRuns} of {report.totalRuns} calls have no date — included in KPI totals above but excluded from weekly trend bars.
             </div>
           )}
 
-          {/* Totals + null-date notice */}
+          {report?.totalRuns === 0 ? (
+            <div style={{ padding: 40, textAlign: "center", color: T.textMuted, background: T.card, borderRadius: 12, border: `1px solid ${T.border}` }}>
+              No completed calls found. Import or run calls to see data here.
+            </div>
+          ) : (
+            <>
+              <div style={{ display: "flex", gap: 20, flexWrap: "wrap" }}>
+                <KpiCard
+                  title="Success Rate"
+                  value={successRate.toFixed(1)}
+                  subtitle="Calls resolved without escalation or drop-off"
+                  trend={kpis.successRate?.trend ?? []}
+                  weekLabels={weekLabels}
+                  barColor={T.primary}
+                  valueColor={T.text}
+                />
+                <KpiCard
+                  title="Drop-Off Rate"
+                  value={dropOffRate.toFixed(1)}
+                  subtitle="Sessions abandoned before completion"
+                  trend={kpis.dropOffRate?.trend ?? []}
+                  weekLabels={weekLabels}
+                  barColor="#1e2d3a"
+                  valueColor={T.text}
+                />
+                <KpiCard
+                  title="Escalation Rate"
+                  value={escalationRate.toFixed(1)}
+                  subtitle="Transferred to human agents"
+                  trend={kpis.escalationRate?.trend ?? []}
+                  weekLabels={weekLabels}
+                  barColor="#b8d4b0"
+                  valueColor={T.text}
+                />
+              </div>
+              {/* Window empty note: runs exist but none fall in the selected time window */}
+              {(() => {
+                const hasWindowData = (kpis.successRate?.trend ?? []).some((v: number) => v > 0) ||
+                                      (kpis.dropOffRate?.trend ?? []).some((v: number) => v > 0) ||
+                                      (kpis.escalationRate?.trend ?? []).some((v: number) => v > 0);
+                return !hasWindowData ? (
+                  <div style={{ marginTop: 12, fontSize: 12, color: T.textMuted, fontStyle: "italic" }}>
+                    No calls with dates fall within the last {weeks} weeks — trend bars show no data. KPI totals above include all-time calls.
+                  </div>
+                ) : null;
+              })()}
+            </>
+          )}
+
+          {/* Totals row */}
           {report?.totalRuns > 0 && (
             <div style={{ marginTop: 16, display: "flex", gap: 24, fontSize: 12, color: T.textMuted, flexWrap: "wrap" }}>
               <span><strong style={{ color: T.text }}>{report.totalRuns}</strong> completed calls</span>
@@ -393,12 +413,6 @@ export default function ProjectReport() {
               )}
               {doc.avgTurnsPerCall != null && (
                 <span>avg <strong style={{ color: T.text }}>{doc.avgTurnsPerCall}</strong> user turns/call</span>
-              )}
-              {/* H7 fix: surface null-callDate runs so user knows trend bars may undercount */}
-              {report.nullDateRuns > 0 && (
-                <span style={{ color: T.textMuted }}>
-                  ⚠ {report.nullDateRuns} calls have no date — included in KPI totals but not in weekly trend
-                </span>
               )}
             </div>
           )}
@@ -441,9 +455,11 @@ export default function ProjectReport() {
             </div>
           </div>
 
+          {/* Error shown as overlay banner — existing intel preserved below if present */}
           {intelError && (
-            <div style={{ padding: 16, background: T.errorBg, border: `1px solid #fca5a5`, borderRadius: T.radius, color: T.error, fontSize: 13, marginBottom: 16 }}>
-              {intelError}
+            <div style={{ padding: 12, background: T.errorBg, border: `1px solid #fca5a5`, borderRadius: T.radius, color: T.error, fontSize: 13, marginBottom: 16, display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12 }}>
+              <span>{intelError}</span>
+              <button onClick={() => setIntelError(null)} style={{ background: "none", border: "none", color: T.error, cursor: "pointer", fontSize: 18, lineHeight: 1, padding: 0, flexShrink: 0 }}>×</button>
             </div>
           )}
 
@@ -453,9 +469,15 @@ export default function ProjectReport() {
             </div>
           )}
 
-          {intelLoading && (
+          {/* Loading state: show spinner card when no previous intel, or overlay indicator when refreshing */}
+          {intelLoading && !intel && (
             <div style={{ padding: 40, textAlign: "center", background: T.card, border: `1px solid ${T.border}`, borderRadius: 12, color: T.textMuted, fontSize: 14 }}>
               Analyzing calls — this may take 15–30 seconds…
+            </div>
+          )}
+          {intelLoading && intel && (
+            <div style={{ padding: "8px 14px", background: T.cardAlt, border: `1px solid ${T.border}`, borderRadius: 8, color: T.textMuted, fontSize: 12, marginBottom: 12 }}>
+              Regenerating intelligence report — this may take 15–30 seconds…
             </div>
           )}
 

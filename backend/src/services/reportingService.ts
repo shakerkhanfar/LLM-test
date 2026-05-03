@@ -239,10 +239,7 @@ export async function getProjectReport(projectId: string, weeksBack = 7): Promis
         ) AS obj_total,
         COUNT(*) FILTER (
           WHERE er.detail IS NOT NULL
-            AND (
-              er.detail::jsonb->>'objectiveAchieved' = 'true'
-              OR er.detail::jsonb->>'objectiveAchieved' = '1'
-            )
+            AND lower(er.detail::jsonb->>'objectiveAchieved') IN ('true', '1', 'yes')
         ) AS obj_achieved
       FROM "EvalResult" er
       JOIN "Criterion" c ON er."criterionId" = c.id
@@ -250,7 +247,10 @@ export async function getProjectReport(projectId: string, weeksBack = 7): Promis
       WHERE r."projectId" = ${projectId}
         AND r.status = 'COMPLETE'
         AND c.type = 'LAYERED_EVALUATION'
-    `.catch(() => [{ obj_total: 0n, obj_achieved: 0n }]),
+    `.catch((err: unknown) => {
+      console.warn("[reportingService] objectiveAchieved query failed:", err instanceof Error ? err.message : err);
+      return [{ obj_total: 0n, obj_achieved: 0n }];
+    }),
 
   ]);
 
@@ -522,6 +522,20 @@ export async function generateIntelligenceReport(
     },
   });
 
+  // ── 2b. Compute per-bucket counts for imbalance note in prompt ───────────
+  const bucketCounts: Record<string, number> = { dropoff: 0, escalation: 0, success: 0, other: 0 };
+  for (const run of sampleRuns) {
+    const cls = classifyRun(run);
+    if (cls.dropOff)       bucketCounts.dropoff++;
+    else if (cls.escalation) bucketCounts.escalation++;
+    else if (cls.success)  bucketCounts.success++;
+    else                   bucketCounts.other++;
+  }
+  const emptyBuckets = Object.entries(bucketCounts).filter(([, c]) => c === 0).map(([k]) => k);
+  const imbalanceNote = emptyBuckets.length > 0
+    ? `\nNote: The sample has NO examples for these outcome types: ${emptyBuckets.join(", ")}. Do not draw conclusions about those categories.`
+    : "";
+
   // ── 3. Extract issues from sampled eval details ───────────────────────────
   const issueMap: Map<string, number> = new Map();
   const nodeMap:  Map<string, { scores: number[]; count: number }> = new Map();
@@ -596,7 +610,7 @@ ${scoreSection}
 Outcome distribution (top 10):
 ${outcomeRows.map(r => `  ${r.outcome ?? "(none)"}: ${n(r.cnt)}`).join("\n")}
 
-── SAMPLED DETAIL (${sampledN} representative calls, ≤50 per outcome bucket) ─
+── SAMPLED DETAIL (${sampledN} representative calls, ≤50 per outcome bucket)${imbalanceNote} ─
 Top recurring issues (by frequency in sample):
 ${topIssues.length > 0 ? topIssues.join("\n") : "  None identified"}
 
@@ -644,7 +658,10 @@ Rules:
 
   let result: any;
   try { result = JSON.parse(raw); }
-  catch { throw new Error("Failed to parse LLM intelligence response"); }
+  catch {
+    console.error("[reportingService] LLM returned unparseable JSON. Raw response:", raw?.slice(0, 500));
+    throw new Error("Failed to parse LLM intelligence response");
+  }
 
   const usage = response.usage;
   const cost  = usage ? calcCost(usage.prompt_tokens, usage.completion_tokens) : 0;
