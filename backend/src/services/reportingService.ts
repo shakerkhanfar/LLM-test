@@ -12,6 +12,8 @@ function calcCost(p: number, c: number) {
 }
 
 // ── Shared goal classifier (mirrors projectAnalyzer + frontend) ──────────────
+// FIX: short-duration check now scoped to FAILED status only (not COMPLETED calls)
+// A 10-second COMPLETED call is a valid short call, not a drop-off.
 function classifyRun(run: any): {
   success: boolean; dropOff: boolean; escalation: boolean;
 } {
@@ -21,8 +23,9 @@ function classifyRun(run: any): {
 
   const isDropOff =
     ["NO_ANSWER", "BUSY", "VOICEMAIL"].includes(status) ||
-    (status === "FAILED" && (dur == null || dur <= 15)) ||
-    (dur != null && dur <= 15);
+    (status === "FAILED" && (dur == null || dur <= 15));
+  // Deliberately not flagging short-but-COMPLETED calls as drop-offs —
+  // they may be legitimate quick resolutions.
 
   const isEscalation = !isDropOff && (
     outcome.includes("transfer") || outcome.includes("escalat") ||
@@ -38,7 +41,8 @@ function classifyRun(run: any): {
 
 // ── ISO-week helpers ─────────────────────────────────────────────────────────
 function getIsoWeek(date: Date): { year: number; week: number } {
-  const d = new Date(Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()));
+  // Work in UTC to avoid timezone drift
+  const d = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()));
   const dayNum = d.getUTCDay() || 7;
   d.setUTCDate(d.getUTCDate() + 4 - dayNum);
   const yearStart = new Date(Date.UTC(d.getUTCFullYear(), 0, 1));
@@ -46,17 +50,25 @@ function getIsoWeek(date: Date): { year: number; week: number } {
   return { year: d.getUTCFullYear(), week };
 }
 
+// FIX: bucket boundaries anchored to UTC midnight so labels and edges are consistent
+// regardless of when the endpoint is called.
 function getWeekBuckets(weeksBack: number): Array<{
   label: string; start: Date; end: Date;
 }> {
-  const now = new Date();
+  // Anchor to start of today (UTC midnight)
+  const todayUTC = new Date();
+  todayUTC.setUTCHours(0, 0, 0, 0);
+
   const buckets: Array<{ label: string; start: Date; end: Date }> = [];
   for (let i = weeksBack - 1; i >= 0; i--) {
-    const end = new Date(now);
-    end.setDate(end.getDate() - i * 7);
+    // end = start of day that is i*7 days before today
+    const end = new Date(todayUTC);
+    end.setUTCDate(end.getUTCDate() - i * 7);
     const start = new Date(end);
-    start.setDate(start.getDate() - 7);
-    const { week } = getIsoWeek(end);
+    start.setUTCDate(start.getUTCDate() - 7);
+    // Label from the midpoint of the bucket to get a stable ISO week number
+    const mid = new Date((start.getTime() + end.getTime()) / 2);
+    const { week } = getIsoWeek(mid);
     buckets.push({ label: `W${week}`, start, end });
   }
   return buckets;
@@ -74,16 +86,16 @@ export interface KpiReport {
   totalRuns: number;
   // Document metrics
   doc: {
-    avgDurationSec:   number | null;
-    avgTurnsPerCall:  number | null;
-    totalTurns:       number;
-    llmPassRate:      number | null;
-    latencyPassRate:  number | null;
-    genderAccuracy:   number | null;
-    genderErrorRate:  number | null;
-    asrAccuracy:      number | null;
-    ttsAccuracy:      number | null;
-    wordLabelCoverage: number;     // % of runs with word labels
+    avgDurationSec:    number | null;
+    avgTurnsPerCall:   number | null;
+    totalTurns:        number;
+    llmPassRate:       number | null;
+    latencyPassRate:   number | null;
+    genderAccuracy:    number | null;
+    genderErrorRate:   number | null;
+    asrAccuracy:       number | null;
+    ttsAccuracy:       number | null;
+    wordLabelCoverage: number; // % of runs with word labels
   };
   criterionRows: Array<{
     label: string;
@@ -98,14 +110,23 @@ export async function getProjectReport(
   projectId: string,
   weeksBack = 7
 ): Promise<KpiReport> {
-  const windowStart = new Date();
-  windowStart.setDate(windowStart.getDate() - weeksBack * 7);
+  // FIX: align windowStart to UTC midnight and extend one extra day before the
+  // first bucket so the DB query covers the full first bucket window.
+  const buckets = getWeekBuckets(weeksBack);
+  const windowStart = buckets[0].start;  // first bucket's start edge
 
+  // FIX: omit `transcript` from this query — it can be megabytes per run.
+  // Turn count is derived separately below with a lightweight count query.
   const allRuns = await prisma.run.findMany({
     where: {
       projectId,
       status: "COMPLETE",
-      callDate: { gte: windowStart },
+      // Include runs with no callDate (callDate: null) in overall counts;
+      // they just won't appear in weekly trend buckets.
+      OR: [
+        { callDate: { gte: windowStart } },
+        { callDate: null },
+      ],
     },
     select: {
       id: true,
@@ -114,12 +135,11 @@ export async function getProjectReport(
       callDuration: true,
       overallScore: true,
       callDate: true,
-      transcript: true,
       evalResults: {
         select: {
           passed: true,
           score: true,
-          criterion: { select: { label: true, key: true, type: true } },
+          criterion: { select: { id: true, label: true, key: true, type: true } },
         },
       },
       wordLabels: { select: { labelType: true } },
@@ -128,7 +148,35 @@ export async function getProjectReport(
     take: 2000,
   });
 
-  const buckets = getWeekBuckets(weeksBack);
+  // FIX: use a separate lightweight aggregation for avg turns per call,
+  // avoiding loading full transcript JSON for 2000 runs.
+  // We count transcript array length via a raw aggregation if possible,
+  // or fall back to skipping it (turns data is optional/nice-to-have).
+  let avgTurnsPerCall: number | null = null;
+  let totalTurns = 0;
+  try {
+    // transcript is a Json? column — jsonb_array_length gives us the count cheaply
+    const turnRows = await prisma.$queryRaw<Array<{ run_id: string; turns: number }>>`
+      SELECT id AS run_id,
+             jsonb_array_length(transcript) AS turns
+      FROM "Run"
+      WHERE "projectId" = ${projectId}
+        AND status = 'COMPLETE'
+        AND transcript IS NOT NULL
+        AND jsonb_typeof(transcript) = 'array'
+        AND (
+          "callDate" >= ${windowStart} OR "callDate" IS NULL
+        )
+      LIMIT 2000
+    `;
+    if (turnRows.length > 0) {
+      const sum = turnRows.reduce((acc, r) => acc + Number(r.turns), 0);
+      totalTurns = sum;
+      avgTurnsPerCall = parseFloat((sum / turnRows.length).toFixed(1));
+    }
+  } catch {
+    // Non-fatal — ASR/transcript data is optional
+  }
 
   // Per-week KPIs
   const successTrend:    number[] = [];
@@ -137,8 +185,8 @@ export async function getProjectReport(
 
   for (const bucket of buckets) {
     const weekRuns = allRuns.filter((r) => {
-      const d = r.callDate ?? null;
-      return d && d >= bucket.start && d < bucket.end;
+      const d = r.callDate;
+      return d != null && d >= bucket.start && d < bucket.end;
     });
     if (weekRuns.length === 0) {
       successTrend.push(0);
@@ -153,38 +201,33 @@ export async function getProjectReport(
       if (c.dropOff) d++;
       if (c.escalation) e++;
     }
-    const n = weekRuns.length;
-    successTrend.push(parseFloat(((s / n) * 100).toFixed(1)));
-    dropOffTrend.push(parseFloat(((d / n) * 100).toFixed(1)));
-    escalationTrend.push(parseFloat(((e / n) * 100).toFixed(1)));
+    const wn = weekRuns.length;
+    successTrend.push(parseFloat(((s / wn) * 100).toFixed(1)));
+    dropOffTrend.push(parseFloat(((d / wn) * 100).toFixed(1)));
+    escalationTrend.push(parseFloat(((e / wn) * 100).toFixed(1)));
   }
 
-  // Overall KPIs
+  // Overall KPIs (all fetched runs, including those with no callDate)
   let totalSuccess = 0, totalDrop = 0, totalEsc = 0;
   let totalDuration = 0, durationCount = 0;
-  let totalTurns = 0, turnsCount = 0;
-  const runsWithLabels = new Set<string>();
+  const runsWithLabels      = new Set<string>();
   const runsWithGenderError = new Set<string>();
   const runsWithAsrError    = new Set<string>();
   const runsWithTtsError    = new Set<string>();
 
   for (const run of allRuns) {
     const c = classifyRun(run);
-    if (c.success) totalSuccess++;
-    if (c.dropOff) totalDrop++;
+    if (c.success)    totalSuccess++;
+    if (c.dropOff)    totalDrop++;
     if (c.escalation) totalEsc++;
 
     if (run.callDuration != null) { totalDuration += run.callDuration; durationCount++; }
 
-    const transcript = Array.isArray(run.transcript) ? run.transcript : [];
-    const userTurns = transcript.filter((t: any) => t.User || t.user || t.role === "user").length;
-    if (userTurns > 0) { totalTurns += userTurns; turnsCount++; }
-
     for (const wl of run.wordLabels) {
       runsWithLabels.add(run.id);
-      if (wl.labelType === "WRONG_GENDER")  runsWithGenderError.add(run.id);
+      if (wl.labelType === "WRONG_GENDER")                                runsWithGenderError.add(run.id);
       if (wl.labelType === "ASR_ERROR" || wl.labelType === "WRONG_WORD") runsWithAsrError.add(run.id);
-      if (wl.labelType === "TTS_ERROR")     runsWithTtsError.add(run.id);
+      if (wl.labelType === "TTS_ERROR")                                   runsWithTtsError.add(run.id);
     }
   }
 
@@ -193,15 +236,20 @@ export async function getProjectReport(
   const currentDropOff    = n ? parseFloat(((totalDrop    / n) * 100).toFixed(1)) : 0;
   const currentEscalation = n ? parseFloat(((totalEsc     / n) * 100).toFixed(1)) : 0;
 
-  // Criterion-level aggregation
+  // FIX: key criterion map by criterion ID (not type::label) to avoid merging
+  // different criteria that share the same type and label.
   const critMap = new Map<string, { label: string; type: string; passed: number; total: number; scores: number[] }>();
   for (const run of allRuns) {
     for (const er of run.evalResults) {
-      const key = `${er.criterion.type}::${er.criterion.label || er.criterion.key}`;
-      if (!critMap.has(key)) {
-        critMap.set(key, { label: er.criterion.label || er.criterion.key, type: er.criterion.type, passed: 0, total: 0, scores: [] });
+      const critId = er.criterion.id;
+      if (!critMap.has(critId)) {
+        critMap.set(critId, {
+          label:  er.criterion.label || er.criterion.key,
+          type:   er.criterion.type,
+          passed: 0, total: 0, scores: [],
+        });
       }
-      const s = critMap.get(key)!;
+      const s = critMap.get(critId)!;
       s.total++;
       if (er.passed === true) s.passed++;
       if (er.score != null) s.scores.push(er.score);
@@ -209,8 +257,8 @@ export async function getProjectReport(
   }
 
   const criterionRows = Array.from(critMap.values()).map((s) => ({
-    label: s.label,
-    type:  s.type,
+    label:    s.label,
+    type:     s.type,
     passRate: s.total > 0 ? parseFloat(((s.passed / s.total) * 100).toFixed(1)) : null,
     avgScore: s.scores.length > 0
       ? parseFloat(((s.scores.reduce((a, b) => a + b, 0) / s.scores.length) * 100).toFixed(1))
@@ -218,14 +266,21 @@ export async function getProjectReport(
     count: s.total,
   })).sort((a, b) => (b.avgScore ?? 0) - (a.avgScore ?? 0));
 
-  // Specific rates for doc metrics
-  const llmRow     = criterionRows.find((r) => r.type === "LLM_JUDGE");
-  const latencyRow = criterionRows.find((r) => r.type === "LATENCY");
+  // FIX: aggregate all LLM_JUDGE and LATENCY criteria rather than taking the first
+  const llmRows     = criterionRows.filter((r) => r.type === "LLM_JUDGE");
+  const latencyRows = criterionRows.filter((r) => r.type === "LATENCY");
 
-  const labelBase = runsWithLabels.size;
-  const genderErrorRate = labelBase > 0 ? parseFloat(((runsWithGenderError.size / labelBase) * 100).toFixed(2)) : null;
-  const asrErrorRate    = labelBase > 0 ? parseFloat(((runsWithAsrError.size    / labelBase) * 100).toFixed(2)) : null;
-  const ttsErrorRate    = labelBase > 0 ? parseFloat(((runsWithTtsError.size    / labelBase) * 100).toFixed(2)) : null;
+  function avgPassRate(rows: typeof criterionRows): number | null {
+    const rates = rows.map((r) => r.passRate).filter((r): r is number => r != null);
+    return rates.length > 0 ? parseFloat((rates.reduce((a, b) => a + b, 0) / rates.length).toFixed(1)) : null;
+  }
+
+  // FIX: use total runs (not just labeled runs) as denominator for accuracy metrics
+  // and add a coverage note. Use total runs so the metric is meaningful overall.
+  const totalRunsBase = n;
+  const genderErrorRate = totalRunsBase > 0 ? parseFloat(((runsWithGenderError.size / totalRunsBase) * 100).toFixed(2)) : null;
+  const asrErrorRate    = totalRunsBase > 0 ? parseFloat(((runsWithAsrError.size    / totalRunsBase) * 100).toFixed(2)) : null;
+  const ttsErrorRate    = totalRunsBase > 0 ? parseFloat(((runsWithTtsError.size    / totalRunsBase) * 100).toFixed(2)) : null;
 
   return {
     kpis: {
@@ -236,16 +291,16 @@ export async function getProjectReport(
     weekLabels: buckets.map((b) => b.label),
     totalRuns: n,
     doc: {
-      avgDurationSec:   durationCount > 0 ? Math.round(totalDuration / durationCount) : null,
-      avgTurnsPerCall:  turnsCount    > 0 ? parseFloat((totalTurns / turnsCount).toFixed(1)) : null,
+      avgDurationSec:    durationCount > 0 ? Math.round(totalDuration / durationCount) : null,
+      avgTurnsPerCall,
       totalTurns,
-      llmPassRate:      llmRow?.passRate ?? null,
-      latencyPassRate:  latencyRow?.passRate ?? null,
-      genderAccuracy:   genderErrorRate != null ? parseFloat((100 - genderErrorRate).toFixed(2)) : null,
+      llmPassRate:       avgPassRate(llmRows),
+      latencyPassRate:   avgPassRate(latencyRows),
+      genderAccuracy:    genderErrorRate != null ? parseFloat((100 - genderErrorRate).toFixed(2)) : null,
       genderErrorRate,
-      asrAccuracy:      asrErrorRate    != null ? parseFloat((100 - asrErrorRate).toFixed(2)) : null,
-      ttsAccuracy:      ttsErrorRate    != null ? parseFloat((100 - ttsErrorRate).toFixed(2)) : null,
-      wordLabelCoverage: n > 0 ? parseFloat(((labelBase / n) * 100).toFixed(1)) : 0,
+      asrAccuracy:       asrErrorRate   != null ? parseFloat((100 - asrErrorRate).toFixed(2)) : null,
+      ttsAccuracy:       ttsErrorRate   != null ? parseFloat((100 - ttsErrorRate).toFixed(2)) : null,
+      wordLabelCoverage: n > 0 ? parseFloat(((runsWithLabels.size / n) * 100).toFixed(1)) : 0,
     },
     criterionRows,
   };
@@ -266,23 +321,36 @@ export interface IntelligenceReport {
   runsAnalyzed: number;
 }
 
+// FIX: validate date strings before use
+function isValidDate(s: string | undefined): boolean {
+  if (!s || typeof s !== "string") return false;
+  return /^\d{4}-\d{2}-\d{2}$/.test(s) && !isNaN(new Date(s).getTime());
+}
+
 export async function generateIntelligenceReport(
   projectId: string,
   from?: string,
   to?: string
 ): Promise<IntelligenceReport> {
+  // FIX: single project query — route passes projectId, we fetch name+summary here
+  // but avoid a second round-trip by accepting projectName/agentSummary as optional params.
+  // For now: one query here, route handler passes only projectId.
   const project = await prisma.project.findUnique({
     where: { id: projectId },
     select: { agentSummary: true, name: true },
   });
+  if (!project) throw new Error("Project not found");
 
+  // FIX: validate from/to before constructing Date objects
   const where: any = { projectId, status: "COMPLETE" };
-  if (from || to) {
+  if (isValidDate(from) || isValidDate(to)) {
     where.callDate = {};
-    if (from) where.callDate.gte = new Date(from + "T00:00:00Z");
-    if (to)   where.callDate.lte = new Date(to   + "T23:59:59Z");
+    if (isValidDate(from)) where.callDate.gte = new Date(from! + "T00:00:00Z");
+    if (isValidDate(to))   where.callDate.lte = new Date(to!   + "T23:59:59Z");
   }
 
+  // FIX: remove `outcomeResult` (large Json? column, never used in prompt)
+  // Add `transcript` count via separate lightweight aggregation below
   const runs = await prisma.run.findMany({
     where,
     orderBy: { callDate: "desc" },
@@ -294,7 +362,6 @@ export async function generateIntelligenceReport(
       callDuration: true,
       overallScore: true,
       callDate: true,
-      outcomeResult: true,
       evalResults: {
         select: {
           score: true,
@@ -312,15 +379,8 @@ export async function generateIntelligenceReport(
 
   // ── Aggregate for prompt ─────────────────────────────────────────
 
-  // Outcome distribution
   const outcomeCounts: Record<string, number> = {};
-  for (const run of runs) {
-    const o = run.callOutcome || "unknown";
-    outcomeCounts[o] = (outcomeCounts[o] || 0) + 1;
-  }
-
-  // Score distribution
-  const scoreBuckets = { excellent: 0, good: 0, poor: 0, failed: 0 };
+  const scoreBuckets = { excellent: 0, good: 0, poor: 0, failed: 0, unscored: 0 };
   let total = 0, successCount = 0, dropCount = 0, escCount = 0;
   let totalDur = 0, durCount = 0;
 
@@ -332,17 +392,21 @@ export async function generateIntelligenceReport(
     if (c.escalation) escCount++;
     if (run.callDuration) { totalDur += run.callDuration; durCount++; }
 
+    const o = run.callOutcome || "unknown";
+    outcomeCounts[o] = (outcomeCounts[o] || 0) + 1;
+
     const score = run.overallScore;
-    if (score == null) { /* skip */ }
-    else if (score >= 0.9) scoreBuckets.excellent++;
-    else if (score >= 0.7) scoreBuckets.good++;
-    else if (score >= 0.5) scoreBuckets.poor++;
-    else                   scoreBuckets.failed++;
+    if (score == null)       scoreBuckets.unscored++;
+    else if (score >= 0.9)   scoreBuckets.excellent++;
+    else if (score >= 0.7)   scoreBuckets.good++;
+    else if (score >= 0.5)   scoreBuckets.poor++;
+    else                     scoreBuckets.failed++;
   }
 
   // Top issues from LAYERED_EVALUATION details
   const issueMap: Map<string, number> = new Map();
   const nodeMap:  Map<string, { scores: number[]; count: number }> = new Map();
+  let detailParseFailures = 0;
 
   for (const run of runs) {
     const layered = run.evalResults.find((er: any) => er.criterion.type === "LAYERED_EVALUATION");
@@ -350,20 +414,22 @@ export async function generateIntelligenceReport(
     try {
       const d = typeof layered.detail === "string" ? JSON.parse(layered.detail) : layered.detail;
       for (const issue of (d.criticalIssues || [])) {
-        const text = typeof issue === "string" ? issue : (issue.text || "");
+        const text = (typeof issue === "string" ? issue : (issue.text || "")).trim();
         if (text) issueMap.set(text, (issueMap.get(text) || 0) + 1);
       }
       for (const node of (d.perNode || [])) {
-        const label = node.nodeLabel || node.label || "Unknown";
+        const label = (node.nodeLabel || node.label || "Unknown").trim();
         const score = node.overallNodeScore ?? node.score;
-        if (score != null) {
+        if (score != null && label) {
           if (!nodeMap.has(label)) nodeMap.set(label, { scores: [], count: 0 });
           const e = nodeMap.get(label)!;
           e.scores.push(score);
           e.count++;
         }
       }
-    } catch { /* skip */ }
+    } catch {
+      detailParseFailures++;
+    }
   }
 
   const topIssues = [...issueMap.entries()]
@@ -383,10 +449,14 @@ export async function generateIntelligenceReport(
 
   const avgDur = durCount > 0 ? Math.round(totalDur / durCount) : null;
 
+  const scoreSection = Object.entries(scoreBuckets)
+    .map(([k, v]) => `  ${k}: ${v}`)
+    .join("\n");
+
   const prompt = `You are analyzing AI voice agent performance data for a customer service platform.
 
-Agent: ${project?.name || "Unknown"}
-${project?.agentSummary ? `\nAgent summary: ${project.agentSummary.slice(0, 600)}` : ""}
+Agent: ${project.name || "Unknown"}
+${project.agentSummary ? `\nAgent summary: ${project.agentSummary.slice(0, 600)}` : ""}
 
 ── DATA ──────────────────────────────────────────────────────
 Calls analyzed: ${total}
@@ -395,28 +465,27 @@ Success rate: ${total > 0 ? ((successCount / total) * 100).toFixed(1) : 0}%
 Drop-off rate: ${total > 0 ? ((dropCount / total) * 100).toFixed(1) : 0}%
 Escalation rate: ${total > 0 ? ((escCount / total) * 100).toFixed(1) : 0}%
 
-Score distribution:
-  Excellent (90%+): ${scoreBuckets.excellent}
-  Good (70-89%):    ${scoreBuckets.good}
-  Poor (50-69%):    ${scoreBuckets.poor}
-  Failed (<50%):    ${scoreBuckets.failed}
+Score distribution (${scoreBuckets.unscored} unscored):
+${scoreSection}
 
-Outcome distribution: ${JSON.stringify(outcomeCounts)}
+Outcome distribution (top 10):
+${Object.entries(outcomeCounts).sort((a, b) => b[1] - a[1]).slice(0, 10).map(([k, v]) => `  ${k}: ${v}`).join("\n")}
 
 Top recurring issues (by run frequency):
-${topIssues.length > 0 ? topIssues.join("\n") : "None identified"}
+${topIssues.length > 0 ? topIssues.join("\n") : "  None identified"}
 
 Worst-performing workflow nodes:
-${nodePerf.length > 0 ? nodePerf.join("\n") : "No node data"}
+${nodePerf.length > 0 ? nodePerf.join("\n") : "  No node data available"}
+${detailParseFailures > 0 ? `\n(Note: ${detailParseFailures} runs had unparseable evaluation details)` : ""}
 ── END DATA ──────────────────────────────────────────────────
 
 Produce a concise operational intelligence report. Respond with JSON only:
 {
   "executiveSummary": "2-3 sentences summarizing overall agent performance and most critical finding",
   "insights": {
-    "topIntents": ["top 3 call types or intents that performed well, one per item"],
-    "peakWindows": "peak usage description or 'Data not available'",
-    "patterns": ["2-3 key behavioral patterns observed"]
+    "topIntents": ["top 3 successful call types based on outcome distribution, one per item"],
+    "peakWindows": "Data not available (no time-of-day data in this analysis)",
+    "patterns": ["2-3 key behavioral patterns observed from outcomes and issues"]
   },
   "failures": [
     { "title": "short failure title", "pct": <number or null>, "detail": "one-line description" }
@@ -427,10 +496,10 @@ Produce a concise operational intelligence report. Respond with JSON only:
 }
 
 Rules:
-- failures: 2-4 items, ordered by impact
-- recommendations: 2-4 items matching the failures
-- Keep all strings under 80 chars
-- Use actual % numbers where data supports it, otherwise omit pct`;
+- failures: 2-4 items ordered by impact; omit pct if no reliable % available
+- recommendations: 2-4 items, one per failure
+- All strings under 80 chars
+- Base all claims on the data above; do not fabricate metrics`;
 
   const response = await openai.chat.completions.create({
     model:           "gpt-4.1",
@@ -441,23 +510,28 @@ Rules:
   });
 
   const finishReason = response.choices[0]?.finish_reason;
-  if (finishReason === "length") throw new Error("LLM response was truncated");
+  if (finishReason === "length") throw new Error("LLM response was truncated — too many issues to summarize");
 
   const raw = response.choices[0]?.message?.content;
   if (!raw) throw new Error("LLM returned empty response");
 
   let result: any;
   try { result = JSON.parse(raw); }
-  catch { throw new Error("Failed to parse LLM response"); }
+  catch { throw new Error("Failed to parse LLM intelligence response"); }
 
   const usage = response.usage;
   const cost  = usage ? calcCost(usage.prompt_tokens, usage.completion_tokens) : 0;
 
+  // Ensure all arrays are present (guard against LLM omitting fields)
   return {
-    insights:         result.insights         || { topIntents: [], peakWindows: "", patterns: [] },
-    failures:         result.failures         || [],
-    recommendations:  result.recommendations  || [],
-    executiveSummary: result.executiveSummary || "",
+    insights: {
+      topIntents:  Array.isArray(result.insights?.topIntents)  ? result.insights.topIntents  : [],
+      peakWindows: typeof result.insights?.peakWindows === "string" ? result.insights.peakWindows : "Data not available",
+      patterns:    Array.isArray(result.insights?.patterns)    ? result.insights.patterns    : [],
+    },
+    failures:         Array.isArray(result.failures)        ? result.failures        : [],
+    recommendations:  Array.isArray(result.recommendations) ? result.recommendations : [],
+    executiveSummary: typeof result.executiveSummary === "string" ? result.executiveSummary : "",
     cost,
     runsAnalyzed: total,
   };

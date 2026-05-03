@@ -139,7 +139,7 @@ function fmtDuration(sec: number | null): string {
   if (sec == null) return "—";
   const m = Math.floor(sec / 60);
   const s = sec % 60;
-  return `${m}:${String(s).padStart(2, "0")} minutes`;
+  return `${m}:${String(s).padStart(2, "0")} min`;
 }
 
 function pct(n: number | null, suffix = "%"): string {
@@ -167,19 +167,25 @@ export default function ProjectReport() {
 
   const [weeks, setWeeks] = useState(7);
   const printRef = useRef<HTMLDivElement>(null);
+  // Tracks the latest in-flight report request to discard stale responses
+  const reqRef = useRef(0);
 
   const loadReport = useCallback(async () => {
     if (!id) return;
+    const req = ++reqRef.current;
     setReportLoading(true);
     setReportError(null);
+    setReport(null);
     try {
       const [proj, rep] = await Promise.all([getProject(id), getProjectReport(id, weeks)]);
+      if (req !== reqRef.current) return; // stale — a newer request superseded this one
       setProject(proj);
       setReport(rep);
     } catch (err) {
+      if (req !== reqRef.current) return;
       setReportError((err as Error).message);
     } finally {
-      setReportLoading(false);
+      if (req === reqRef.current) setReportLoading(false);
     }
   }, [id, weeks]);
 
@@ -190,7 +196,12 @@ export default function ProjectReport() {
     setIntelLoading(true);
     setIntelError(null);
     try {
-      const result = await generateIntelligenceReport(id);
+      // Pass the same date window used by the KPI report
+      const to = new Date();
+      const from = new Date();
+      from.setUTCDate(from.getUTCDate() - weeks * 7);
+      const fmt = (d: Date) => d.toISOString().slice(0, 10);
+      const result = await generateIntelligenceReport(id, { from: fmt(from), to: fmt(to) });
       setIntel(result);
     } catch (err) {
       setIntelError((err as Error).message);
@@ -243,7 +254,7 @@ export default function ProjectReport() {
         @media print {
           body * { visibility: hidden !important; }
           #print-report, #print-report * { visibility: visible !important; }
-          #print-report { position: absolute; left: 0; top: 0; width: 100%; }
+          #print-report { position: fixed; left: 0; top: 0; width: 100%; padding: 24px; box-sizing: border-box; }
           .no-print { display: none !important; }
         }
       `}</style>
@@ -400,7 +411,7 @@ export default function ProjectReport() {
                   Top performing intents
                 </div>
                 <div style={{ fontSize: 13, color: "rgba(255,255,255,0.9)", marginBottom: 14 }}>
-                  {intel.insights.topIntents?.join(", ") || "—"}
+                  {(intel.insights.topIntents?.length ?? 0) > 0 ? intel.insights.topIntents.join(", ") : "—"}
                 </div>
                 <div style={{ fontSize: 12, color: "rgba(255,255,255,0.6)", fontWeight: 600, marginBottom: 4, textTransform: "uppercase", letterSpacing: 0.5 }}>
                   Peak usage windows
@@ -429,7 +440,9 @@ export default function ProjectReport() {
                   </div>
                   <span style={{ fontWeight: 700, fontSize: 15, color: T.text }}>Failures</span>
                 </div>
-                {intel.failures.map((f: any, i: number) => (
+                {intel.failures.length === 0 ? (
+                  <div style={{ fontSize: 13, color: T.textMuted, fontStyle: "italic" }}>No significant failure patterns detected.</div>
+                ) : intel.failures.map((f: any, i: number) => (
                   <div key={i} style={{ marginBottom: 14 }}>
                     <div style={{ fontSize: 13, fontWeight: 600, color: T.text, display: "flex", alignItems: "center", gap: 8 }}>
                       {f.pct != null && (
@@ -452,7 +465,9 @@ export default function ProjectReport() {
                   </div>
                   <span style={{ fontWeight: 700, fontSize: 15, color: T.text }}>Recommendations</span>
                 </div>
-                {intel.recommendations.map((r: any, i: number) => (
+                {intel.recommendations.length === 0 ? (
+                  <div style={{ fontSize: 13, color: T.textMuted, fontStyle: "italic" }}>No recommendations at this time.</div>
+                ) : intel.recommendations.map((r: any, i: number) => (
                   <div key={i} style={{ marginBottom: 14 }}>
                     <div style={{ fontSize: 13, fontWeight: 600, color: T.text }}>{r.title}</div>
                     <div style={{ fontSize: 12, color: T.textSecondary, marginTop: 2 }}>{r.description}</div>
@@ -513,7 +528,7 @@ export default function ProjectReport() {
               { label: "Average User Turns per Call", value: doc.avgTurnsPerCall != null ? `${doc.avgTurnsPerCall}` : "—", highlight: "normal" },
               { label: "Total Conversation Turns", value: doc.totalTurns > 0 ? doc.totalTurns.toLocaleString() : "—", highlight: "normal" },
               { label: "Call Objective Success Rate", value: pct(successRate), highlight: scoreHighlight(successRate) },
-              { label: "Natural Completion Rate", value: pct(100 - dropOffRate), highlight: scoreHighlight(100 - dropOffRate) },
+              { label: "Natural Completion Rate", value: pct(Math.max(0, 100 - dropOffRate - escalationRate)), highlight: scoreHighlight(Math.max(0, 100 - dropOffRate - escalationRate)) },
             ]}
           />
 
@@ -544,6 +559,13 @@ export default function ProjectReport() {
                 doc.ttsAccuracy != null ? { label: "TTS Pronunciation Accuracy", value: pct(doc.ttsAccuracy), highlight: scoreHighlight(doc.ttsAccuracy) } : null,
               ] as const).filter(Boolean) as any}
             />
+          )}
+
+          {/* Low word-label coverage note */}
+          {doc.wordLabelCoverage != null && doc.wordLabelCoverage < 20 && (
+            <div style={{ fontSize: 11, color: "#888", fontStyle: "italic", marginBottom: 12 }}>
+              Note: Word-level labels (gender, ASR, TTS) are available for only {doc.wordLabelCoverage.toFixed(1)}% of calls — accuracy metrics may not be representative.
+            </div>
           )}
 
           {/* Criterion breakdown (always shown) */}
