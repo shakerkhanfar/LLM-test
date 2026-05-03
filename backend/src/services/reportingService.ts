@@ -113,8 +113,7 @@ export interface KpiReport {
     // Matches dashboard "Objective Achieved": objectiveAchieved=true in LAYERED_EVALUATION
     objectiveAchievedRate:  number | null;
     objectiveAchievedTotal: number; // denominator (runs with objectiveAchieved field)
-    llmPassRate:       number | null;
-    latencyPassRate:   number | null;
+    // Word-level quality (only meaningful when wordLabelCoverage > 0)
     genderAccuracy:    number | null;
     genderErrorRate:   number | null;
     asrAccuracy:       number | null;
@@ -305,15 +304,6 @@ export async function getProjectReport(projectId: string, weeksBack = 7): Promis
     count:    n(r.total),
   }));
 
-  const llmRows     = criterionRows.filter(r => r.type === "LLM_JUDGE");
-  const latencyRows = criterionRows.filter(r => r.type === "LATENCY");
-  function avgPassRate(rows: typeof criterionRows): number | null {
-    const rates = rows.map(r => r.passRate).filter((r): r is number => r != null);
-    return rates.length > 0
-      ? parseFloat((rates.reduce((a, b) => a + b, 0) / rates.length).toFixed(1))
-      : null;
-  }
-
   // ── Word label metrics ────────────────────────────────────────────────────
   const lr         = labelRows[0] ?? { total_runs: 0n, labeled_runs: 0n, gender_errors: 0n, asr_errors: 0n, tts_errors: 0n };
   const totalRuns  = n(lr.total_runs);
@@ -364,8 +354,6 @@ export async function getProjectReport(projectId: string, weeksBack = 7): Promis
       overallPassRateScored:   scoredCount,
       objectiveAchievedRate,
       objectiveAchievedTotal:  objTotal,
-      llmPassRate:       avgPassRate(llmRows),
-      latencyPassRate:   avgPassRate(latencyRows),
       genderAccuracy:    genderErrorRate != null ? parseFloat((100 - genderErrorRate).toFixed(2)) : null,
       genderErrorRate,
       asrAccuracy:       asrErrorRate   != null ? parseFloat((100 - asrErrorRate).toFixed(2)) : null,

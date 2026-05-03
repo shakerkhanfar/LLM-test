@@ -463,8 +463,17 @@ router.post("/:id/report/intelligence", llmRateLimit, async (req: AuthRequest, r
     const intelligence = await generateIntelligenceReport(req.params.id, from, to);
     res.json(intelligence);
   } catch (err) {
-    console.error("[Report] Intelligence error:", (err as Error).message);
-    res.status(500).json({ error: (err as Error).message });
+    const msg = (err as Error).message ?? "";
+    console.error("[Report] Intelligence error:", msg);
+    // Surface specific OpenAI errors as clean user-facing messages
+    if (msg.includes("429") || msg.toLowerCase().includes("quota") || msg.toLowerCase().includes("rate limit")) {
+      return res.status(429).json({ error: "OpenAI quota exceeded. Please check your OpenAI billing and try again." });
+    }
+    if (msg.toLowerCase().includes("timeout") || msg.toLowerCase().includes("timed out")) {
+      return res.status(504).json({ error: "Report generation timed out. Try again in a moment." });
+    }
+    const statusCode = msg.startsWith("At least 3") ? 400 : 500;
+    res.status(statusCode).json({ error: msg });
   }
 });
 

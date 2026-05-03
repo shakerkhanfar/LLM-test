@@ -221,11 +221,18 @@ export default function ProjectReport() {
       setIntel(result);
     } catch (err) {
       if (!mountedRef.current) return;
-      // M3 fix: friendlier error message for the "not enough runs" case
-      const raw = (err as Error).message;
-      const msg = raw.includes("At least 3 evaluated runs")
-        ? "Not enough evaluated calls in this window. Try a wider date range."
-        : raw.replace(/^API error \d+: /, "");
+      // Parse error message — API client throws "API error NNN: {json body}"
+      const raw = (err as Error).message ?? "";
+      let msg = raw.replace(/^API error \d+:\s*/, "");
+      // Try to unwrap JSON error body: {"error":"..."}
+      try {
+        const parsed = JSON.parse(msg);
+        if (typeof parsed?.error === "string") msg = parsed.error;
+      } catch { /* not JSON, use as-is */ }
+      // M3 fix: friendlier message for known cases
+      if (msg.includes("At least 3 evaluated runs") || msg.includes("Not enough")) {
+        msg = "Not enough evaluated calls in this window. Try a wider date range.";
+      }
       setIntelError(msg);
     } finally {
       if (mountedRef.current) setIntelLoading(false);
@@ -595,53 +602,46 @@ export default function ProjectReport() {
             ]}
           />
 
-          {/* Technical Performance */}
-          <h2 style={{ fontSize: 22, fontWeight: 800, color: "#1a5276", margin: "32px 0 4px" }}>
-            Technical Performance Analysis
-          </h2>
-
-          {(doc.llmPassRate != null || doc.latencyPassRate != null || doc.genderAccuracy != null) && (
-            <MetricTable
-              title="Language Model Performance"
-              headerColor="#5dade2"
-              rows={([
-                doc.llmPassRate     != null ? { label: "LLM Pass Rate",                          value: pct(doc.llmPassRate),    highlight: scoreHighlight(doc.llmPassRate)    } : null,
-                doc.latencyPassRate != null ? { label: "Latency (Response Time)",                value: pct(doc.latencyPassRate), highlight: scoreHighlight(doc.latencyPassRate) } : null,
-                doc.genderAccuracy  != null ? { label: "Gender Recognition Accuracy",            value: pct(doc.genderAccuracy),  highlight: scoreHighlight(doc.genderAccuracy)  } : null,
-                doc.genderErrorRate != null ? { label: "Gender Error Rate (per total calls)",    value: pct(doc.genderErrorRate), highlight: "muted" as const, italic: true      } : null,
-              ] as const).filter(Boolean) as any}
-            />
-          )}
-
-          {(doc.asrAccuracy != null || doc.ttsAccuracy != null) && (
-            <MetricTable
-              title="Speech Recognition & Synthesis"
-              headerColor="#5dade2"
-              rows={([
-                doc.asrAccuracy != null ? { label: "ASR Accuracy",               value: pct(doc.asrAccuracy),  highlight: scoreHighlight(doc.asrAccuracy)  } : null,
-                doc.ttsAccuracy != null ? { label: "TTS Pronunciation Accuracy",  value: pct(doc.ttsAccuracy),  highlight: scoreHighlight(doc.ttsAccuracy)  } : null,
-              ] as const).filter(Boolean) as any}
-            />
-          )}
-
-          {/* Low word-label coverage note */}
-          {doc.wordLabelCoverage != null && doc.wordLabelCoverage < 20 && (
-            <div style={{ fontSize: 11, color: "#888", fontStyle: "italic", marginBottom: 12 }}>
-              Note: Word-level labels (gender, ASR, TTS) are available for only {doc.wordLabelCoverage.toFixed(1)}% of calls — accuracy metrics above may not be representative.
-            </div>
-          )}
-
-          {/* Criterion breakdown */}
+          {/* Technical Performance — driven entirely by this project's criteria */}
           {criterionRows.length > 0 && (
-            <MetricTable
-              title="Evaluation Criteria Performance"
-              headerColor="#5dade2"
-              rows={criterionRows.map((r) => ({
-                label:     r.label,
-                value:     r.passRate != null ? pct(r.passRate) : (r.avgScore != null ? `${r.avgScore.toFixed(1)}% avg score` : "—"),
-                highlight: scoreHighlight(r.passRate ?? r.avgScore),
-              }))}
-            />
+            <>
+              <h2 style={{ fontSize: 22, fontWeight: 800, color: "#1a5276", margin: "32px 0 4px" }}>
+                Evaluation Criteria Performance
+              </h2>
+              <MetricTable
+                title=""
+                headerColor="#5dade2"
+                rows={criterionRows.map((r) => ({
+                  label:     r.label,
+                  value:     r.passRate != null ? pct(r.passRate) : (r.avgScore != null ? `${r.avgScore.toFixed(1)}% avg score` : "—"),
+                  highlight: scoreHighlight(r.passRate ?? r.avgScore),
+                }))}
+              />
+            </>
+          )}
+
+          {/* Word label quality — only shown if this project has word labels */}
+          {doc.wordLabelCoverage > 0 && (doc.genderAccuracy != null || doc.asrAccuracy != null || doc.ttsAccuracy != null) && (
+            <>
+              <h2 style={{ fontSize: 22, fontWeight: 800, color: "#1a5276", margin: "32px 0 4px" }}>
+                Word-Level Quality
+              </h2>
+              {doc.wordLabelCoverage < 20 && (
+                <div style={{ fontSize: 11, color: "#888", fontStyle: "italic", marginBottom: 8 }}>
+                  Note: Word-level labels available for {doc.wordLabelCoverage.toFixed(1)}% of calls — metrics below may not be representative.
+                </div>
+              )}
+              <MetricTable
+                title=""
+                headerColor="#5dade2"
+                rows={([
+                  doc.genderAccuracy  != null ? { label: "Gender Recognition Accuracy",         value: pct(doc.genderAccuracy),  highlight: scoreHighlight(doc.genderAccuracy)  } : null,
+                  doc.genderErrorRate != null ? { label: "Gender Error Rate (per total calls)",  value: pct(doc.genderErrorRate), highlight: "muted" as const, italic: true      } : null,
+                  doc.asrAccuracy     != null ? { label: "ASR Accuracy",                        value: pct(doc.asrAccuracy),     highlight: scoreHighlight(doc.asrAccuracy)     } : null,
+                  doc.ttsAccuracy     != null ? { label: "TTS Pronunciation Accuracy",           value: pct(doc.ttsAccuracy),     highlight: scoreHighlight(doc.ttsAccuracy)     } : null,
+                ] as const).filter(Boolean) as any}
+              />
+            </>
           )}
 
           {/* Performance Summary */}
