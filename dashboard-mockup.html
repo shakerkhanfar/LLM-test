@@ -1,0 +1,829 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Project Dashboard — Hamsa Eval</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: #f8f9fa;
+      color: #111827;
+      font-size: 14px;
+    }
+
+    /* ── Nav ── */
+    nav {
+      background: #fff;
+      border-bottom: 1px solid #e5e7eb;
+      padding: 0 28px;
+      height: 52px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .logo { font-size: 18px; font-weight: 700; color: #17B26A; letter-spacing: -0.3px; }
+    .logo span { color: #111827; }
+    .breadcrumb { display: flex; align-items: center; gap: 6px; font-size: 13px; margin-left: 18px; }
+    .breadcrumb a { color: #6b7280; text-decoration: none; }
+    .breadcrumb a:hover { color: #17B26A; }
+    .breadcrumb .sep { color: #d1d5db; }
+    .breadcrumb .current { color: #111827; font-weight: 500; }
+
+    /* ── Page ── */
+    .page { max-width: 1200px; margin: 0 auto; padding: 28px 24px 60px; }
+
+    /* ── Header ── */
+    .page-header { display: flex; align-items: flex-start; justify-content: space-between; margin-bottom: 26px; }
+    .page-header h1 { font-size: 22px; font-weight: 700; color: #111827; }
+    .page-header .meta { font-size: 13px; color: #6b7280; margin-top: 4px; display: flex; align-items: center; gap: 8px; }
+    .tag {
+      background: #f0fdf4; color: #15803d; border: 1px solid #bbf7d0;
+      border-radius: 4px; padding: 1px 8px; font-size: 11px; font-weight: 600;
+      letter-spacing: 0.4px; text-transform: uppercase;
+    }
+    .btn {
+      padding: 7px 14px; border-radius: 7px; font-size: 13px; font-weight: 500;
+      cursor: pointer; border: none; display: inline-flex; align-items: center; gap: 6px;
+    }
+    .btn-primary { background: #17B26A; color: #fff; }
+    .btn-outline { background: #fff; color: #374151; border: 1px solid #d1d5db; }
+    .header-actions { display: flex; gap: 8px; }
+
+    /* ── KPI Cards ── */
+    .kpi-row {
+      display: grid;
+      grid-template-columns: repeat(5, 1fr);
+      gap: 12px;
+      margin-bottom: 22px;
+    }
+    .kpi {
+      background: #fff; border: 1px solid #e5e7eb; border-radius: 10px; padding: 16px 18px;
+    }
+    .kpi .label { font-size: 11px; font-weight: 600; color: #9ca3af; letter-spacing: 0.5px; text-transform: uppercase; margin-bottom: 8px; }
+    .kpi .value { font-size: 26px; font-weight: 700; color: #111827; line-height: 1; }
+    .kpi .sub { font-size: 12px; color: #6b7280; margin-top: 5px; }
+    .kpi-green .value { color: #17B26A; }
+    .kpi-amber .value { color: #f59e0b; }
+    .trend {
+      display: inline-flex; align-items: center; gap: 3px; font-size: 11px; font-weight: 600;
+      margin-top: 5px; padding: 2px 7px; border-radius: 20px;
+    }
+    .trend-up { background: #f0fdf4; color: #15803d; }
+
+    /* ── Section label ── */
+    .section-label {
+      font-size: 11px; font-weight: 700; color: #9ca3af; letter-spacing: 0.6px;
+      text-transform: uppercase; margin-bottom: 10px; margin-top: 4px;
+    }
+
+    /* ── Card ── */
+    .card { background: #fff; border: 1px solid #e5e7eb; border-radius: 10px; padding: 18px 20px; }
+    .card-title {
+      font-size: 13px; font-weight: 600; color: #374151; margin-bottom: 14px;
+      display: flex; align-items: center; justify-content: space-between;
+    }
+    .card-title .sub { font-size: 11px; color: #9ca3af; font-weight: 400; }
+
+    /* ── Charts row 1: trend + two donuts ── */
+    .charts-row {
+      display: grid;
+      grid-template-columns: 1.6fr 1fr 1fr;
+      gap: 14px;
+      margin-bottom: 22px;
+    }
+    .chart-trend-wrap { position: relative; height: 200px; }
+
+    /* Donut layout: chart on left, legend on right */
+    .donut-inner {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      margin-top: 4px;
+    }
+    .donut-canvas-wrap {
+      position: relative;
+      width: 110px;
+      height: 110px;
+      flex-shrink: 0;
+    }
+    .donut-canvas-wrap canvas { width: 110px !important; height: 110px !important; }
+    .donut-legend { flex: 1; display: flex; flex-direction: column; gap: 6px; }
+    .legend-row {
+      display: flex; align-items: center; gap: 7px; font-size: 12px; color: #374151;
+    }
+    .legend-swatch {
+      width: 9px; height: 9px; border-radius: 2px; flex-shrink: 0;
+    }
+    .legend-swatch.circle { border-radius: 50%; }
+    .legend-pct { margin-left: auto; font-weight: 600; color: #111827; font-size: 12px; }
+
+    /* ── Row 2: issues + distribution + nodes ── */
+    .row-2 {
+      display: grid;
+      grid-template-columns: 1.1fr 0.9fr 1fr;
+      gap: 14px;
+      margin-bottom: 22px;
+    }
+
+    /* Issues list */
+    .issue-list { list-style: none; display: flex; flex-direction: column; gap: 6px; }
+    .issue-item {
+      display: flex; align-items: flex-start; gap: 8px;
+      padding: 8px 10px; border-radius: 7px; background: #f9fafb;
+    }
+    .issue-badge {
+      font-size: 10px; font-weight: 700; padding: 2px 6px; border-radius: 4px;
+      white-space: nowrap; letter-spacing: 0.3px; flex-shrink: 0; margin-top: 1px;
+    }
+    .badge-critical { background: #fef2f2; color: #dc2626; }
+    .badge-warning  { background: #fffbeb; color: #d97706; }
+    .badge-info     { background: #eff6ff; color: #2563eb; }
+    .issue-text { font-size: 12px; color: #374151; line-height: 1.45; flex: 1; }
+    .issue-count { font-size: 11px; font-weight: 700; color: #9ca3af; flex-shrink: 0; padding-top: 1px; }
+
+    /* Score distribution */
+    .dist-chart-wrap { position: relative; height: 150px; }
+    .dist-summary {
+      display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; margin-top: 12px;
+    }
+    .dist-box {
+      padding: 8px; border-radius: 7px; text-align: center;
+    }
+    .dist-box .num { font-size: 20px; font-weight: 700; line-height: 1; }
+    .dist-box .lbl { font-size: 10px; color: #6b7280; margin-top: 3px; }
+    .dist-pass { background: #f0fdf4; }
+    .dist-pass .num { color: #15803d; }
+    .dist-warn { background: #fffbeb; }
+    .dist-warn .num { color: #d97706; }
+    .dist-fail { background: #fef2f2; }
+    .dist-fail .num { color: #dc2626; }
+
+    /* Node table */
+    .node-table { width: 100%; border-collapse: collapse; }
+    .node-table th {
+      font-size: 11px; font-weight: 600; color: #9ca3af; text-transform: uppercase;
+      letter-spacing: 0.4px; text-align: left; padding: 0 8px 8px 8px;
+      border-bottom: 1px solid #f3f4f6;
+    }
+    .node-table td {
+      padding: 7px 8px; font-size: 12px; color: #374151;
+      border-bottom: 1px solid #f9fafb;
+    }
+    .node-table tr:last-child td { border-bottom: none; }
+    .score-pill {
+      display: inline-block; width: 34px; text-align: center;
+      padding: 2px 0; border-radius: 4px; font-weight: 700; font-size: 11px;
+    }
+    .score-high { background: #f0fdf4; color: #15803d; }
+    .score-mid  { background: #fffbeb; color: #d97706; }
+    .score-low  { background: #fef2f2; color: #dc2626; }
+    .bar-track { flex: 1; height: 5px; background: #f3f4f6; border-radius: 99px; overflow: hidden; }
+    .bar-fill { height: 100%; border-radius: 99px; background: #17B26A; }
+    .bar-fill.amber { background: #f59e0b; }
+    .bar-fill.red   { background: #ef4444; }
+    .bar-inline { display: flex; align-items: center; gap: 6px; }
+
+    /* ── Runs table ── */
+    .run-table { width: 100%; border-collapse: collapse; }
+    .run-table th {
+      font-size: 11px; font-weight: 600; color: #9ca3af; text-transform: uppercase;
+      letter-spacing: 0.4px; text-align: left; padding: 0 12px 8px 12px;
+      border-bottom: 1px solid #f3f4f6;
+    }
+    .run-table td {
+      padding: 10px 12px; font-size: 12px; color: #374151;
+      border-bottom: 1px solid #f9fafb; vertical-align: middle;
+    }
+    .run-table tr:last-child td { border-bottom: none; }
+    .run-table tbody tr:hover td { background: #fafafa; }
+    .outcome-badge {
+      display: inline-block; padding: 2px 8px; border-radius: 4px;
+      font-size: 11px; font-weight: 600;
+    }
+    .ob  { background: #f0fdf4; color: #15803d; }
+    .ot  { background: #eff6ff; color: #2563eb; }
+    .oo  { background: #f5f3ff; color: #7c3aed; }
+    .os  { background: #fef2f2; color: #dc2626; }
+    .otm { background: #fffbeb; color: #d97706; }
+    .sdot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; margin-right: 4px; }
+    .dp { background: #22c55e; }
+    .dn { background: #9ca3af; }
+    .dm { background: #ef4444; }
+    .conv-id { font-family: monospace; font-size: 11px; color: #9ca3af; }
+    .table-footer {
+      padding: 11px 16px; border-top: 1px solid #f3f4f6;
+      display: flex; justify-content: space-between; align-items: center;
+    }
+    .table-footer span { font-size: 12px; color: #9ca3af; }
+    .table-footer a { font-size: 12px; color: #17B26A; text-decoration: none; font-weight: 500; }
+
+    /* Outcome table extras */
+    .outcome-cell-empty { color: #d1d5db; font-style: italic; font-size: 11px; }
+    .obj-yes { display:inline-flex; align-items:center; gap:4px; font-size:11px; font-weight:600; color:#15803d; background:#f0fdf4; padding:2px 8px; border-radius:4px; }
+    .obj-no  { display:inline-flex; align-items:center; gap:4px; font-size:11px; font-weight:600; color:#dc2626; background:#fef2f2; padding:2px 8px; border-radius:4px; }
+    .obj-unknown { font-size:11px; color:#9ca3af; }
+    .summary-cell { max-width:260px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; font-size:12px; color:#6b7280; }
+    #outcomeSearch:focus { border-color:#17B26A; box-shadow:0 0 0 2px rgba(23,178,106,0.12); }
+  </style>
+</head>
+<body>
+
+<!-- Nav -->
+<nav>
+  <div class="logo">hamsa<span>eval</span></div>
+  <div class="breadcrumb">
+    <a href="#">Projects</a>
+    <span class="sep">/</span>
+    <span class="current">KFMC Appointment Booking</span>
+  </div>
+  <div style="margin-left:auto; display:flex; gap:8px;">
+    <button class="btn btn-outline">← Back to Runs</button>
+    <button class="btn btn-primary">Re-evaluate All</button>
+  </div>
+</nav>
+
+<div class="page">
+
+  <!-- Header -->
+  <div class="page-header">
+    <div>
+      <h1>KFMC Appointment Booking</h1>
+      <div class="meta">
+        <span class="tag">HISTORY</span>
+        57 runs · last imported Apr 28, 2026 · Agent v2.4
+      </div>
+    </div>
+    <div class="header-actions">
+      <button class="btn btn-outline">↓ Export CSV</button>
+      <button class="btn btn-outline">Ask AI ✦</button>
+    </div>
+  </div>
+
+  <!-- KPIs -->
+  <div class="kpi-row">
+    <div class="kpi">
+      <div class="label">Total Runs</div>
+      <div class="value">57</div>
+      <div class="sub">All evaluated</div>
+    </div>
+    <div class="kpi kpi-green">
+      <div class="label">Avg Score</div>
+      <div class="value">71%</div>
+      <div class="trend trend-up">↑ +4% vs last batch</div>
+    </div>
+    <div class="kpi">
+      <div class="label">Pass Rate</div>
+      <div class="value">68%</div>
+      <div class="sub">39 / 57 runs ≥ 70%</div>
+    </div>
+    <div class="kpi">
+      <div class="label">Objective Achieved</div>
+      <div class="value">74%</div>
+      <div class="sub">42 of 57 calls</div>
+    </div>
+    <div class="kpi kpi-amber">
+      <div class="label">Avg Duration</div>
+      <div class="value">3:24</div>
+      <div class="sub">min · p90: 5:10</div>
+    </div>
+  </div>
+
+  <!-- Charts row -->
+  <div class="section-label">Performance Overview</div>
+  <div class="charts-row">
+
+    <!-- Score trend -->
+    <div class="card">
+      <div class="card-title">
+        Score over time
+        <span class="sub">per run · 7-run rolling avg</span>
+      </div>
+      <div class="chart-trend-wrap">
+        <canvas id="trendChart"></canvas>
+      </div>
+    </div>
+
+    <!-- Outcomes donut -->
+    <div class="card">
+      <div class="card-title">Call Outcomes</div>
+      <div class="donut-inner">
+        <div class="donut-canvas-wrap">
+          <canvas id="outcomeChart"></canvas>
+        </div>
+        <div class="donut-legend">
+          <div class="legend-row"><span class="legend-swatch" style="background:#17B26A"></span>Booked<span class="legend-pct">42%</span></div>
+          <div class="legend-row"><span class="legend-swatch" style="background:#3b82f6"></span>Transferred<span class="legend-pct">21%</span></div>
+          <div class="legend-row"><span class="legend-swatch" style="background:#a78bfa"></span>Out of scope<span class="legend-pct">19%</span></div>
+          <div class="legend-row"><span class="legend-swatch" style="background:#f59e0b"></span>Timeout<span class="legend-pct">11%</span></div>
+          <div class="legend-row"><span class="legend-swatch" style="background:#ef4444"></span>Stuck<span class="legend-pct">7%</span></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Sentiment donut -->
+    <div class="card">
+      <div class="card-title">Caller Sentiment</div>
+      <div class="donut-inner">
+        <div class="donut-canvas-wrap">
+          <canvas id="sentimentChart"></canvas>
+        </div>
+        <div class="donut-legend">
+          <div class="legend-row"><span class="legend-swatch circle" style="background:#22c55e"></span>Positive<span class="legend-pct">58%</span></div>
+          <div class="legend-row"><span class="legend-swatch circle" style="background:#9ca3af"></span>Neutral<span class="legend-pct">30%</span></div>
+          <div class="legend-row"><span class="legend-swatch circle" style="background:#ef4444"></span>Negative<span class="legend-pct">12%</span></div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- Diagnostics row -->
+  <div class="section-label">Diagnostics</div>
+  <div class="row-2">
+
+    <!-- Top issues -->
+    <div class="card">
+      <div class="card-title">
+        Most Common Issues
+        <span class="sub">across all 57 runs</span>
+      </div>
+      <ul class="issue-list">
+        <li class="issue-item">
+          <span class="issue-badge badge-critical">CRITICAL</span>
+          <span class="issue-text">Agent repeated itself on <b>ID Collection</b> despite user providing input</span>
+          <span class="issue-count">14×</span>
+        </li>
+        <li class="issue-item">
+          <span class="issue-badge badge-warning">WARNING</span>
+          <span class="issue-text">High turn count on <b>Specialty Selection</b> (user providing piecemeal input)</span>
+          <span class="issue-count">11×</span>
+        </li>
+        <li class="issue-item">
+          <span class="issue-badge badge-critical">CRITICAL</span>
+          <span class="issue-text">Hallucination — agent stated doctor availability not confirmed by tool</span>
+          <span class="issue-count">6×</span>
+        </li>
+        <li class="issue-item">
+          <span class="issue-badge badge-warning">WARNING</span>
+          <span class="issue-text">Wrong transition <b>Confirmation</b> → <b>ID Collection</b> (expected → <b>Booking</b>)</span>
+          <span class="issue-count">5×</span>
+        </li>
+        <li class="issue-item">
+          <span class="issue-badge badge-warning">WARNING</span>
+          <span class="issue-text">Off-topic request (insurance, reports) — agent handled correctly</span>
+          <span class="issue-count">9×</span>
+        </li>
+        <li class="issue-item">
+          <span class="issue-badge badge-info">INFO</span>
+          <span class="issue-text"><b>Greeting</b> visited twice — caller likely called back after drop</span>
+          <span class="issue-count">4×</span>
+        </li>
+      </ul>
+    </div>
+
+    <!-- Score distribution -->
+    <div class="card">
+      <div class="card-title">
+        Score Distribution
+        <span class="sub">57 runs</span>
+      </div>
+      <div class="dist-chart-wrap">
+        <canvas id="distChart"></canvas>
+      </div>
+      <div class="dist-summary">
+        <div class="dist-box dist-pass"><div class="num">39</div><div class="lbl">≥ 70% pass</div></div>
+        <div class="dist-box dist-warn"><div class="num">11</div><div class="lbl">50–69% warn</div></div>
+        <div class="dist-box dist-fail"><div class="num">7</div><div class="lbl">&lt; 50% fail</div></div>
+      </div>
+    </div>
+
+    <!-- Node performance -->
+    <div class="card">
+      <div class="card-title">
+        Node Performance
+        <span class="sub">avg score per node</span>
+      </div>
+      <table class="node-table">
+        <thead>
+          <tr>
+            <th>Node</th>
+            <th>Avg</th>
+            <th style="width:70px;">Quality</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Greeting</td>
+            <td><span class="score-pill score-high">9.1</span></td>
+            <td><div class="bar-inline"><div class="bar-track"><div class="bar-fill" style="width:91%"></div></div></div></td>
+          </tr>
+          <tr>
+            <td>Specialty Selection</td>
+            <td><span class="score-pill score-high">8.3</span></td>
+            <td><div class="bar-inline"><div class="bar-track"><div class="bar-fill" style="width:83%"></div></div></div></td>
+          </tr>
+          <tr>
+            <td>Doctor Selection</td>
+            <td><span class="score-pill score-high">7.8</span></td>
+            <td><div class="bar-inline"><div class="bar-track"><div class="bar-fill" style="width:78%"></div></div></div></td>
+          </tr>
+          <tr>
+            <td>ID Collection</td>
+            <td><span class="score-pill score-mid">5.9</span></td>
+            <td><div class="bar-inline"><div class="bar-track"><div class="bar-fill amber" style="width:59%"></div></div></div></td>
+          </tr>
+          <tr>
+            <td>Slot Selection</td>
+            <td><span class="score-pill score-mid">6.4</span></td>
+            <td><div class="bar-inline"><div class="bar-track"><div class="bar-fill amber" style="width:64%"></div></div></div></td>
+          </tr>
+          <tr>
+            <td>Booking Tool</td>
+            <td><span class="score-pill score-high">8.7</span></td>
+            <td><div class="bar-inline"><div class="bar-track"><div class="bar-fill" style="width:87%"></div></div></div></td>
+          </tr>
+          <tr>
+            <td>Confirmation</td>
+            <td><span class="score-pill score-low">4.2</span></td>
+            <td><div class="bar-inline"><div class="bar-track"><div class="bar-fill red" style="width:42%"></div></div></div></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+  </div>
+
+  <!-- Call Outcomes -->
+  <div class="section-label">Call Outcomes</div>
+  <div class="card" style="padding:0; margin-bottom:22px;">
+
+    <!-- Header bar inside card -->
+    <div style="padding:14px 18px 12px; border-bottom:1px solid #f3f4f6; display:flex; align-items:center; justify-content:space-between;">
+      <div>
+        <span style="font-size:13px; font-weight:600; color:#374151;">Outcome Variables</span>
+        <span style="font-size:12px; color:#9ca3af; margin-left:8px;">57 runs · agent-extracted data per call</span>
+      </div>
+      <div style="display:flex; gap:8px; align-items:center;">
+        <input id="outcomeSearch" type="text" placeholder="Search outcomes…"
+          style="padding:6px 11px; border:1px solid #d1d5db; border-radius:7px; font-size:12px;
+                 color:#374151; outline:none; width:180px; background:#fff;"
+          oninput="filterOutcomes(this.value)">
+        <button class="btn btn-outline" onclick="exportOutcomeCSV()" style="font-size:12px; gap:5px;">
+          ↓ Export CSV
+        </button>
+      </div>
+    </div>
+
+    <!-- Scrollable table -->
+    <div style="overflow-x:auto;">
+      <table id="outcomeTable" class="run-table" style="min-width:900px;">
+        <thead>
+          <tr>
+            <th style="padding-top:12px; padding-bottom:10px; white-space:nowrap;">Conv ID</th>
+            <th style="padding-top:12px; padding-bottom:10px; white-space:nowrap;">Date</th>
+            <th style="padding-top:12px; padding-bottom:10px; white-space:nowrap;">Call Outcome</th>
+            <th style="padding-top:12px; padding-bottom:10px; white-space:nowrap;">Objective Met</th>
+            <th style="padding-top:12px; padding-bottom:10px; white-space:nowrap;">Doctor</th>
+            <th style="padding-top:12px; padding-bottom:10px; white-space:nowrap;">Specialty</th>
+            <th style="padding-top:12px; padding-bottom:10px; white-space:nowrap;">Appointment Time</th>
+            <th style="padding-top:12px; padding-bottom:10px; white-space:nowrap;">Patient ID</th>
+            <th style="padding-top:12px; padding-bottom:10px;">Summary</th>
+          </tr>
+        </thead>
+        <tbody id="outcomeBody">
+          <!-- filled by JS -->
+        </tbody>
+      </table>
+    </div>
+
+    <div class="table-footer" id="outcomeFooter">
+      <span>Showing all 57 runs</span>
+      <a href="#" onclick="exportOutcomeCSV(); return false;">Download full CSV →</a>
+    </div>
+  </div>
+
+  <!-- Recent runs -->
+  <div class="section-label">Recent Runs</div>
+  <div class="card" style="padding:0; margin-bottom:22px;">
+    <table class="run-table">
+      <thead>
+        <tr style="padding-top:14px;">
+          <th style="padding-top:14px;">Conv ID</th>
+          <th style="padding-top:14px;">Date</th>
+          <th style="padding-top:14px;">Score</th>
+          <th style="padding-top:14px;">Outcome</th>
+          <th style="padding-top:14px;">Sentiment</th>
+          <th style="padding-top:14px;">Duration</th>
+          <th style="padding-top:14px;">Issues</th>
+          <th style="padding-top:14px;"></th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><span class="conv-id">9cce8e5a-0ae0</span></td>
+          <td>Apr 27</td>
+          <td><span class="score-pill score-mid">71</span></td>
+          <td><span class="outcome-badge ob">Appointment booked</span></td>
+          <td><span class="sdot dp"></span>Positive</td>
+          <td>4:12</td>
+          <td style="color:#9ca3af;">1 warning</td>
+          <td><a href="#" style="color:#17B26A;font-size:12px;text-decoration:none;">View →</a></td>
+        </tr>
+        <tr>
+          <td><span class="conv-id">a3b12c44-ff10</span></td>
+          <td>Apr 27</td>
+          <td><span class="score-pill score-high">88</span></td>
+          <td><span class="outcome-badge ob">Appointment booked</span></td>
+          <td><span class="sdot dp"></span>Positive</td>
+          <td>2:48</td>
+          <td style="color:#9ca3af;">—</td>
+          <td><a href="#" style="color:#17B26A;font-size:12px;text-decoration:none;">View →</a></td>
+        </tr>
+        <tr>
+          <td><span class="conv-id">7d4f9a02-1bc3</span></td>
+          <td>Apr 26</td>
+          <td><span class="score-pill score-low">43</span></td>
+          <td><span class="outcome-badge os">Stuck</span></td>
+          <td><span class="sdot dm"></span>Negative</td>
+          <td>6:02</td>
+          <td style="color:#dc2626;">2 critical, 1 warn</td>
+          <td><a href="#" style="color:#17B26A;font-size:12px;text-decoration:none;">View →</a></td>
+        </tr>
+        <tr>
+          <td><span class="conv-id">e09c3312-ab44</span></td>
+          <td>Apr 26</td>
+          <td><span class="score-pill score-mid">65</span></td>
+          <td><span class="outcome-badge ot">Transferred</span></td>
+          <td><span class="sdot dn"></span>Neutral</td>
+          <td>3:55</td>
+          <td style="color:#d97706;">1 critical</td>
+          <td><a href="#" style="color:#17B26A;font-size:12px;text-decoration:none;">View →</a></td>
+        </tr>
+        <tr>
+          <td><span class="conv-id">f2218ace-7701</span></td>
+          <td>Apr 25</td>
+          <td><span class="score-pill score-high">91</span></td>
+          <td><span class="outcome-badge ob">Appointment booked</span></td>
+          <td><span class="sdot dp"></span>Positive</td>
+          <td>2:15</td>
+          <td style="color:#9ca3af;">—</td>
+          <td><a href="#" style="color:#17B26A;font-size:12px;text-decoration:none;">View →</a></td>
+        </tr>
+        <tr>
+          <td><span class="conv-id">c8800ab1-3fe9</span></td>
+          <td>Apr 25</td>
+          <td><span class="score-pill score-mid">58</span></td>
+          <td><span class="outcome-badge oo">Out of scope</span></td>
+          <td><span class="sdot dn"></span>Neutral</td>
+          <td>1:44</td>
+          <td style="color:#9ca3af;">1 info</td>
+          <td><a href="#" style="color:#17B26A;font-size:12px;text-decoration:none;">View →</a></td>
+        </tr>
+      </tbody>
+    </table>
+    <div class="table-footer">
+      <span>Showing 6 of 57 runs</span>
+      <a href="#">View all runs →</a>
+    </div>
+  </div>
+
+</div>
+
+<script>
+// Trend chart
+const scores = [
+  62,71,55,80,88,45,73,69,91,78,
+  60,83,50,74,87,66,72,58,85,79,
+  41,68,76,90,55,81,63,77,89,52,
+  70,84,48,75,93,61,67,82,56,86,
+  73,49,78,88,64,71,95,57,80,69,
+  74,83,59,76,88,65,71
+];
+function rollingAvg(arr, w) {
+  return arr.map((_, i) => {
+    const s = arr.slice(Math.max(0, i - w + 1), i + 1);
+    return Math.round(s.reduce((a, b) => a + b, 0) / s.length);
+  });
+}
+const avg = rollingAvg(scores, 7);
+
+new Chart(document.getElementById("trendChart"), {
+  type: "line",
+  data: {
+    labels: scores.map((_, i) => `#${i + 1}`),
+    datasets: [
+      {
+        label: "Score",
+        data: scores,
+        borderColor: "transparent",
+        pointRadius: 3,
+        pointBackgroundColor: scores.map(s => s >= 70 ? "#17B26A" : s >= 50 ? "#f59e0b" : "#ef4444"),
+        pointBorderColor: "transparent",
+        fill: false,
+        tension: 0.3,
+        order: 2,
+      },
+      {
+        label: "7-run avg",
+        data: avg,
+        borderColor: "#17B26A",
+        borderWidth: 2,
+        pointRadius: 0,
+        backgroundColor: "rgba(23,178,106,0.07)",
+        fill: true,
+        tension: 0.4,
+        order: 1,
+      }
+    ]
+  },
+  options: {
+    responsive: true,
+    maintainAspectRatio: false,
+    interaction: { mode: "index", intersect: false },
+    plugins: {
+      legend: { display: false },
+      tooltip: {
+        callbacks: {
+          title: items => `Run ${items[0].label}`,
+          label: item => `${item.dataset.label}: ${item.raw}%`
+        }
+      }
+    },
+    scales: {
+      x: {
+        grid: { display: false },
+        ticks: { color: "#9ca3af", font: { size: 10 }, maxTicksLimit: 10 }
+      },
+      y: {
+        min: 0, max: 100,
+        grid: { color: "#f3f4f6" },
+        ticks: { color: "#9ca3af", font: { size: 10 }, callback: v => v + "%" }
+      }
+    }
+  }
+});
+
+// Outcomes donut
+new Chart(document.getElementById("outcomeChart"), {
+  type: "doughnut",
+  data: {
+    labels: ["Booked", "Transferred", "Out of scope", "Timeout", "Stuck"],
+    datasets: [{
+      data: [42, 21, 19, 11, 7],
+      backgroundColor: ["#17B26A", "#3b82f6", "#a78bfa", "#f59e0b", "#ef4444"],
+      borderWidth: 0,
+      hoverOffset: 5,
+    }]
+  },
+  options: {
+    responsive: false,
+    cutout: "68%",
+    plugins: {
+      legend: { display: false },
+      tooltip: { callbacks: { label: i => ` ${i.label}: ${i.raw}%` } }
+    }
+  }
+});
+
+// Sentiment donut
+new Chart(document.getElementById("sentimentChart"), {
+  type: "doughnut",
+  data: {
+    labels: ["Positive", "Neutral", "Negative"],
+    datasets: [{
+      data: [58, 30, 12],
+      backgroundColor: ["#22c55e", "#9ca3af", "#ef4444"],
+      borderWidth: 0,
+      hoverOffset: 5,
+    }]
+  },
+  options: {
+    responsive: false,
+    cutout: "68%",
+    plugins: {
+      legend: { display: false },
+      tooltip: { callbacks: { label: i => ` ${i.label}: ${i.raw}%` } }
+    }
+  }
+});
+
+// ── Outcome table data ────────────────────────────────────
+const OUTCOME_COLORS = {
+  appointment_booked: "ob", transferred: "ot", out_of_scope: "oo",
+  stuck: "os", timeout: "otm", completed: "ob",
+};
+function outcomeLabel(key) {
+  return (key || "—").replace(/_/g, " ").replace(/\b\w/g, c => c.toUpperCase());
+}
+
+const outcomeRows = [
+  { id:"9cce8e5a-0ae0", date:"Apr 27", call_outcome:"appointment_booked", objective_met:"yes", doctor:"Dr. Meshari Alzhrani", specialty:"Family Medicine", appointment_time:"Tuesday 2:15 PM", patient_id:"1090******", summary:"Patient asked for family medicine appointment. Agent booked with Dr. Mishari Al-Zahrani on Tuesday 2:15 PM." },
+  { id:"a3b12c44-ff10", date:"Apr 27", call_outcome:"appointment_booked", objective_met:"yes", doctor:"Dr. Ameer Ghazal", specialty:"Family Medicine", appointment_time:"Wednesday 10:00 AM", patient_id:"2054******", summary:"Smooth booking. Patient requested morning slot with Dr. Ghazal." },
+  { id:"7d4f9a02-1bc3", date:"Apr 26", call_outcome:"stuck",             objective_met:"no",  doctor:"",                   specialty:"Dermatology",    appointment_time:"",               patient_id:"",           summary:"Agent looped on specialty selection, patient hung up without completing booking." },
+  { id:"e09c3312-ab44", date:"Apr 26", call_outcome:"transferred",       objective_met:"no",  doctor:"",                   specialty:"",               appointment_time:"",               patient_id:"3812******", summary:"Patient asked about insurance coverage — transferred to call center." },
+  { id:"f2218ace-7701", date:"Apr 25", call_outcome:"appointment_booked", objective_met:"yes", doctor:"Dr. Bayan Waez",    specialty:"Family Medicine", appointment_time:"Monday 9:30 AM", patient_id:"4421******", summary:"Quick booking with Dr. Waez. Patient confirmed Monday morning slot." },
+  { id:"c8800ab1-3fe9", date:"Apr 25", call_outcome:"out_of_scope",       objective_met:"no",  doctor:"",                   specialty:"",               appointment_time:"",               patient_id:"",           summary:"Patient asked for medical report — outside agent scope, handled correctly." },
+  { id:"d1019bc2-cc21", date:"Apr 25", call_outcome:"appointment_booked", objective_met:"yes", doctor:"Dr. Hanan Alqabbaa","specialty":"Family Medicine","appointment_time":"Thursday 11:00 AM", patient_id:"5530******", summary:"Patient booked cancer screening appointment." },
+  { id:"b3308fe1-aa90", date:"Apr 24", call_outcome:"timeout",            objective_met:"no",  doctor:"",                   specialty:"Neurology",      appointment_time:"",               patient_id:"6614******", summary:"Call timed out during specialty selection. Patient was unresponsive." },
+  { id:"aa912e77-0012", date:"Apr 24", call_outcome:"appointment_booked", objective_met:"yes", doctor:"Dr. Saeed Alafeef", specialty:"Family Medicine", appointment_time:"Sunday 2:00 PM", patient_id:"7723******", summary:"Patient booked vaccination appointment with Dr. Alafeef." },
+  { id:"cf44ab11-7e93", date:"Apr 23", call_outcome:"appointment_booked", objective_met:"yes", doctor:"Dr. Marwan Alsafadi","specialty":"Family Medicine","appointment_time":"Saturday 10:30 AM","patient_id":"8831******","summary":"Sexual health consultation booking completed successfully." },
+];
+
+let filteredOutcomeRows = [...outcomeRows];
+
+function renderOutcomeTable(rows) {
+  const tbody = document.getElementById("outcomeBody");
+  tbody.innerHTML = rows.map(r => {
+    const cls = OUTCOME_COLORS[r.call_outcome] || "otm";
+    const objHtml = r.objective_met === "yes"
+      ? `<span class="obj-yes">✓ Yes</span>`
+      : r.objective_met === "no"
+        ? `<span class="obj-no">✗ No</span>`
+        : `<span class="obj-unknown">—</span>`;
+    const cell = v => v ? `<td>${v}</td>` : `<td><span class="outcome-cell-empty">—</span></td>`;
+    return `<tr>
+      <td><span class="conv-id">${r.id}</span></td>
+      <td>${r.date}</td>
+      <td><span class="outcome-badge ${cls}">${outcomeLabel(r.call_outcome)}</span></td>
+      <td>${objHtml}</td>
+      ${cell(r.doctor)}
+      ${cell(r.specialty)}
+      ${cell(r.appointment_time)}
+      ${cell(r.patient_id)}
+      <td><span class="summary-cell" title="${r.summary}">${r.summary || "—"}</span></td>
+    </tr>`;
+  }).join("");
+  document.getElementById("outcomeFooter").querySelector("span").textContent =
+    `Showing ${rows.length} of ${outcomeRows.length} runs`;
+}
+
+function filterOutcomes(q) {
+  const s = q.toLowerCase();
+  filteredOutcomeRows = outcomeRows.filter(r =>
+    Object.values(r).some(v => String(v).toLowerCase().includes(s))
+  );
+  renderOutcomeTable(filteredOutcomeRows);
+}
+
+function exportOutcomeCSV() {
+  const cols = ["conv_id","date","call_outcome","objective_met","doctor","specialty","appointment_time","patient_id","summary"];
+  const header = cols.join(",");
+  const escape = v => `"${String(v ?? "").replace(/"/g, '""')}"`;
+  const rows = filteredOutcomeRows.map(r =>
+    [r.id, r.date, r.call_outcome, r.objective_met, r.doctor, r.specialty, r.appointment_time, r.patient_id, r.summary]
+    .map(escape).join(",")
+  );
+  const csv = [header, ...rows].join("\n");
+  const blob = new Blob([csv], { type: "text/csv" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = "kfmc_appointment_booking_outcomes.csv";
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
+
+renderOutcomeTable(outcomeRows);
+
+// Score distribution
+const buckets = [
+  { l: "0–10", n: 1 }, { l: "10–20", n: 1 }, { l: "20–30", n: 1 },
+  { l: "30–40", n: 2 }, { l: "40–50", n: 2 }, { l: "50–60", n: 7 },
+  { l: "60–70", n: 4 }, { l: "70–80", n: 16 }, { l: "80–90", n: 15 }, { l: "90–100", n: 8 },
+];
+new Chart(document.getElementById("distChart"), {
+  type: "bar",
+  data: {
+    labels: buckets.map(b => b.l),
+    datasets: [{
+      data: buckets.map(b => b.n),
+      backgroundColor: buckets.map((b, i) => i >= 7 ? "#17B26A" : i >= 5 ? "#f59e0b" : "#ef4444"),
+      borderRadius: 4,
+      borderSkipped: false,
+    }]
+  },
+  options: {
+    responsive: true,
+    maintainAspectRatio: false,
+    plugins: {
+      legend: { display: false },
+      tooltip: { callbacks: { title: ([i]) => i.label + "%", label: i => ` ${i.raw} runs` } }
+    },
+    scales: {
+      x: {
+        grid: { display: false },
+        ticks: { color: "#9ca3af", font: { size: 9 }, maxRotation: 45 }
+      },
+      y: {
+        grid: { color: "#f3f4f6" },
+        ticks: { color: "#9ca3af", font: { size: 10 }, stepSize: 5 }
+      }
+    }
+  }
+});
+</script>
+</body>
+</html>

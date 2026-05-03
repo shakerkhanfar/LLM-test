@@ -3,7 +3,7 @@ import {
   LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer,
   PieChart, Pie, Cell, BarChart, Bar,
 } from "recharts";
-import { getProjectDashboard } from "../api/client";
+import { getProjectDashboard, getRunsByIds } from "../api/client";
 import T from "../theme";
 
 interface DashData {
@@ -24,6 +24,7 @@ interface DashData {
   achievedRunIds: string[];
   notAchievedRunIds: string[];
   outcomeBreakdown: Array<{ outcome: string; total: number; issues: Array<{ text: string; severity: string; count: number; pct: number; runIds: string[] }> }>;
+  criteriaPerformance: Array<{ name: string; type: string; total: number; passRate: number | null; failedRunIds: string[] }>;
 }
 
 interface Props {
@@ -173,8 +174,10 @@ export default function ProjectDashboard({ project, onDashLoaded }: Props) {
     setScoreFilter(null);
     setNodeFilter(null);
     setIssueFilter(null);
+    setCriteriaFilter(null);
     setIntentFilter(null);
     setTableSearch("");
+    setFilterExtraRuns([]);
   }, [project.id]);
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [selectedOutcome, setSelectedOutcome] = useState<string | null>(null);
@@ -182,8 +185,28 @@ export default function ProjectDashboard({ project, onDashLoaded }: Props) {
   const [scoreFilter, setScoreFilter] = useState<{ min: number; max: number; label: string } | null>(null);
   const [nodeFilter, setNodeFilter] = useState<{ label: string; runIds: string[] } | null>(null);
   const [issueFilter, setIssueFilter] = useState<{ text: string; outcome: string; runIds: string[] } | null>(null);
+  const [criteriaFilter, setCriteriaFilter] = useState<{ name: string; runIds: string[] } | null>(null);
   const [intentFilter, setIntentFilter] = useState<string | null>(null);
+  // Runs fetched on-demand when a filter's runIds aren't all in the loaded project.runs
+  const [filterExtraRuns, setFilterExtraRuns] = useState<any[]>([]);
+  const [filterExtraLoading, setFilterExtraLoading] = useState(false);
   const tableRef = useRef<HTMLDivElement>(null);
+
+  // When issue / node / criteria filter is set with runIds, fetch any runs not already loaded
+  useEffect(() => {
+    const filterRunIds = issueFilter?.runIds ?? nodeFilter?.runIds ?? criteriaFilter?.runIds ?? null;
+    if (!filterRunIds) { setFilterExtraRuns([]); return; }
+    const loadedIds = new Set((project.runs ?? []).map((r: any) => r.id));
+    const missing = filterRunIds.filter(id => !loadedIds.has(id));
+    if (missing.length === 0) { setFilterExtraRuns([]); return; }
+    let cancelled = false;
+    setFilterExtraLoading(true);
+    getRunsByIds(project.id, missing)
+      .then(runs => { if (!cancelled) setFilterExtraRuns(runs); })
+      .catch(() => { if (!cancelled) setFilterExtraRuns([]); })
+      .finally(() => { if (!cancelled) setFilterExtraLoading(false); });
+    return () => { cancelled = true; };
+  }, [issueFilter, nodeFilter, criteriaFilter, project.id, project.runs]);
 
   function selectOutcome(name: string) {
     setSelectedOutcome(prev => prev === name ? null : name);
@@ -191,6 +214,7 @@ export default function ProjectDashboard({ project, onDashLoaded }: Props) {
     setScoreFilter(null);
     setNodeFilter(null);
     setIssueFilter(null);
+    setCriteriaFilter(null);
     setIntentFilter(null);
     setTableSearch("");
     setTimeout(() => tableRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }), 50);
@@ -202,6 +226,7 @@ export default function ProjectDashboard({ project, onDashLoaded }: Props) {
     setScoreFilter(null);
     setNodeFilter(null);
     setIssueFilter(null);
+    setCriteriaFilter(null);
     setIntentFilter(null);
     setTableSearch("");
     setTimeout(() => tableRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }), 50);
@@ -213,6 +238,7 @@ export default function ProjectDashboard({ project, onDashLoaded }: Props) {
     setObjectiveFilter(null);
     setNodeFilter(null);
     setIssueFilter(null);
+    setCriteriaFilter(null);
     setIntentFilter(null);
     setTableSearch("");
     setTimeout(() => tableRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }), 50);
@@ -224,6 +250,7 @@ export default function ProjectDashboard({ project, onDashLoaded }: Props) {
     setObjectiveFilter(null);
     setScoreFilter(null);
     setIssueFilter(null);
+    setCriteriaFilter(null);
     setIntentFilter(null);
     setTableSearch("");
     setTimeout(() => tableRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }), 50);
@@ -235,6 +262,19 @@ export default function ProjectDashboard({ project, onDashLoaded }: Props) {
     setObjectiveFilter(null);
     setScoreFilter(null);
     setNodeFilter(null);
+    setCriteriaFilter(null);
+    setIntentFilter(null);
+    setTableSearch("");
+    setTimeout(() => tableRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }), 50);
+  }
+
+  function selectCriteria(name: string, runIds: string[]) {
+    setCriteriaFilter(prev => (prev?.name === name ? null : { name, runIds }));
+    setSelectedOutcome(null);
+    setObjectiveFilter(null);
+    setScoreFilter(null);
+    setNodeFilter(null);
+    setIssueFilter(null);
     setIntentFilter(null);
     setTableSearch("");
     setTimeout(() => tableRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }), 50);
@@ -248,6 +288,7 @@ export default function ProjectDashboard({ project, onDashLoaded }: Props) {
     setScoreFilter(null);
     setNodeFilter(null);
     setIssueFilter(null);
+    setCriteriaFilter(null);
     setTableSearch("");
     setTimeout(() => tableRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }), 50);
   }
@@ -449,7 +490,15 @@ export default function ProjectDashboard({ project, onDashLoaded }: Props) {
   }, [project.runs]);
 
   const tableRuns = useMemo(() => {
-    let sorted = [...((project.runs ?? []) as any[])].sort(
+    // When a filter with explicit runIds is active, merge extra fetched runs into the source
+    const filterRunIds = issueFilter?.runIds ?? nodeFilter?.runIds ?? criteriaFilter?.runIds ?? null;
+    const baseRuns = filterRunIds && filterExtraRuns.length > 0
+      ? [...(project.runs ?? []), ...filterExtraRuns].filter(
+          (r, i, arr) => arr.findIndex(x => x.id === r.id) === i  // dedupe
+        )
+      : (project.runs ?? []) as any[];
+
+    let sorted = [...baseRuns].sort(
       (a, b) => new Date(b.callDate || b.createdAt).getTime() - new Date(a.callDate || a.createdAt).getTime()
     );
     if (selectedOutcome) {
@@ -478,6 +527,9 @@ export default function ProjectDashboard({ project, onDashLoaded }: Props) {
     if (issueFilter) {
       sorted = sorted.filter((r: any) => issueFilter.runIds.includes(r.id));
     }
+    if (criteriaFilter) {
+      sorted = sorted.filter((r: any) => criteriaFilter.runIds.includes(r.id));
+    }
     if (intentFilter && intentFieldKey) {
       sorted = sorted.filter((r: any) =>
         (r.outcomeResult?.[intentFieldKey] || "").toString().trim().toLowerCase() === intentFilter
@@ -497,7 +549,7 @@ export default function ProjectDashboard({ project, onDashLoaded }: Props) {
         (intentFieldKey ? String((r.outcomeResult || {})[intentFieldKey] || "").toLowerCase().includes(q) : false)
       );
     });
-  }, [project.runs, tableSearch, outcomeColumns, selectedOutcome, objectiveFilter, scoreFilter, nodeFilter, issueFilter, intentFilter, intentFieldKey, dashData]);
+  }, [project.runs, filterExtraRuns, tableSearch, outcomeColumns, selectedOutcome, objectiveFilter, scoreFilter, nodeFilter, issueFilter, criteriaFilter, intentFilter, intentFieldKey, dashData]);
 
   function exportCsv() {
     const headers = ["Conv ID", "Date", "Call Outcome", "Score", "Duration", ...outcomeColumns];
@@ -856,6 +908,85 @@ export default function ProjectDashboard({ project, onDashLoaded }: Props) {
           })()}
         </div>
       </div>
+
+      {/* Criteria Performance */}
+      {dashData && dashData.criteriaPerformance && dashData.criteriaPerformance.length > 0 && (
+        <div style={CARD_STYLE}>
+          <div style={{ ...SECTION_LABEL_STYLE, display: "flex", alignItems: "center" }}>
+            Evaluation Criteria Performance
+            <InfoTip text="Pass rate per evaluation criterion across all analyzed calls. Click a row to filter the call table to calls that FAILED that criterion." />
+          </div>
+          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+            <thead>
+              <tr style={{ borderBottom: `1px solid ${T.border}` }}>
+                <th style={{ textAlign: "left", padding: "4px 8px", color: T.textMuted, fontWeight: 600, fontSize: 11 }}>Criterion</th>
+                <th style={{ textAlign: "right", padding: "4px 8px", color: T.textMuted, fontWeight: 600, fontSize: 11 }}>Pass Rate</th>
+                <th style={{ textAlign: "right", padding: "4px 8px", color: T.textMuted, fontWeight: 600, fontSize: 11 }}>Failed</th>
+              </tr>
+            </thead>
+            <tbody>
+              {dashData.criteriaPerformance.map((c) => {
+                const isActive = criteriaFilter?.name === c.name;
+                const pct = c.passRate ?? 0;
+                const failCount = c.failedRunIds.length;
+                const barColor = pct >= 70 ? "#17B26A" : pct >= 40 ? "#f59e0b" : "#ef4444";
+                return (
+                  <tr
+                    key={c.name}
+                    onClick={() => failCount > 0 && selectCriteria(c.name, c.failedRunIds)}
+                    style={{
+                      cursor: failCount > 0 ? "pointer" : "default",
+                      borderBottom: `1px solid ${T.border}`,
+                      background: isActive ? "#ef444410" : "transparent",
+                      transition: "background 0.1s",
+                    }}
+                    title={failCount > 0 ? `View ${failCount} call${failCount !== 1 ? "s" : ""} that failed this criterion` : undefined}
+                  >
+                    <td style={{ padding: "7px 8px" }}>
+                      <div style={{ fontWeight: 500, color: T.text }}>{c.name}</div>
+                      <div style={{ fontSize: 10, color: T.textMuted }}>{c.type.replace(/_/g, " ")}</div>
+                    </td>
+                    <td style={{ padding: "7px 8px", textAlign: "right" }}>
+                      <div style={{ display: "flex", alignItems: "center", justifyContent: "flex-end", gap: 8 }}>
+                        <div style={{ width: 60, height: 6, borderRadius: 3, background: T.border, overflow: "hidden" }}>
+                          <div style={{ width: `${pct}%`, height: "100%", background: barColor, borderRadius: 3 }} />
+                        </div>
+                        <span style={{ fontWeight: 700, color: barColor, minWidth: 44, textAlign: "right" }}>
+                          {c.passRate != null ? `${c.passRate}%` : "—"}
+                        </span>
+                      </div>
+                    </td>
+                    <td style={{ padding: "7px 8px", textAlign: "right" }}>
+                      {failCount > 0 ? (
+                        <span style={{
+                          fontWeight: 600, fontSize: 12, color: isActive ? "#ef4444" : T.textSecondary,
+                          background: isActive ? "#ef444418" : T.cardAlt,
+                          border: `1px solid ${isActive ? "#ef444444" : T.border}`,
+                          borderRadius: 10, padding: "1px 8px",
+                        }}>
+                          {failCount}
+                        </span>
+                      ) : (
+                        <span style={{ color: T.textMuted, fontSize: 12 }}>0</span>
+                      )}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+          {criteriaFilter && (
+            <div style={{ marginTop: 8, fontSize: 11, color: T.textMuted, textAlign: "right" }}>
+              <span
+                onClick={() => setCriteriaFilter(null)}
+                style={{ color: T.primary, cursor: "pointer" }}
+              >
+                ✕ Clear filter
+              </span>
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Diagnostics Row */}
       <div style={{ display: "grid", gridTemplateColumns: "1.1fr 0.9fr 1fr", gap: 12 }}>
@@ -1261,14 +1392,15 @@ export default function ProjectDashboard({ project, onDashLoaded }: Props) {
                 setScoreFilter(null);
                 setNodeFilter(null);
                 setIssueFilter(null);
+                setCriteriaFilter(null);
                 setTableSearch("");
               }}
               style={{
                 fontSize: 11,
-                fontWeight: !selectedOutcome && !objectiveFilter && !intentFilter && !scoreFilter && !nodeFilter && !issueFilter ? 700 : 500,
-                color: !selectedOutcome && !objectiveFilter && !intentFilter && !scoreFilter && !nodeFilter && !issueFilter ? "#fff" : T.textSecondary,
-                background: !selectedOutcome && !objectiveFilter && !intentFilter && !scoreFilter && !nodeFilter && !issueFilter ? T.primary : T.cardAlt,
-                border: `1px solid ${!selectedOutcome && !objectiveFilter && !intentFilter && !scoreFilter && !nodeFilter && !issueFilter ? T.primary : T.border}`,
+                fontWeight: !selectedOutcome && !objectiveFilter && !intentFilter && !scoreFilter && !nodeFilter && !issueFilter && !criteriaFilter ? 700 : 500,
+                color: !selectedOutcome && !objectiveFilter && !intentFilter && !scoreFilter && !nodeFilter && !issueFilter && !criteriaFilter ? "#fff" : T.textSecondary,
+                background: !selectedOutcome && !objectiveFilter && !intentFilter && !scoreFilter && !nodeFilter && !issueFilter && !criteriaFilter ? T.primary : T.cardAlt,
+                border: `1px solid ${!selectedOutcome && !objectiveFilter && !intentFilter && !scoreFilter && !nodeFilter && !issueFilter && !criteriaFilter ? T.primary : T.border}`,
                 borderRadius: 20, padding: "3px 12px", cursor: "pointer",
               }}
             >
@@ -1387,6 +1519,21 @@ export default function ProjectDashboard({ project, onDashLoaded }: Props) {
                   Issue ({issueFilter.outcome.replace(/_/g, " ")}): {issueFilter.text.length > 40 ? issueFilter.text.slice(0, 40) + "…" : issueFilter.text}
                 </span>
                 <button onClick={() => setIssueFilter(null)} style={{ background: "none", border: "none", cursor: "pointer", padding: 0, fontSize: 12, color: "inherit", lineHeight: 1, flexShrink: 0 }}>×</button>
+              </span>
+            )}
+            {criteriaFilter && (
+              <span style={{
+                display: "inline-flex", alignItems: "center", gap: 5,
+                fontSize: 11, fontWeight: 600,
+                color: "#ef4444",
+                background: "#ef444418",
+                border: "1px solid #ef444444",
+                borderRadius: 20, padding: "2px 10px", maxWidth: 280,
+              }}>
+                <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                  Failed: {criteriaFilter.name.length > 40 ? criteriaFilter.name.slice(0, 40) + "…" : criteriaFilter.name}
+                </span>
+                <button onClick={() => setCriteriaFilter(null)} style={{ background: "none", border: "none", cursor: "pointer", padding: 0, fontSize: 12, color: "inherit", lineHeight: 1, flexShrink: 0 }}>×</button>
               </span>
             )}
             {intentFilter && (() => {
@@ -1536,7 +1683,7 @@ export default function ProjectDashboard({ project, onDashLoaded }: Props) {
               {tableRuns.length === 0 && (
                 <tr>
                   <td colSpan={5 + outcomeColumns.length} style={{ padding: "20px 10px", textAlign: "center", color: T.textMuted }}>
-                    No results
+                    {filterExtraLoading ? "Loading matching calls…" : "No results"}
                   </td>
                 </tr>
               )}

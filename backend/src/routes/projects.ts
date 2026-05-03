@@ -248,6 +248,43 @@ router.get("/:id", async (req: AuthRequest, res) => {
   }
 });
 
+// Fetch specific runs by IDs — used when a filter (issue/node) references runs not in the loaded 200
+router.get("/:id/runs-by-ids", async (req: AuthRequest, res) => {
+  try {
+    const project = await prisma.project.findUnique({ where: { id: req.params.id }, select: { userId: true } });
+    if (!project) return res.status(404).json({ error: "Project not found" });
+    if (!await canAccess(project.userId ?? null, req)) return res.status(403).json({ error: "Access denied" });
+
+    const raw = typeof req.query.ids === "string" ? req.query.ids : "";
+    const ids = raw.split(",").map(s => s.trim()).filter(Boolean).slice(0, 500);
+    if (ids.length === 0) return res.json([]);
+
+    const runs = await prisma.run.findMany({
+      where: { id: { in: ids }, projectId: req.params.id },
+      include: { evalResults: { include: { criterion: true } } },
+    });
+
+    const light = runs.map((run: any) => {
+      const wd = run.webhookData as any;
+      return {
+        ...run,
+        webhookData: wd ? {
+          caller_info: wd.caller_info ? { call_type: wd.caller_info.call_type } : undefined,
+          channelType: wd.channelType, channel: wd.channel, callType: wd.callType,
+          data: wd.data ? { channelType: wd.data.channelType } : undefined,
+        } : undefined,
+        callLog: run.callLog ? true : null,
+        transcript: run.transcript ? true : null,
+        evalResults: run.evalResults.map((er: any) => ({ ...er, detail: undefined, metadata: undefined })),
+      };
+    });
+    res.json(light);
+  } catch (err) {
+    console.error("[Projects] GET /:id/runs-by-ids error:", (err as Error).message);
+    res.status(500).json({ error: "Failed to fetch runs" });
+  }
+});
+
 // Dashboard aggregation endpoint
 router.get("/:id/dashboard", async (req: AuthRequest, res) => {
   try {
@@ -338,11 +375,27 @@ router.get("/:id/dashboard", async (req: AuthRequest, res) => {
     let objectiveTotal = 0;
     const achievedRunIds: string[] = [];
     const notAchievedRunIds: string[] = [];
+    // Criteria performance — per-criterion pass/fail stats + failed run IDs
+    const criteriaPerf: Record<string, { name: string; type: string; total: number; passed: number; failedRunIds: string[] }> = {};
 
     // Count all outcome totals first (including runs without eval results)
     for (const run of runs) {
       const outcome = (run.callOutcome || "unknown");
       outcomeTotals[outcome] = (outcomeTotals[outcome] || 0) + 1;
+    }
+
+    // Criteria pass/fail — covers all eval results (not just LAYERED_EVALUATION)
+    for (const run of runs) {
+      for (const er of run.evalResults as any[]) {
+        if (!er.criterion) continue;
+        const cid: string = er.criterionId;
+        const cname: string = er.criterion.name || cid;
+        const ctype: string = er.criterion.type || "UNKNOWN";
+        if (!criteriaPerf[cid]) criteriaPerf[cid] = { name: cname, type: ctype, total: 0, passed: 0, failedRunIds: [] };
+        criteriaPerf[cid].total++;
+        if (er.passed) criteriaPerf[cid].passed++;
+        else if (!criteriaPerf[cid].failedRunIds.includes(run.id)) criteriaPerf[cid].failedRunIds.push(run.id);
+      }
     }
 
     for (const run of runs) {
@@ -501,6 +554,15 @@ router.get("/:id/dashboard", async (req: AuthRequest, res) => {
       nodePerformance,
       topIssues,
       outcomeBreakdown,
+      criteriaPerformance: Object.values(criteriaPerf)
+        .map(c => ({
+          name: c.name,
+          type: c.type,
+          total: c.total,
+          passRate: c.total > 0 ? Math.round((c.passed / c.total) * 1000) / 10 : null,
+          failedRunIds: c.failedRunIds,
+        }))
+        .sort((a, b) => (b.passRate ?? 0) - (a.passRate ?? 0)),
     });
   } catch (err) {
     console.error("[Projects] GET /:id/dashboard error:", (err as Error).message);

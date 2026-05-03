@@ -360,6 +360,10 @@ export function getProjectDashboard(projectId: string) {
   return request<any>(`/projects/${projectId}/dashboard`);
 }
 
+export function getRunsByIds(projectId: string, ids: string[]) {
+  return request<any[]>(`/projects/${projectId}/runs-by-ids?ids=${ids.join(",")}`);
+}
+
 export function getProjectReport(projectId: string, weeks = 7) {
   return request<any>(`/projects/${projectId}/report?weeks=${weeks}`);
 }
