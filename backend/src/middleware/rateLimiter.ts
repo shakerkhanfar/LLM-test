@@ -25,10 +25,11 @@ function userKeyGenerator(req: Request): string {
  * Evaluation endpoints: 60 evals per user per 10 minutes.
  * Prevents accidental or malicious mass-evaluation loops.
  */
-// express-rate-limit v8 validates that custom keyGenerators don't use req.ip
-// directly without the ipKeyGenerator helper. Our normalizeIp() already handles
-// IPv6 correctly (strips ::ffff: prefix), so suppress the false-positive warning.
-const noIpv6Warn = { xForwardedForHeader: false, ipv6: false } as const;
+// Suppress false-positive warnings: our normalizeIp() already handles IPv6
+// correctly. keyGeneratorIpFallback:false silences the "use ipKeyGenerator
+// helper" warning; xForwardedForHeader:false prevents proxy-header warnings
+// in local dev where there's no reverse proxy.
+const noIpv6Warn = { xForwardedForHeader: false, keyGeneratorIpFallback: false } as const;
 
 export const evalRateLimit = rateLimit({
   windowMs: 10 * 60 * 1000,
