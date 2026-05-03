@@ -721,9 +721,12 @@ Rules:
   const usage = response.usage;
   const cost  = usage ? calcCost(usage.prompt_tokens, usage.completion_tokens) : 0;
 
-  // ISO date validator for LLM-returned date strings
-  const isIsoDate = (s: any): s is string =>
-    typeof s === "string" && /^\d{4}-\d{2}-\d{2}$/.test(s);
+  // ISO date validator for LLM-returned date strings — regex + round-trip to reject dates like 2026-13-45
+  const isIsoDate = (s: any): s is string => {
+    if (typeof s !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(s)) return false;
+    const d = new Date(s + "T00:00:00Z");
+    return !isNaN(d.getTime()) && d.toISOString().startsWith(s);
+  };
 
   // Guard all fields — LLM may return null, wrong types, or omit keys
   const failures: IntelligenceReport["failures"] =

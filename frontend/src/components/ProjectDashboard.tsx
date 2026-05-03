@@ -281,13 +281,19 @@ export default function ProjectDashboard({ project, onDashLoaded }: Props) {
     });
   }
 
+  const onDashLoadedRef = useRef(onDashLoaded);
+  useEffect(() => { onDashLoadedRef.current = onDashLoaded; });
+
   useEffect(() => {
+    let cancelled = false;
     getProjectDashboard(project.id)
       .then((data: DashData) => {
+        if (cancelled) return;
         setDashData(data);
-        onDashLoaded?.({ totalRuns: data.totalRuns, totalEvalCost: data.totalEvalCost ?? 0 });
+        onDashLoadedRef.current?.({ totalRuns: data.totalRuns, totalEvalCost: data.totalEvalCost ?? 0 });
       })
-      .catch((err: Error) => setDashError(err.message));
+      .catch((err: Error) => { if (!cancelled) setDashError(err.message); });
+    return () => { cancelled = true; };
   }, [project.id]);
 
   const completeRuns = useMemo(
@@ -309,12 +315,14 @@ export default function ProjectDashboard({ project, onDashLoaded }: Props) {
   // fall back to loaded completeRuns while dashData is loading
   const trendData = useMemo(() => {
     if (dashData?.scoreTrend && dashData.scoreTrend.length > 0) {
-      return dashData.scoreTrend.map((r, i) => ({
-        idx: i + 1,
-        score: r.avgScore,
-        count: r.count,
-        date: new Date(r.day).toLocaleDateString(),
-      }));
+      return dashData.scoreTrend
+        .filter(r => r.avgScore != null)
+        .map((r, i) => ({
+          idx: i + 1,
+          score: r.avgScore,
+          count: r.count,
+          date: new Date(r.day).toLocaleDateString(),
+        }));
     }
     // Fallback: individual points from loaded runs
     return [...completeRuns]
@@ -581,7 +589,7 @@ export default function ProjectDashboard({ project, onDashLoaded }: Props) {
                         cursor: "pointer", fontWeight: 700, fontSize: 22,
                       }}
                     >
-                      {notAchCount != null ? `${100 - achPct}%` : "—"}
+                      {notAchCount != null && achPct != null ? `${100 - achPct}%` : "—"}
                     </button>
                   </div>
                 )}
