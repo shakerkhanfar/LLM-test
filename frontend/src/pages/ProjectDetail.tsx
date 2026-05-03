@@ -90,6 +90,7 @@ export default function ProjectDetail() {
   // Accurate totals lifted from dashboard aggregate (covers all runs, not just loaded 200)
   const [dashTotalRuns, setDashTotalRuns]     = useState<number | null>(null);
   const [dashTotalCost, setDashTotalCost]     = useState<number | null>(null);
+  const [exportingBundle, setExportingBundle] = useState(false);
   const [showNewRun, setShowNewRun] = useState(false);
   const [modelInput, setModelInput] = useState("openai/gpt-4.1");
   const [showUpload, setShowUpload] = useState<string | null>(null);
@@ -532,24 +533,19 @@ export default function ProjectDetail() {
             Export Call IDs
           </button>
         )}
-        {(() => {
-          const [exporting, setExporting] = React.useState(false);
-          return (
-            <button
-              disabled={exporting}
-              onClick={async () => {
-                if (!confirm(`Export full project bundle?\n\nIncludes all ${trueRunCount} runs, criteria, transcripts, and eval results.\nLarge projects may take a moment.`)) return;
-                setExporting(true);
-                try { await exportProjectBundle(project.id, project.name); }
-                catch (err) { alert("Export failed: " + (err as Error).message); }
-                finally { setExporting(false); }
-              }}
-              style={{ ...btnStyle, background: T.cardAlt, color: T.primary, border: `1px solid ${T.primary}`, opacity: exporting ? 0.7 : 1 }}
-            >
-              {exporting ? "Exporting…" : "Export Project"}
-            </button>
-          );
-        })()}
+        <button
+          disabled={exportingBundle}
+          onClick={async () => {
+            if (!confirm(`Export full project bundle?\n\nIncludes all ${trueRunCount} runs, criteria, transcripts, and eval results.\nLarge projects may take a moment.`)) return;
+            setExportingBundle(true);
+            try { await exportProjectBundle(project.id, project.name); }
+            catch (err) { alert("Export failed: " + (err as Error).message); }
+            finally { setExportingBundle(false); }
+          }}
+          style={{ ...btnStyle, background: T.cardAlt, color: T.primary, border: `1px solid ${T.primary}`, opacity: exportingBundle ? 0.7 : 1 }}
+        >
+          {exportingBundle ? "Exporting…" : "Export Project"}
+        </button>
       </div>
 
       {/* History import panel */}
