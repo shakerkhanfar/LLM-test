@@ -1652,7 +1652,7 @@ export default function ProjectDashboard({ project, onDashLoaded }: Props) {
           <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
             <thead>
               <tr style={{ borderBottom: `1px solid ${T.border}` }}>
-                {["", "Conv ID", "Date", "Call Outcome", "Score", "Duration", ...outcomeColumns, ""].map((col) => (
+                {["", "Conv ID", "Date", "Call Outcome", "Score", "Duration", ...(dashData?.objectiveRate != null ? ["Objective"] : []), ...outcomeColumns, ""].map((col) => (
                   <th key={col} style={{
                     padding: "6px 10px", textAlign: "left", fontWeight: 600,
                     color: T.textMuted, fontSize: 11, whiteSpace: "nowrap",
@@ -1664,7 +1664,11 @@ export default function ProjectDashboard({ project, onDashLoaded }: Props) {
               </tr>
             </thead>
             <tbody>
-              {tableRuns.map((run: any) => {
+              {(() => {
+                const achievedSet = new Set(dashData?.achievedRunIds ?? []);
+                const notAchievedSet = new Set(dashData?.notAchievedRunIds ?? []);
+                const showObjective = dashData?.objectiveRate != null;
+                return tableRuns.map((run: any) => {
                 const rowKey = `row-${run.id}`;
                 const convKey = `conv-${run.id}`;
                 const rowCopied = copiedId === rowKey;
@@ -1722,6 +1726,17 @@ export default function ProjectDashboard({ project, onDashLoaded }: Props) {
                   <td style={{ padding: "6px 10px", color: T.textMuted, whiteSpace: "nowrap" }}>
                     {run.callDuration ? fmtDuration(run.callDuration) : "—"}
                   </td>
+                  {showObjective && (
+                    <td style={{ padding: "6px 10px", whiteSpace: "nowrap" }}>
+                      {achievedSet.has(run.id) ? (
+                        <span style={{ fontSize: 11, fontWeight: 600, color: "#17B26A", background: "#17B26A18", borderRadius: 4, padding: "2px 7px" }}>✓ Met</span>
+                      ) : notAchievedSet.has(run.id) ? (
+                        <span style={{ fontSize: 11, fontWeight: 600, color: "#ef4444", background: "#ef444418", borderRadius: 4, padding: "2px 7px" }}>✗ Not met</span>
+                      ) : (
+                        <span style={{ fontSize: 11, color: T.textMuted }}>—</span>
+                      )}
+                    </td>
+                  )}
                   {outcomeColumns.map((key) => (
                     <td key={key} style={{ padding: "6px 10px", color: T.textSecondary, maxWidth: 160, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                       {String((run.outcomeResult || {})[key] ?? "—")}
@@ -1742,10 +1757,11 @@ export default function ProjectDashboard({ project, onDashLoaded }: Props) {
                   </td>
                 </tr>
                 );
-              })}
+              });
+              })()}
               {tableRuns.length === 0 && (
                 <tr>
-                  <td colSpan={7 + outcomeColumns.length} style={{ padding: "20px 10px", textAlign: "center", color: T.textMuted }}>
+                  <td colSpan={7 + (dashData?.objectiveRate != null ? 1 : 0) + outcomeColumns.length} style={{ padding: "20px 10px", textAlign: "center", color: T.textMuted }}>
                     {filterExtraLoading ? "Loading matching calls…" : "No results"}
                   </td>
                 </tr>

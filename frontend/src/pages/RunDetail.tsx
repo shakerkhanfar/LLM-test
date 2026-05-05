@@ -18,6 +18,7 @@ function computeGoal(run: any): { status: GoalStatus; reason: string } | null {
   const summary: string = run.outcomeResult?.summary || "";
   const evalResults: any[] = run.evalResults || [];
 
+
   if (["NO_ANSWER", "BUSY", "VOICEMAIL"].includes(callStatus)) {
     const why = callStatus === "NO_ANSWER" ? "Call was not answered."
               : callStatus === "BUSY"      ? "Line was busy."
@@ -199,6 +200,15 @@ export default function RunDetail() {
 
   const transcript = (run.transcript || []) as any[];
   const evalResults = (run.evalResults || []) as any[];
+  const objectiveAchieved: boolean | null = (() => {
+    const le = evalResults.find((er: any) => er.criterion?.type === "LAYERED_EVALUATION");
+    if (!le?.detail) return null;
+    try {
+      const parsed = JSON.parse(le.detail);
+      if (parsed.objectiveAchieved != null) return !!parsed.objectiveAchieved;
+    } catch { /* ignore */ }
+    return null;
+  })();
 
   // Resolve recording URL — check all known Hamsa field locations
   const recordingUrl: string | null = (() => {
@@ -490,6 +500,20 @@ export default function RunDetail() {
             <div style={{ fontSize: 12, color: T.textSecondary, marginBottom: 4 }}>Overall Score</div>
             <div style={{ fontSize: 36, fontWeight: 700, color: run.overallScore >= 0.8 ? "#22c55e" : run.overallScore >= 0.5 ? "#f59e0b" : "#ef4444" }}>
               {(run.overallScore * 100).toFixed(0)}%
+            </div>
+          </div>
+        )}
+        {objectiveAchieved != null && (
+          <div>
+            <div style={{ fontSize: 12, color: T.textSecondary, marginBottom: 4 }}>Objective</div>
+            <div style={{
+              display: "inline-flex", alignItems: "center", gap: 6,
+              fontSize: 18, fontWeight: 700,
+              color: objectiveAchieved ? "#17B26A" : "#ef4444",
+              background: objectiveAchieved ? "#17B26A18" : "#ef444418",
+              borderRadius: 8, padding: "6px 12px",
+            }}>
+              {objectiveAchieved ? "✓ Met" : "✗ Not Met"}
             </div>
           </div>
         )}
