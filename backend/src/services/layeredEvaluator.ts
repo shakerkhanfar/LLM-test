@@ -102,6 +102,7 @@ export interface Layer4Result {
   outOfScopeTopics: string[];
   efficiency: { score: number; reasoning: string };
   criticalIssues: string[];
+  comments: string[];               // Non-critical observations — minor script deviations that didn't materially hurt the call
   improvements: string[];
   summary: string;
 }
@@ -811,7 +812,8 @@ IMPORTANT EVALUATION GUIDELINES:
 - Score the AGENT's behavior, not the user's cooperation level.
 - CALL OBJECTIVE: The primary question is whether the agent accomplished what it was supposed to do at this node (collect information, confirm booking, handle the request). Score based on this.
 - SPECIAL SUCCESSES — score these HIGH (9-10/10): (1) Out-of-scope requests that the agent correctly handles by transferring/forwarding to a call center or human agent. (2) Correct escalations per the agent's instructions. (3) Proper "I can't help with that" responses when the topic is genuinely outside scope. These are the agent doing its job correctly.
-- SCORE LOW for actual agent failures: hallucinating information, looping or staying stuck within the same node when the user has already provided what was needed and the agent should have moved on, ignoring user input that should trigger a transition, providing incorrect or fabricated information, failing to follow the node's explicit instructions.${evalContextBlock}
+- SCORE LOW for actual agent failures: hallucinating information, looping or staying stuck within the same node when the user has already provided what was needed and the agent should have moved on, ignoring user input that should trigger a transition, providing incorrect or fabricated information, failing to follow the node's explicit instructions.
+- ADAPTIVE BEHAVIOR IS GOOD: If the user volunteers context in their opening message (e.g., states their intent, provides a reference number, mentions what they need), the agent adapting its question to that context is correct and intelligent behavior — do NOT mark this as a violation. Only flag it as a minor note in "violated" if the exact script wording wasn't followed but intent was still correctly served. The "violated" list should contain REAL failures, not style differences.${evalContextBlock}
 
 AGENT CONTEXT:
 ${agentSummary ? safeTruncate(agentSummary, 2000) : "No agent summary available."}
@@ -848,7 +850,7 @@ Evaluate this node ONLY. Respond with JSON:
   "off_topic": {
     "detected": true/false,
     "turns": ["list any turns where the USER asked about something outside the agent's scope"],
-    "topics": ["list the specific out-of-scope topics the user brought up, e.g. 'insurance coverage details', 'medical reports', 'billing dispute'"]
+    "topics": ["list the specific out-of-scope topics the user brought up, e.g. 'refund policy details', 'competitor pricing', 'legal advice', 'technical support beyond scope'"]
   },
   "hallucination": {
     "detected": true/false,
@@ -859,7 +861,7 @@ Evaluate this node ONLY. Respond with JSON:
     "unnecessary_turns": 0,
     "reasoning": "could the agent have transitioned earlier?"
   },
-  "context_summary": "2-3 sentences describing WHAT was happening at this node — what the user wanted, what the agent did, and why it succeeded or failed. Include specific details from the transcript (e.g., 'User asked for dermatology appointment, agent kept asking for national ID repeatedly without acknowledging the user already provided it'). This should give someone who hasn't read the transcript a clear picture.",
+  "context_summary": "2-3 sentences describing WHAT was happening at this node — what the user wanted, what the agent did, and why it succeeded or failed. Include specific details from the transcript (e.g., 'User wanted to reschedule their order delivery, agent kept asking for the order number despite the user having already provided it twice'). This should give someone who hasn't read the transcript a clear picture.",
   "overall_node_score": 0-10
 }`;
 
@@ -962,7 +964,7 @@ export async function evaluateOverall(
   const prompt = `You are producing the final evaluation summary for a voice AI agent call. You receive pre-evaluated summaries from structural and per-node analyses — do NOT re-evaluate the raw data.
 ${shortCallBlock}
 IMPORTANT SCORING RULES:
-- PRIMARY METRIC: Did the agent accomplish the call's objective (e.g., successfully book an appointment, collect required information, resolve the user's request)? This is what the score should primarily reflect.
+- PRIMARY METRIC: Did the agent accomplish the call's objective (e.g., successfully complete the transaction, collect required information, resolve the user's request, schedule what was requested, answer the inquiry)? This is what the score should primarily reflect.
 - EXCEPTIONS — these are SUCCESSES, score HIGH: (1) Out-of-scope calls where the agent correctly transferred/forwarded to a call center or human agent — the agent did its job. (2) Correct escalations per the agent's design. (3) Proper refusals when the user asks about something genuinely outside the agent's scope.
 - SCORE LOW for actual agent failures: hallucinating information, getting stuck or looping within the same node when the user already provided what was needed, ignoring user input that should trigger a node transition, providing incorrect information, failing to follow its instructions at any node.
 - "Stuck" means the agent repeats the same prompt without progress DESPITE the user providing information. If the user is giving data piecemeal (e.g., dictating an ID digit by digit, correcting themselves), the agent correctly waiting is NOT stuck.
@@ -993,10 +995,17 @@ Based on these pre-evaluated results, provide a final JSON assessment:
     "score": 0-10,
     "reasoning": "was the call longer than needed? unnecessary turns?"
   },
-  "critical_issues": ["list of the most important ACTUAL problems found — do NOT list proper out-of-scope handling as an issue"],
+  "critical_issues": ["ONLY real failures that materially hurt the call: hallucination, getting stuck/looping despite user providing info, wrong node transition that broke the flow, ignoring user input, fabricating data. Do NOT include: adaptive clarification when user already gave context, minor wording differences from the script when the intent was served, or style preferences."],
+  "comments": ["Non-critical observations — minor deviations from the exact script that did NOT hurt the call outcome. Example: agent asked an equivalent intent question instead of the exact required wording, but the user's intent was correctly understood. These are coaching notes, not failures. Leave empty array if none."],
   "improvements": ["specific actionable improvements for the agent"],
   "summary": "2-3 sentence human-readable summary of the call quality. Mention if the agent correctly handled an out-of-scope request."
-}`;
+}
+
+CRITICAL DISTINCTION — adaptive behavior vs. script violation:
+- If the user volunteers context in their opening (e.g., "I want to check my order status", "I need to update my account details", "I'm calling about my earlier complaint"), the agent adapting its intent question to that context is GOOD behavior. Do NOT put this in critical_issues. At most, put a note in comments if the exact required phrasing wasn't used.
+- Only flag intent question violations as critical if the agent completely failed to clarify intent and proceeded blindly, or asked an irrelevant question.
+- Examples of ADAPTIVE behavior (put in comments at most, never in critical_issues): agent skipped asking "what can I help you with?" because the user already stated their reason; agent used a different but equivalent phrasing to confirm user intent; agent acknowledged what the user said before asking for required data.
+- Examples of REAL violations (put in critical_issues): agent asked for information the user already provided; agent provided a specific fact or number not in its instructions; agent transitioned to the wrong flow despite clear user intent; agent looped on the same question 3+ times ignoring the user's answer.`;
 
   const { detail, costUsd } = await evaluateWithLLMJudge(prompt, "", true);
 
@@ -1014,6 +1023,7 @@ Based on these pre-evaluated results, provide a final JSON assessment:
           reasoning: parsed.efficiency?.reasoning ?? "",
         },
         criticalIssues: parsed.critical_issues ?? [],
+        comments: parsed.comments ?? [],
         improvements: parsed.improvements ?? [],
         summary: parsed.summary ?? "",
       },
@@ -1029,6 +1039,7 @@ Based on these pre-evaluated results, provide a final JSON assessment:
         outOfScopeTopics: [],
         efficiency: { score: 5, reasoning: "" },
         criticalIssues: ["Failed to parse aggregation response"],
+        comments: [],
         improvements: [],
         summary: "",
       },
