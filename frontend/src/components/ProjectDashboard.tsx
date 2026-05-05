@@ -26,6 +26,8 @@ interface DashData {
   notAchievedRunIds: string[];
   outcomeBreakdown: Array<{ outcome: string; total: number; issues: Array<{ text: string; severity: string; count: number; pct: number; runIds: string[] }> }>;
   criteriaPerformance: Array<{ name: string; type: string; total: number; passRate: number | null; failedRunIds: string[] }>;
+  /** SQL-level score distribution — all complete runs, 10 buckets */
+  scoreDist?: Array<{ range: string; count: number }>;
 }
 
 interface Props {
@@ -141,6 +143,7 @@ export default function ProjectDashboard({ project, onDashLoaded }: Props) {
   const [dashError, setDashError] = useState<string | null>(null);
   const [tableSearch, setTableSearch] = useState("");
   const [expandedIssue, setExpandedIssue] = useState<number | null>(null);
+  const [issueExtraRuns, setIssueExtraRuns] = useState<any[]>([]);
   const [showAllIssues, setShowAllIssues] = useState(false);
   const ISSUES_DEFAULT_LIMIT = 8;
   const [issuesModalOpen, setIssuesModalOpen] = useState(false);
@@ -179,6 +182,8 @@ export default function ProjectDashboard({ project, onDashLoaded }: Props) {
     setIntentFilter(null);
     setTableSearch("");
     setFilterExtraRuns([]);
+    setExpandedOutcomes(new Set());
+    setIssueExtraRuns([]);
   }, [project.id]);
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [selectedOutcome, setSelectedOutcome] = useState<string | null>(null);
@@ -187,6 +192,7 @@ export default function ProjectDashboard({ project, onDashLoaded }: Props) {
   const [nodeFilter, setNodeFilter] = useState<{ label: string; runIds: string[] } | null>(null);
   const [issueFilter, setIssueFilter] = useState<{ text: string; outcome: string; runIds: string[] } | null>(null);
   const [criteriaFilter, setCriteriaFilter] = useState<{ name: string; runIds: string[] } | null>(null);
+  const [expandedOutcomes, setExpandedOutcomes] = useState<Set<string>>(new Set());
   const [intentFilter, setIntentFilter] = useState<string | null>(null);
   // Runs fetched on-demand when a filter's runIds aren't all in the loaded project.runs
   const [filterExtraRuns, setFilterExtraRuns] = useState<any[]>([]);
@@ -208,6 +214,22 @@ export default function ProjectDashboard({ project, onDashLoaded }: Props) {
       .finally(() => { if (!cancelled) setFilterExtraLoading(false); });
     return () => { cancelled = true; };
   }, [issueFilter, nodeFilter, criteriaFilter, project.id, project.runs]);
+
+  // When an issue is expanded inline, fetch any of its affected runs not already loaded
+  useEffect(() => {
+    if (expandedIssue === null || !dashData) { setIssueExtraRuns([]); return; }
+    const issueList = dashData.topIssues.filter(i => i.count >= 2);
+    const issue = issueList[expandedIssue];
+    if (!issue) { setIssueExtraRuns([]); return; }
+    const loadedIds = new Set((project.runs ?? []).map((r: any) => r.id));
+    const missing = issue.runIds.filter(id => !loadedIds.has(id));
+    if (missing.length === 0) { setIssueExtraRuns([]); return; }
+    let cancelled = false;
+    getRunsByIds(project.id, missing)
+      .then(runs => { if (!cancelled) setIssueExtraRuns(runs); })
+      .catch(() => { if (!cancelled) setIssueExtraRuns([]); });
+    return () => { cancelled = true; };
+  }, [expandedIssue, dashData, project.id, project.runs]);
 
   function selectOutcome(name: string) {
     setSelectedOutcome(prev => prev === name ? null : name);
@@ -455,12 +477,16 @@ export default function ProjectDashboard({ project, onDashLoaded }: Props) {
       .map(k => ({ name: k, value: dashData.sentiment[k], color: SENTIMENT_COLORS[k] }));
   }, [dashData]);
 
-  // Score distribution
+  // Score distribution — prefer server-side SQL data (covers all runs), fall back to loaded 200
   const scoreDistData = useMemo(() => {
+    const fills = (i: number) => i * 10 >= 70 ? "#17B26A" : i * 10 >= 50 ? "#f59e0b" : "#ef4444";
+    if (dashData?.scoreDist) {
+      return dashData.scoreDist.map((b, i) => ({ ...b, fill: fills(i) }));
+    }
     const bins = Array.from({ length: 10 }, (_, i) => ({
       range: `${i * 10}-${i * 10 + 10}`,
       count: 0,
-      fill: i * 10 >= 70 ? "#17B26A" : i * 10 >= 50 ? "#f59e0b" : "#ef4444",
+      fill: fills(i),
     }));
     for (const r of completeRuns) {
       if (r.overallScore == null) continue;
@@ -469,13 +495,18 @@ export default function ProjectDashboard({ project, onDashLoaded }: Props) {
       bins[bin].count++;
     }
     return bins;
-  }, [completeRuns]);
+  }, [dashData?.scoreDist, completeRuns]);
 
-  // Only count runs that actually have a score (COMPLETE runs without score are still in-progress evals)
-  const scoredRuns = completeRuns.filter((r: any) => r.overallScore != null);
-  const passCount = scoredRuns.filter((r: any) => r.overallScore >= 0.7).length;
-  const warnCount = scoredRuns.filter((r: any) => r.overallScore >= 0.5 && r.overallScore < 0.7).length;
-  const failCount = scoredRuns.filter((r: any) => r.overallScore < 0.5).length;
+  // Pass/warn/fail counts — prefer server-side scoreDist for accuracy across all runs
+  const passCount = dashData?.scoreDist
+    ? dashData.scoreDist.slice(7).reduce((s, b) => s + b.count, 0)
+    : completeRuns.filter((r: any) => r.overallScore != null && r.overallScore >= 0.7).length;
+  const warnCount = dashData?.scoreDist
+    ? dashData.scoreDist.slice(5, 7).reduce((s, b) => s + b.count, 0)
+    : completeRuns.filter((r: any) => r.overallScore != null && r.overallScore >= 0.5 && r.overallScore < 0.7).length;
+  const failCount = dashData?.scoreDist
+    ? dashData.scoreDist.slice(0, 5).reduce((s, b) => s + b.count, 0)
+    : completeRuns.filter((r: any) => r.overallScore != null && r.overallScore < 0.5).length;
 
   // Call outcomes table
   const outcomeColumns = useMemo(() => {
@@ -1021,7 +1052,10 @@ export default function ProjectDashboard({ project, onDashLoaded }: Props) {
             <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
               {(showAllIssues ? dashData.topIssues.filter(i => i.count >= 2) : dashData.topIssues.filter(i => i.count >= 2).slice(0, ISSUES_DEFAULT_LIMIT)).map((issue, idx) => {
                 const isOpen = expandedIssue === idx;
-                const affectedRuns = (project.runs ?? []).filter((r: any) => issue.runIds.includes(r.id));
+                const allLoadedRuns = isOpen
+                  ? (() => { const seen = new Set((project.runs ?? []).map((r: any) => r.id)); return [...(project.runs ?? []), ...issueExtraRuns.filter((r: any) => !seen.has(r.id))]; })()
+                  : (project.runs ?? []);
+                const affectedRuns = allLoadedRuns.filter((r: any) => issue.runIds.includes(r.id));
                 return (
                   <div key={idx}>
                     <div style={{ display: "flex", alignItems: "flex-start", gap: 8, fontSize: 12, padding: "4px 0" }}>
@@ -1234,6 +1268,10 @@ export default function ProjectDashboard({ project, onDashLoaded }: Props) {
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(240px, 1fr))", gap: 12 }}>
             {dashData.outcomeBreakdown.map(({ outcome, total, issues }) => {
               const color = getOutcomeColor(outcome);
+              const COLLAPSED_LIMIT = 4;
+              const isExpanded = expandedOutcomes.has(outcome);
+              const visibleIssues = isExpanded ? issues : issues.slice(0, COLLAPSED_LIMIT);
+              const hiddenCount = issues.length - COLLAPSED_LIMIT;
               return (
                 <div key={outcome} style={{ border: `1px solid ${color}44`, borderRadius: 8, overflow: "hidden" }}>
                   <div
@@ -1251,7 +1289,7 @@ export default function ProjectDashboard({ project, onDashLoaded }: Props) {
                     </span>
                   </div>
                   <div style={{ padding: "8px 12px", display: "flex", flexDirection: "column", gap: 6 }}>
-                    {issues.map((issue, i) => {
+                    {visibleIssues.map((issue, i) => {
                       const isActive = issueFilter?.text === issue.text && issueFilter?.outcome === outcome;
                       return (
                       <div
@@ -1281,6 +1319,28 @@ export default function ProjectDashboard({ project, onDashLoaded }: Props) {
                       </div>
                       );
                     })}
+                    {!isExpanded && hiddenCount > 0 && (
+                      <button
+                        onClick={(e) => { e.stopPropagation(); setExpandedOutcomes(prev => new Set([...prev, outcome])); }}
+                        style={{
+                          marginTop: 2, padding: "4px 0", background: "none", border: "none",
+                          fontSize: 11, color, fontWeight: 600, cursor: "pointer", textAlign: "left",
+                        }}
+                      >
+                        + {hiddenCount} more issue{hiddenCount !== 1 ? "s" : ""}
+                      </button>
+                    )}
+                    {isExpanded && issues.length > COLLAPSED_LIMIT && (
+                      <button
+                        onClick={(e) => { e.stopPropagation(); setExpandedOutcomes(prev => { const s = new Set(prev); s.delete(outcome); return s; }); }}
+                        style={{
+                          marginTop: 2, padding: "4px 0", background: "none", border: "none",
+                          fontSize: 11, color: T.textMuted, fontWeight: 600, cursor: "pointer", textAlign: "left",
+                        }}
+                      >
+                        Show less
+                      </button>
+                    )}
                   </div>
                 </div>
               );
@@ -1707,7 +1767,22 @@ export default function ProjectDashboard({ project, onDashLoaded }: Props) {
 
         const IssueRow = ({ issue, idx }: { issue: typeof allIssues[0]; idx: number }) => {
           const isOpen = issuesModalExpanded === idx;
-          const affectedRuns = (project.runs ?? []).filter((r: any) => issue.runIds.includes(r.id));
+          const [modalIssueExtraRuns, setModalIssueExtraRuns] = useState<any[]>([]);
+          useEffect(() => {
+            if (!isOpen) { setModalIssueExtraRuns([]); return; }
+            const loadedIds = new Set((project.runs ?? []).map((r: any) => r.id));
+            const missing = issue.runIds.filter(id => !loadedIds.has(id));
+            if (missing.length === 0) return;
+            let cancelled = false;
+            getRunsByIds(project.id, missing)
+              .then(runs => { if (!cancelled) setModalIssueExtraRuns(runs); })
+              .catch(() => {});
+            return () => { cancelled = true; };
+          }, [isOpen, issue.runIds, project.id, project.runs]);
+          const allLoadedRuns = isOpen
+            ? (() => { const seen = new Set((project.runs ?? []).map((r: any) => r.id)); return [...(project.runs ?? []), ...modalIssueExtraRuns.filter((r: any) => !seen.has(r.id))]; })()
+            : (project.runs ?? []);
+          const affectedRuns = allLoadedRuns.filter((r: any) => issue.runIds.includes(r.id));
           return (
             <div style={{ borderBottom: `1px solid ${T.border}` }}>
               <div style={{ display: "flex", alignItems: "flex-start", gap: 10, padding: "10px 20px" }}>

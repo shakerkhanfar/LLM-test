@@ -158,6 +158,7 @@ model EvalResult {
   evaluatedAt   DateTime  @default(now())
 
   @@unique([runId, criterionId])
+  @@index([runId, passed])
 }
 
 model WordLabel {

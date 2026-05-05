@@ -555,7 +555,11 @@ router.get("/:id/dashboard", async (req: AuthRequest, res) => {
     // Accurate KPI aggregates over ALL runs — no row limit
     // total_all   = every run regardless of status (shown as "Total Runs/Calls")
     // total_complete / avg_score / passed = stats for COMPLETE runs only (for KPI cards)
+    // avg_score / passed / total_meaningful exclude runs where fewer than 2 criteria were
+    // actually evaluated (non-null passed value) — single-greeting calls would otherwise
+    // inflate the average via a trivial Word Accuracy 100%.
     // total_eval_cost = sum of eval spend across all runs
+    const MIN_EVALUATED_CRITERIA = 2;
     const [kpiAgg] = await prisma.$queryRaw<Array<{
       total_all: bigint;
       total_complete: bigint;
@@ -569,12 +573,42 @@ router.get("/:id/dashboard", async (req: AuthRequest, res) => {
         COUNT(*)                                                               AS total_all,
         COUNT(*) FILTER (WHERE status = 'COMPLETE')                            AS total_complete,
         COUNT(*) FILTER (WHERE status = 'FAILED')                              AS total_failed,
-        AVG("overallScore") FILTER (WHERE status = 'COMPLETE')::double precision AS avg_score,
-        COUNT(*) FILTER (WHERE "overallScore" >= 0.7)                          AS passed,
+        AVG("overallScore") FILTER (
+          WHERE status = 'COMPLETE'
+            AND "overallScore" IS NOT NULL
+            AND (
+              SELECT COUNT(*) FROM "EvalResult" er
+              WHERE er."runId" = r.id AND er.passed IS NOT NULL
+            ) >= ${MIN_EVALUATED_CRITERIA}
+        )::double precision                                                    AS avg_score,
+        COUNT(*) FILTER (
+          WHERE "overallScore" >= 0.7
+            AND (
+              SELECT COUNT(*) FROM "EvalResult" er
+              WHERE er."runId" = r.id AND er.passed IS NOT NULL
+            ) >= ${MIN_EVALUATED_CRITERIA}
+        )                                                                      AS passed,
         AVG("callDuration") FILTER (WHERE status = 'COMPLETE')::double precision AS avg_duration,
         SUM("evalCost")::double precision                                       AS total_eval_cost
-      FROM "Run"
-      WHERE "projectId" = ${req.params.id}
+      FROM "Run" r
+      WHERE r."projectId" = ${req.params.id}
+    `;
+
+    // SQL-level: score distribution in 10% buckets over ALL complete scored runs
+    const scoreDistRows = await prisma.$queryRaw<Array<{ bucket: number; cnt: bigint }>>`
+      SELECT
+        LEAST(FLOOR("overallScore" * 10)::int, 9) AS bucket,
+        COUNT(*) AS cnt
+      FROM "Run" r
+      WHERE r."projectId" = ${req.params.id}
+        AND r.status = 'COMPLETE'
+        AND r."overallScore" IS NOT NULL
+        AND (
+          SELECT COUNT(*) FROM "EvalResult" er
+          WHERE er."runId" = r.id AND er.passed IS NOT NULL
+        ) >= ${MIN_EVALUATED_CRITERIA}
+      GROUP BY bucket
+      ORDER BY bucket
     `;
 
     // SQL-level: outcome distribution over ALL runs (callOutcome is a plain column, no JSON)
@@ -595,11 +629,15 @@ router.get("/:id/dashboard", async (req: AuthRequest, res) => {
         DATE_TRUNC('day', "callDate")            AS day,
         AVG("overallScore")::double precision    AS avg_score,
         COUNT(*)                                 AS run_count
-      FROM "Run"
-      WHERE "projectId" = ${req.params.id}
-        AND status = 'COMPLETE'
-        AND "callDate" IS NOT NULL
-        AND "overallScore" IS NOT NULL
+      FROM "Run" r
+      WHERE r."projectId" = ${req.params.id}
+        AND r.status = 'COMPLETE'
+        AND r."callDate" IS NOT NULL
+        AND r."overallScore" IS NOT NULL
+        AND (
+          SELECT COUNT(*) FROM "EvalResult" er
+          WHERE er."runId" = r.id AND er.passed IS NOT NULL
+        ) >= ${MIN_EVALUATED_CRITERIA}
       GROUP BY DATE_TRUNC('day', "callDate")
       ORDER BY day
     `;
@@ -764,8 +802,7 @@ router.get("/:id/dashboard", async (req: AuthRequest, res) => {
             pct: total > 0 ? Math.round((runIds.length / total) * 100) : 0,
             runIds,
           }))
-          .sort((a, b) => b.count - a.count)
-          .slice(0, 4);
+          .sort((a, b) => b.count - a.count);
         return { outcome, total, issues };
       })
       .filter(b => b.issues.length > 0);
@@ -785,6 +822,16 @@ router.get("/:id/dashboard", async (req: AuthRequest, res) => {
     const totalEvalCost = kpiAgg?.total_eval_cost != null
       ? Number(kpiAgg.total_eval_cost)
       : 0;
+
+    // Score distribution from SQL — 10 buckets: 0-10, 10-20 … 90-100
+    const scoreDist = Array.from({ length: 10 }, (_, i) => ({
+      range: `${i * 10}-${i * 10 + 10}`,
+      count: 0,
+    }));
+    for (const row of scoreDistRows) {
+      const idx = Math.min(Math.max(Number(row.bucket), 0), 9);
+      scoreDist[idx].count = Number(row.cnt);
+    }
 
     // Outcome distribution from SQL (all runs, plain column — no JSON parsing)
     const outcomeDist: Record<string, number> = {};
@@ -816,6 +863,7 @@ router.get("/:id/dashboard", async (req: AuthRequest, res) => {
       nodePerformance,
       topIssues,
       outcomeBreakdown,
+      scoreDist,
       criteriaPerformance: Object.values(criteriaPerf)
         .map(c => ({
           name: c.name,
