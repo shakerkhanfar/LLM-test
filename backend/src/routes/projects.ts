@@ -653,6 +653,7 @@ router.get("/:id/dashboard", async (req: AuthRequest, res) => {
         callDuration: true,
         callOutcome: true,
         conversationId: true,
+        outcomeResult: true,
         evalResults: {
           include: { criterion: true },
         },
@@ -670,6 +671,9 @@ router.get("/:id/dashboard", async (req: AuthRequest, res) => {
     let objectiveTotal = 0;
     const achievedRunIds: string[] = [];
     const notAchievedRunIds: string[] = [];
+    // Outcome-extractor objective — from outcomeResult.objective_met ("yes"/"no"/bool)
+    let outcomeObjCount = 0;
+    let outcomeObjTotal = 0;
     // Criteria performance — per-criterion pass/fail stats + failed run IDs
     const criteriaPerf: Record<string, { name: string; type: string; total: number; passed: number; failedRunIds: string[] }> = {};
 
@@ -760,7 +764,7 @@ router.get("/:id/dashboard", async (req: AuthRequest, res) => {
         }
       }
 
-      // Objective
+      // Objective (layered eval)
       if (detail.objectiveAchieved != null) {
         objectiveTotal++;
         if (detail.objectiveAchieved === true || detail.objectiveAchieved === 1) {
@@ -768,6 +772,18 @@ router.get("/:id/dashboard", async (req: AuthRequest, res) => {
           achievedRunIds.push(run.id);
         } else {
           notAchievedRunIds.push(run.id);
+        }
+      }
+
+      // Objective (outcome extractor — outcomeResult.objective_met = "yes"/"no"/bool)
+      const or = run.outcomeResult as any;
+      if (or != null) {
+        const raw = or.objective_met;
+        if (raw != null && raw !== "" && raw !== "n/a") {
+          outcomeObjTotal++;
+          if (raw === true || raw === 1 || (typeof raw === "string" && raw.toLowerCase() === "yes")) {
+            outcomeObjCount++;
+          }
         }
       }
     }
@@ -858,6 +874,7 @@ router.get("/:id/dashboard", async (req: AuthRequest, res) => {
       scoreTrend,                // Per-day score averages (all runs, SQL-level)
       sentiment: sentimentCounts,
       objectiveRate: objectiveTotal > 0 ? Math.round((objectiveCount / objectiveTotal) * 100) / 100 : null,
+      outcomeObjectiveRate: outcomeObjTotal > 0 ? Math.round((outcomeObjCount / outcomeObjTotal) * 100) / 100 : null,
       achievedRunIds,
       notAchievedRunIds,
       nodePerformance,

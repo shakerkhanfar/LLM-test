@@ -20,6 +20,8 @@ interface DashData {
   scoreTrend: Array<{ day: string; avgScore: number | null; count: number }>;
   sentiment: Record<string, number>;
   objectiveRate: number | null;
+  /** Objective rate from outcome extractor LLM (outcomeResult.objective_met) */
+  outcomeObjectiveRate: number | null;
   nodePerformance: Array<{ label: string; avg: number; count: number; runIds: string[] }>;
   topIssues: Array<{ text: string; severity: string; count: number; runIds: string[] }>;
   achievedRunIds: string[];
@@ -641,16 +643,18 @@ export default function ProjectDashboard({ project, onDashLoaded }: Props) {
         ] as const).map(({ label, value, color, tip }) => {
           if (label === "Objective Achieved") {
             const achPct = dashData?.objectiveRate != null ? Math.round(dashData.objectiveRate * 100) : null;
-            const notAchCount = dashData ? dashData.notAchievedRunIds.length : null;
+            const outcomePct = dashData?.outcomeObjectiveRate != null ? Math.round(dashData.outcomeObjectiveRate * 100) : null;
             return (
               <div key={label} style={CARD_STYLE}>
                 <div style={{ ...SECTION_LABEL_STYLE, display: "flex", alignItems: "center", marginBottom: 8 }}>
                   {label}<InfoTip text={tip} />
                 </div>
+                {/* Row 1: Layered eval objectiveAchieved */}
+                <div style={{ fontSize: 10, color: T.textMuted, marginBottom: 4 }}>Node evaluation</div>
                 {achPct == null ? (
                   <div style={{ fontSize: 28, fontWeight: 700, color: T.text }}>—</div>
                 ) : (
-                  <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                  <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 10 }}>
                     <button
                       onClick={() => selectObjective("achieved")}
                       title="View calls where objective was met"
@@ -673,11 +677,31 @@ export default function ProjectDashboard({ project, onDashLoaded }: Props) {
                         cursor: "pointer", fontWeight: 700, fontSize: 22,
                       }}
                     >
-                      {notAchCount != null && achPct != null ? `${100 - achPct}%` : "—"}
+                      {`${100 - achPct}%`}
                     </button>
                   </div>
                 )}
-                <div style={{ fontSize: 10, color: T.textMuted, marginTop: 4 }}>
+                {/* Row 2: Outcome extractor objective_met */}
+                {outcomePct != null && (
+                  <>
+                    <div style={{ fontSize: 10, color: T.textMuted, marginBottom: 4 }}>Outcome extractor</div>
+                    <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                      <span style={{
+                        background: "#17B26A18", color: "#17B26A",
+                        borderRadius: 7, padding: "4px 10px", fontWeight: 700, fontSize: 22,
+                      }}>
+                        {outcomePct}%
+                      </span>
+                      <span style={{
+                        background: "#ef444418", color: "#ef4444",
+                        borderRadius: 7, padding: "4px 10px", fontWeight: 700, fontSize: 22,
+                      }}>
+                        {100 - outcomePct}%
+                      </span>
+                    </div>
+                  </>
+                )}
+                <div style={{ fontSize: 10, color: T.textMuted, marginTop: 6 }}>
                   {objectiveFilter ? (
                     <span style={{ color: T.primary, cursor: "pointer" }} onClick={() => setObjectiveFilter(null)}>✕ Clear filter</span>
                   ) : (
