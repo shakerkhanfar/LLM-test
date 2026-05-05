@@ -36,6 +36,24 @@ function num(val: unknown, fallback: number): number {
   return isNaN(n) ? fallback : n;
 }
 
+/**
+ * Builds a compact agent-specific scope block injected into evaluation prompts.
+ * Uses the agentSummary (LLM-generated analysis of the agent's purpose and design)
+ * to anchor scope detection, adaptive behavior judgement, and example generation
+ * to this specific agent — not generic hardcoded assumptions.
+ */
+function buildAgentScopeBlock(agentSummary: string): string {
+  if (!agentSummary?.trim()) return "";
+  return `
+AGENT-SPECIFIC SCOPE GUIDANCE (use this to calibrate all judgements below):
+The AGENT CONTEXT section above describes this agent's purpose, capabilities, and design.
+Use it as your reference for:
+1. OUT-OF-SCOPE detection: A topic is out of scope if it is NOT covered by the agent's described purpose. Do not apply generic assumptions — judge based on what this specific agent is designed to handle.
+2. ADAPTIVE BEHAVIOR: What counts as "correctly serving the intent" depends on this agent's node instructions. If the node says "ask for X", the agent satisfies it by collecting X — even if phrased differently than the script. If the user already provided X, not re-asking is adaptive and correct.
+3. CRITICAL ISSUES: A real failure is when the agent does not accomplish what its own instructions require — hallucinating data, ignoring a required step, looping without progress, or providing wrong information. Style deviations are not failures.
+`;
+}
+
 // ─── Types ────────────────────────────────────────────────────────
 
 export interface NodeVisit {
@@ -817,6 +835,7 @@ IMPORTANT EVALUATION GUIDELINES:
 
 AGENT CONTEXT:
 ${agentSummary ? safeTruncate(agentSummary, 2000) : "No agent summary available."}
+${buildAgentScopeBlock(agentSummary)}
 
 NODE BEING EVALUATED: "${visit.nodeLabel}" (type: ${visit.nodeType})
 
@@ -849,8 +868,8 @@ Evaluate this node ONLY. Respond with JSON:
   },
   "off_topic": {
     "detected": true/false,
-    "turns": ["list any turns where the USER asked about something outside the agent's scope"],
-    "topics": ["list the specific out-of-scope topics the user brought up, e.g. 'refund policy details', 'competitor pricing', 'legal advice', 'technical support beyond scope'"]
+    "turns": ["list any turns where the USER asked about something outside this agent's scope"],
+    "topics": ["specific topics from this call that fall outside this agent's stated purpose — determine scope from the AGENT CONTEXT above, not generic assumptions"]
   },
   "hallucination": {
     "detected": true/false,
@@ -861,7 +880,7 @@ Evaluate this node ONLY. Respond with JSON:
     "unnecessary_turns": 0,
     "reasoning": "could the agent have transitioned earlier?"
   },
-  "context_summary": "2-3 sentences describing WHAT was happening at this node — what the user wanted, what the agent did, and why it succeeded or failed. Include specific details from the transcript (e.g., 'User wanted to reschedule their order delivery, agent kept asking for the order number despite the user having already provided it twice'). This should give someone who hasn't read the transcript a clear picture.",
+  "context_summary": "2-3 sentences describing WHAT was happening at this node — what the user wanted, what the agent did, and why it succeeded or failed. Include specific details from the transcript (names, numbers, requests, key phrases). This should give someone who hasn't read the transcript a clear picture of the interaction at this node.",
   "overall_node_score": 0-10
 }`;
 
@@ -973,7 +992,7 @@ IMPORTANT SCORING RULES:
 
 AGENT CONTEXT:
 ${agentSummary ? safeTruncate(agentSummary, 2000) : "No agent summary available."}
-
+${buildAgentScopeBlock(agentSummary)}
 CALL METADATA:
 - Call outcome: ${callOutcome || "unknown"}
 - Call duration: ${callDuration ? callDuration + "s" : "unknown"}
@@ -990,22 +1009,22 @@ Based on these pre-evaluated results, provide a final JSON assessment:
   "objective_achieved": true/false/null,
   "caller_sentiment": "positive" | "neutral" | "negative" | "unknown",
   "out_of_scope_handled": true/false/null,
-  "out_of_scope_topics": ["list topics the user asked about that were outside the agent's scope, if any"],
+  "out_of_scope_topics": ["topics the user raised that fall outside this agent's stated purpose — derive scope from AGENT CONTEXT above, not assumptions"],
   "efficiency": {
     "score": 0-10,
     "reasoning": "was the call longer than needed? unnecessary turns?"
   },
   "critical_issues": ["ONLY real failures that materially hurt the call: hallucination, getting stuck/looping despite user providing info, wrong node transition that broke the flow, ignoring user input, fabricating data. Do NOT include: adaptive clarification when user already gave context, minor wording differences from the script when the intent was served, or style preferences."],
-  "comments": ["Non-critical observations — minor deviations from the exact script that did NOT hurt the call outcome. Example: agent asked an equivalent intent question instead of the exact required wording, but the user's intent was correctly understood. These are coaching notes, not failures. Leave empty array if none."],
-  "improvements": ["specific actionable improvements for the agent"],
+  "comments": ["Non-critical observations — minor deviations from the exact script that did NOT hurt the call outcome. Example: agent used equivalent phrasing instead of exact script wording but the user's intent was correctly served. These are coaching notes, not failures. Leave empty array if none."],
+  "improvements": ["specific actionable improvements for the agent, grounded in this agent's purpose and design"],
   "summary": "2-3 sentence human-readable summary of the call quality. Mention if the agent correctly handled an out-of-scope request."
 }
 
-CRITICAL DISTINCTION — adaptive behavior vs. script violation:
-- If the user volunteers context in their opening (e.g., "I want to check my order status", "I need to update my account details", "I'm calling about my earlier complaint"), the agent adapting its intent question to that context is GOOD behavior. Do NOT put this in critical_issues. At most, put a note in comments if the exact required phrasing wasn't used.
-- Only flag intent question violations as critical if the agent completely failed to clarify intent and proceeded blindly, or asked an irrelevant question.
-- Examples of ADAPTIVE behavior (put in comments at most, never in critical_issues): agent skipped asking "what can I help you with?" because the user already stated their reason; agent used a different but equivalent phrasing to confirm user intent; agent acknowledged what the user said before asking for required data.
-- Examples of REAL violations (put in critical_issues): agent asked for information the user already provided; agent provided a specific fact or number not in its instructions; agent transitioned to the wrong flow despite clear user intent; agent looped on the same question 3+ times ignoring the user's answer.`;
+CRITICAL DISTINCTION — adaptive behavior vs. script violation (calibrated to this agent):
+- What counts as "adaptive" vs. "violation" depends on this specific agent's design. Refer to the AGENT CONTEXT and per-node summaries above.
+- ADAPTIVE (put in comments at most): agent skipped a question because the user already answered it; agent used different but equivalent phrasing to confirm user intent; agent acknowledged user context before asking for required data.
+- REAL VIOLATIONS (put in critical_issues): agent asked for information the user already provided; agent stated a specific fact or number not in its instructions; agent took the wrong transition despite clear user intent; agent looped on the same question 3+ times ignoring the user's answer; agent failed a step that its own instructions mark as required.
+- When in doubt: if the agent's outcome (did it serve the user's request correctly?) was positive, lean toward adaptive. If the outcome was negative, investigate whether a script deviation caused it.`;
 
   const { detail, costUsd } = await evaluateWithLLMJudge(prompt, "", true);
 
