@@ -1513,8 +1513,9 @@ export default function RunDetail() {
         </div>
       )}
 
-      {/* Call metadata bar — outcome, time, caller number */}
+      {/* Call metadata bar — outcome, time, caller number, full outcome fields */}
       {(() => {
+        const SKIP_KEYS = new Set(["summary", "Sunnary", "call_outcome", "default_params", "failure_reason"]);
         const callerPhone =
           run.outcomeResult?.caller_phone ||
           run.webhookData?.caller_info?.caller_number ||
@@ -1525,33 +1526,69 @@ export default function RunDetail() {
           const d = new Date(run.callDate);
           const timeStr = d.toLocaleString();
           const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
-          // Use the offset at the actual call time (handles DST correctly)
           const offset = -d.getTimezoneOffset();
           const sign = offset >= 0 ? "+" : "-";
           const hh = String(Math.floor(Math.abs(offset) / 60)).padStart(2, "0");
           const mm = String(Math.abs(offset) % 60).padStart(2, "0");
           return `${timeStr} (your time · ${tz} UTC${sign}${hh}:${mm})`;
         })() : null;
-        const items: { label: string; value: string }[] = [];
-        if (run.callOutcome) items.push({ label: "Call Outcome", value: run.callOutcome.replace(/_/g, " ") });
-        if (callTime) items.push({ label: "Time", value: callTime });
-        if (callerPhone) items.push({ label: "Caller", value: callerPhone });
-        if (items.length === 0) return null;
+
+        // All non-empty outcome fields, excluding internal/redundant ones
+        const outcomeFields: { label: string; value: string }[] = run.outcomeResult
+          ? Object.entries(run.outcomeResult as Record<string, any>)
+              .filter(([k, v]) => !SKIP_KEYS.has(k) && v != null && v !== "" && k !== "caller_phone")
+              .map(([k, v]) => ({
+                label: k.replace(/_/g, " "),
+                value: typeof v === "object" ? JSON.stringify(v) : String(v),
+              }))
+          : [];
+
+        const hasAny = run.callOutcome || callTime || callerPhone || outcomeFields.length > 0;
+        if (!hasAny) return null;
+
         return (
           <div style={{
-            display: "flex", gap: 24, flexWrap: "wrap",
-            padding: "12px 16px", marginBottom: 24,
+            padding: "14px 16px", marginBottom: 24,
             background: T.card, border: `1px solid ${T.border}`,
             borderRadius: 8, boxShadow: T.shadow,
           }}>
-            {items.map(({ label, value }) => (
-              <div key={label}>
-                <div style={{ fontSize: 11, color: T.textMuted, marginBottom: 2 }}>{label}</div>
-                <div style={{ fontSize: 13, fontWeight: 600, color: T.text, textTransform: label === "Call Outcome" ? "capitalize" : "none" }}>
-                  {value}
+            {/* First row: call outcome, time, caller */}
+            <div style={{ display: "flex", gap: 24, flexWrap: "wrap", marginBottom: outcomeFields.length > 0 ? 12 : 0 }}>
+              {run.callOutcome && (
+                <div>
+                  <div style={{ fontSize: 11, color: T.textMuted, marginBottom: 2 }}>Call Outcome</div>
+                  <div style={{ fontSize: 13, fontWeight: 600, color: T.text, textTransform: "capitalize" }}>
+                    {run.callOutcome.replace(/_/g, " ")}
+                  </div>
                 </div>
+              )}
+              {callTime && (
+                <div>
+                  <div style={{ fontSize: 11, color: T.textMuted, marginBottom: 2 }}>Time</div>
+                  <div style={{ fontSize: 13, fontWeight: 600, color: T.text }}>{callTime}</div>
+                </div>
+              )}
+              {callerPhone && (
+                <div>
+                  <div style={{ fontSize: 11, color: T.textMuted, marginBottom: 2 }}>Caller</div>
+                  <div style={{ fontSize: 13, fontWeight: 600, color: T.text }}>{callerPhone}</div>
+                </div>
+              )}
+            </div>
+            {/* Second row: all outcome fields as compact chips */}
+            {outcomeFields.length > 0 && (
+              <div style={{ display: "flex", gap: 6, flexWrap: "wrap", paddingTop: 10, borderTop: `1px solid ${T.border}` }}>
+                {outcomeFields.map(({ label, value }) => (
+                  <span key={label} style={{
+                    background: T.cardAlt, border: `1px solid ${T.border}`,
+                    borderRadius: 6, padding: "3px 8px", fontSize: 11,
+                  }}>
+                    <span style={{ color: T.textMuted }}>{label}: </span>
+                    <span style={{ color: T.text, fontWeight: 600 }}>{value}</span>
+                  </span>
+                ))}
               </div>
-            ))}
+            )}
           </div>
         );
       })()}
