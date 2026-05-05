@@ -875,6 +875,7 @@ router.get("/:id/dashboard", async (req: AuthRequest, res) => {
       sentiment: sentimentCounts,
       objectiveRate: objectiveTotal > 0 ? Math.round((objectiveCount / objectiveTotal) * 100) / 100 : null,
       outcomeObjectiveRate: outcomeObjTotal > 0 ? Math.round((outcomeObjCount / outcomeObjTotal) * 100) / 100 : null,
+      outcomeObjectiveTotal: outcomeObjTotal,
       achievedRunIds,
       notAchievedRunIds,
       nodePerformance,

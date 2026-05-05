@@ -204,8 +204,8 @@ export default function RunDetail() {
     const le = evalResults.find((er: any) => er.criterion?.type === "LAYERED_EVALUATION");
     if (!le?.detail) return null;
     try {
-      const parsed = JSON.parse(le.detail);
-      if (parsed.objectiveAchieved != null) return !!parsed.objectiveAchieved;
+      const parsed = typeof le.detail === "string" ? JSON.parse(le.detail) : le.detail;
+      if (parsed?.objectiveAchieved != null) return !!parsed.objectiveAchieved;
     } catch { /* ignore */ }
     return null;
   })();
@@ -1512,6 +1512,49 @@ export default function RunDetail() {
           )}
         </div>
       )}
+
+      {/* Call metadata bar — outcome, time, caller number */}
+      {(() => {
+        const callerPhone =
+          run.outcomeResult?.caller_phone ||
+          run.webhookData?.caller_info?.caller_number ||
+          run.webhookData?.caller_info?.phone_number ||
+          run.webhookData?.from_number ||
+          null;
+        const callTime = run.callDate ? (() => {
+          const d = new Date(run.callDate);
+          const timeStr = d.toLocaleString();
+          const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+          // Use the offset at the actual call time (handles DST correctly)
+          const offset = -d.getTimezoneOffset();
+          const sign = offset >= 0 ? "+" : "-";
+          const hh = String(Math.floor(Math.abs(offset) / 60)).padStart(2, "0");
+          const mm = String(Math.abs(offset) % 60).padStart(2, "0");
+          return `${timeStr} (your time · ${tz} UTC${sign}${hh}:${mm})`;
+        })() : null;
+        const items: { label: string; value: string }[] = [];
+        if (run.callOutcome) items.push({ label: "Call Outcome", value: run.callOutcome.replace(/_/g, " ") });
+        if (callTime) items.push({ label: "Time", value: callTime });
+        if (callerPhone) items.push({ label: "Caller", value: callerPhone });
+        if (items.length === 0) return null;
+        return (
+          <div style={{
+            display: "flex", gap: 24, flexWrap: "wrap",
+            padding: "12px 16px", marginBottom: 24,
+            background: T.card, border: `1px solid ${T.border}`,
+            borderRadius: 8, boxShadow: T.shadow,
+          }}>
+            {items.map(({ label, value }) => (
+              <div key={label}>
+                <div style={{ fontSize: 11, color: T.textMuted, marginBottom: 2 }}>{label}</div>
+                <div style={{ fontSize: 13, fontWeight: 600, color: T.text, textTransform: label === "Call Outcome" ? "capitalize" : "none" }}>
+                  {value}
+                </div>
+              </div>
+            ))}
+          </div>
+        );
+      })()}
 
       {/* Call Log with category counts and filtering */}
       {Array.isArray(run.callLog) && run.callLog.length > 0 && <CallLogViewer callLog={run.callLog} />}

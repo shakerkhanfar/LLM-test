@@ -22,6 +22,8 @@ interface DashData {
   objectiveRate: number | null;
   /** Objective rate from outcome extractor LLM (outcomeResult.objective_met) */
   outcomeObjectiveRate: number | null;
+  /** Number of calls that had an objective_met field (denominator for outcomeObjectiveRate) */
+  outcomeObjectiveTotal?: number;
   nodePerformance: Array<{ label: string; avg: number; count: number; runIds: string[] }>;
   topIssues: Array<{ text: string; severity: string; count: number; runIds: string[] }>;
   achievedRunIds: string[];
@@ -684,7 +686,15 @@ export default function ProjectDashboard({ project, onDashLoaded }: Props) {
                 {/* Row 2: Outcome extractor objective_met */}
                 {outcomePct != null && (
                   <>
-                    <div style={{ fontSize: 10, color: T.textMuted, marginBottom: 4 }}>Outcome extractor</div>
+                    <div style={{ fontSize: 10, color: T.textMuted, marginBottom: 4 }}>
+                      Outcome extractor
+                      {dashData?.outcomeObjectiveTotal != null && dashData.outcomeObjectiveTotal < (dashData.totalComplete || 0) && (
+                        <span title={`Only ${dashData.outcomeObjectiveTotal} of ${dashData.totalComplete} calls had this field`}
+                          style={{ marginLeft: 4, color: "#f59e0b" }}>
+                          ({dashData.outcomeObjectiveTotal} calls)
+                        </span>
+                      )}
+                    </div>
                     <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
                       <span style={{
                         background: "#17B26A18", color: "#17B26A",
