@@ -224,7 +224,7 @@ function AgentNode({ id: nodeId, data }: NodeProps) {
         {nodeType === "router" && !isToolNode && (
           <div style={{ marginBottom: 8 }}>
             <div style={{ fontSize: 10.5, color: "#64748b", lineHeight: 1.5 }}>
-              Logic splitting node with conditional routing
+              {message || (data.description as string) || "Logic splitting node with conditional routing"}
             </div>
           </div>
         )}
@@ -284,8 +284,9 @@ function AgentNode({ id: nodeId, data }: NodeProps) {
             <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
               {transitions.map((t: any, i: number) => {
                 const label = t.condition?.description || t.condition?.prompt || t.condition?.type || "auto";
-                // Edge sourceHandle format in Hamsa: "transition-{t.id}"
-                const handleId = `transition-${t.id || i}`;
+                // Issue #14: only render a handle when t.id is present — index fallback
+                // would never match any edge's "transition-{uuid}" sourceHandle.
+                const handleId = t.id ? `transition-${t.id}` : null;
                 return (
                   <div key={i} style={{ position: "relative", marginRight: 14 }}>
                     <div style={{
@@ -300,21 +301,25 @@ function AgentNode({ id: nodeId, data }: NodeProps) {
                       </span>
                     </div>
                     {/* Source handle positioned at the right edge — React Flow measures
-                        its DOM position relative to the node bounding box */}
-                    <Handle
-                      type="source"
-                      id={handleId}
-                      position={Position.Right}
-                      style={{
-                        width: 9, height: 9,
-                        background: cfg.color,
-                        border: "2px solid #fff",
-                        boxShadow: `0 0 0 1.5px ${cfg.color}`,
-                        right: -18,
-                        top: "50%",
-                        transform: "translateY(-50%)",
-                      }}
-                    />
+                        its DOM position relative to the node bounding box.
+                        Only render when handleId is known; without an id, React Flow
+                        cannot match this handle to any edge's sourceHandle. */}
+                    {handleId && (
+                      <Handle
+                        type="source"
+                        id={handleId}
+                        position={Position.Right}
+                        style={{
+                          width: 9, height: 9,
+                          background: cfg.color,
+                          border: "2px solid #fff",
+                          boxShadow: `0 0 0 1.5px ${cfg.color}`,
+                          right: -18,
+                          top: "50%",
+                          transform: "translateY(-50%)",
+                        }}
+                      />
+                    )}
                   </div>
                 );
               })}
@@ -322,10 +327,13 @@ function AgentNode({ id: nodeId, data }: NodeProps) {
           </div>
         )}
 
-        {/* Fallback source handle for nodes with no transitions */}
+        {/* Fallback source handle for nodes with no transitions (issue #13).
+            Uses id="source-default" so edges whose sourceHandle is absent/null
+            can still connect — the edge mapper nulls out sourceHandle for these nodes. */}
         {transitions.length === 0 && (
           <Handle
             type="source"
+            id="source-default"
             position={Position.Right}
             style={{ background: cfg.color, border: "2px solid #fff", width: 10, height: 10, right: -5 }}
           />
@@ -368,16 +376,28 @@ function WorkflowCanvasInner({
   }, [workflowNodes, visitedNodeIds, stuckNodeId]);
 
   const rfEdges: Edge[] = useMemo(() => {
+    // Build a set of node IDs that have no transitions — their fallback handle
+    // uses id="source-default" so we must not pass a sourceHandle (issue #13).
+    const noTransitionNodeIds = new Set(
+      workflowNodes.filter((n: any) => !n.transitions?.length).map((n: any) => n.id)
+    );
+
     return workflowEdges.map((e: any) => {
       const sourceVisited = visitedNodeIds.has(e.source);
       const targetVisited = visitedNodeIds.has(e.target);
       const isActive = sourceVisited && targetVisited;
 
+      // If the source node has no per-transition handles, don't specify a sourceHandle
+      // so React Flow uses the single default source handle on that node.
+      const sourceHandle = noTransitionNodeIds.has(e.source)
+        ? undefined
+        : (e.sourceHandle ?? undefined);
+
       return {
         id: e.id,
         source: e.source,
         target: e.target,
-        sourceHandle: e.sourceHandle ?? undefined,
+        sourceHandle,
         targetHandle: e.targetHandle ?? undefined,
         type: "smoothstep",
         markerEnd: {
@@ -429,6 +449,7 @@ function WorkflowCanvasInner({
         .light-flow .react-flow__edge:hover .react-flow__edge-path { stroke-width: 4 !important; }
         .light-flow .react-flow__handle { cursor: default !important; }
         .light-flow .react-flow__edge-interaction { stroke-width: 14; }
+        .light-flow .react-flow__node { overflow: visible !important; }
       `}</style>
 
       <ReactFlow

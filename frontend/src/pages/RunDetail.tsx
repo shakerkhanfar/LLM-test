@@ -1036,6 +1036,7 @@ export default function RunDetail() {
         const navIssues: any[] = parsed.navigation?.issues || [];
         const perNode: any[] = parsed.perNode || [];
         const criticalIssues: string[] = parsed.criticalIssues || [];
+        const comments: string[] = parsed.comments || [];
         const improvements: string[] = parsed.improvements || [];
         const navScore = parsed.navigation?.score ?? meta.layer2Score;
         const layer3Avg = meta.layer3Avg;
@@ -1152,6 +1153,24 @@ export default function RunDetail() {
                       fontSize: 13, color: T.text, lineHeight: 1.5,
                     }}>
                       {issue}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Comments — non-critical observations */}
+            {comments.length > 0 && (
+              <div style={{ marginBottom: 16 }}>
+                <div style={{ fontSize: 13, color: "#6b7280", fontWeight: 600, marginBottom: 8 }}>Comments</div>
+                <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                  {comments.map((c: string, i: number) => (
+                    <div key={i} style={{
+                      padding: "8px 12px", background: T.cardAlt, borderRadius: 6,
+                      border: `1px solid ${T.border}`, borderLeft: "3px solid #9ca3af",
+                      fontSize: 13, color: T.text, lineHeight: 1.5,
+                    }}>
+                      {c}
                     </div>
                   ))}
                 </div>

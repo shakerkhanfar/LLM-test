@@ -1386,24 +1386,35 @@ router.post("/:id/re-evaluate-runs", evalRateLimit, async (req: AuthRequest, res
   if (!p) return res.status(404).json({ error: "Project not found" });
   if (!await canAccess(p.userId, req)) return res.status(403).json({ error: "Access denied" });
 
-  const { runIds } = req.body as { runIds?: string[] };
-  if (!Array.isArray(runIds) || runIds.length === 0) {
+  const { runIds: rawRunIds } = req.body as { runIds?: unknown[] };
+  if (!Array.isArray(rawRunIds) || rawRunIds.length === 0) {
     return res.status(400).json({ error: "runIds must be a non-empty array" });
   }
+  // Validate each element is a non-empty string (issues #3, #4)
+  if (rawRunIds.some(id => typeof id !== "string" || id.trim() === "")) {
+    return res.status(400).json({ error: "Each runId must be a non-empty string" });
+  }
+  // Deduplicate so the 200-limit reflects unique runs, not repeated IDs
+  const runIds = [...new Set(rawRunIds as string[])];
   if (runIds.length > 200) {
-    return res.status(400).json({ error: "Maximum 200 runs per re-evaluate request" });
+    return res.status(400).json({ error: "Maximum 200 unique runs per re-evaluate request" });
   }
 
   try {
-    // Only re-evaluate runs that belong to this project
+    // Only re-evaluate runs in a safe state — skip EVALUATING/RUNNING to avoid
+    // mid-flight data corruption (issue #1)
     const [, result] = await prisma.$transaction([
-      prisma.evalResult.deleteMany({ where: { runId: { in: runIds }, run: { projectId } } }),
+      prisma.evalResult.deleteMany({
+        where: { runId: { in: runIds }, run: { projectId, status: { notIn: ["EVALUATING", "RUNNING"] } } },
+      }),
       prisma.run.updateMany({
-        where: { id: { in: runIds }, projectId },
-        data: { status: "PENDING", overallScore: null, evalCost: null },
+        where: { id: { in: runIds }, projectId, status: { notIn: ["EVALUATING", "RUNNING"] } },
+        data: { status: "PENDING", overallScore: null, evalCost: null, errorLog: null }, // issue #5: clear errorLog
       }),
     ]);
 
+    // Trigger eval outside the transaction (known gap: crash between commit and here
+    // leaves runs in PENDING — BullMQ recovery handles this in production). (issue #2)
     const runs = await prisma.run.findMany({
       where: { id: { in: runIds }, projectId, status: "PENDING" },
       select: { id: true },
@@ -1414,7 +1425,8 @@ router.post("/:id/re-evaluate-runs", evalRateLimit, async (req: AuthRequest, res
       );
     }
 
-    audit(req, "project.re_evaluate_runs", projectId, { resetCount: result.count, runIds });
+    // Log count only, not the full ID array, to keep audit log lean (issue #7)
+    audit(req, "project.re_evaluate_runs", projectId, { resetCount: result.count, runCount: runIds.length });
     res.json({ ok: true, resetCount: result.count });
   } catch (err) {
     res.status(500).json({ error: (err as Error).message });

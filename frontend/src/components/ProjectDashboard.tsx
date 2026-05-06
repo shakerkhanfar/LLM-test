@@ -82,6 +82,34 @@ function scoreColor(score: number): string {
   return "#ef4444";
 }
 
+// Small component to properly manage indeterminate state via useRef+useEffect (issue #12)
+function SelectAllCheckbox({ tableRuns, selectedRunIds, onToggle, accentColor }: {
+  tableRuns: any[];
+  selectedRunIds: Set<string>;
+  onToggle: () => void;
+  accentColor: string;
+}) {
+  const checkboxRef = useRef<HTMLInputElement>(null);
+  const allIds = tableRuns.map((r: any) => r.id as string);
+  const allSelected = allIds.length > 0 && allIds.every(id => selectedRunIds.has(id));
+  const someSelected = !allSelected && allIds.some(id => selectedRunIds.has(id));
+
+  useEffect(() => {
+    if (checkboxRef.current) checkboxRef.current.indeterminate = someSelected;
+  }, [someSelected]);
+
+  return (
+    <input
+      ref={checkboxRef}
+      type="checkbox"
+      checked={allSelected}
+      onChange={onToggle}
+      title={allSelected ? "Deselect all" : `Select all ${allIds.length} visible calls`}
+      style={{ cursor: "pointer", accentColor }}
+    />
+  );
+}
+
 function SeverityBadge({ severity }: { severity: string }) {
   const color = severity === "critical" ? "#ef4444" : severity === "warning" ? "#f59e0b" : "#9ca3af";
   return (
@@ -188,6 +216,7 @@ export default function ProjectDashboard({ project, onDashLoaded }: Props) {
     setFilterExtraRuns([]);
     setExpandedOutcomes(new Set());
     setIssueExtraRuns([]);
+    setSelectedRunIds(new Set()); // issue #8: clear selection on project switch
   }, [project.id]);
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [selectedOutcome, setSelectedOutcome] = useState<string | null>(null);
@@ -206,6 +235,10 @@ export default function ProjectDashboard({ project, onDashLoaded }: Props) {
   // ── Bulk selection ────────────────────────────────────────────────
   const [selectedRunIds, setSelectedRunIds] = useState<Set<string>>(new Set());
   const [reEvalStatus, setReEvalStatus] = useState<"idle" | "loading" | "done" | "error">("idle");
+  const reEvalTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Cleanup status reset timer on unmount (issue #11)
+  useEffect(() => () => { if (reEvalTimerRef.current) clearTimeout(reEvalTimerRef.current); }, []);
 
   function toggleRun(runId: string) {
     setSelectedRunIds(prev => {
@@ -215,14 +248,13 @@ export default function ProjectDashboard({ project, onDashLoaded }: Props) {
     });
   }
 
+  // Functional-updater form so rapid calls never operate on stale state (issue #9)
   function toggleSelectAll() {
-    const allIds = tableRuns.map((r: any) => r.id);
-    const allSelected = allIds.every((id: string) => selectedRunIds.has(id));
-    if (allSelected) {
-      setSelectedRunIds(new Set());
-    } else {
-      setSelectedRunIds(new Set(allIds));
-    }
+    const allIds = tableRuns.map((r: any) => r.id) as string[];
+    setSelectedRunIds(prev => {
+      const allSelected = allIds.length > 0 && allIds.every(id => prev.has(id));
+      return allSelected ? new Set() : new Set(allIds);
+    });
   }
 
   async function handleReEvaluateSelected() {
@@ -232,15 +264,26 @@ export default function ProjectDashboard({ project, onDashLoaded }: Props) {
       await reEvaluateRuns(project.id, Array.from(selectedRunIds));
       setReEvalStatus("done");
       setSelectedRunIds(new Set());
-      setTimeout(() => setReEvalStatus("idle"), 3000);
+      reEvalTimerRef.current = setTimeout(() => setReEvalStatus("idle"), 3000);
     } catch {
       setReEvalStatus("error");
-      setTimeout(() => setReEvalStatus("idle"), 4000);
+      reEvalTimerRef.current = setTimeout(() => setReEvalStatus("idle"), 4000);
     }
   }
 
   // Clear selection when filters change (selected runs may no longer be visible)
   useEffect(() => { setSelectedRunIds(new Set()); }, [selectedOutcome, objectiveFilter, scoreFilter, nodeFilter, issueFilter, criteriaFilter, intentFilter, tableSearch]);
+
+  // When async filter loads complete and tableRuns changes, trim selected IDs to only
+  // those still visible — prevents stale count in action bar (issue #10)
+  useEffect(() => {
+    if (selectedRunIds.size === 0) return;
+    const visibleIds = new Set(tableRuns.map((r: any) => r.id as string));
+    setSelectedRunIds(prev => {
+      const trimmed = new Set([...prev].filter(id => visibleIds.has(id)));
+      return trimmed.size === prev.size ? prev : trimmed; // avoid re-render if unchanged
+    });
+  }, [tableRuns]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // When issue / node / criteria filter is set with runIds, fetch any runs not already loaded
   useEffect(() => {
@@ -1759,23 +1802,14 @@ export default function ProjectDashboard({ project, onDashLoaded }: Props) {
           <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
             <thead>
               <tr style={{ borderBottom: `1px solid ${T.border}` }}>
-                {/* Select-all checkbox */}
+                {/* Select-all checkbox — indeterminate state managed via SelectAllCheckbox component (issue #12) */}
                 <th style={{ padding: "6px 8px", position: "sticky", top: 0, background: T.card, width: 32 }}>
-                  {(() => {
-                    const allIds = tableRuns.map((r: any) => r.id);
-                    const allSelected = allIds.length > 0 && allIds.every((id: string) => selectedRunIds.has(id));
-                    const someSelected = !allSelected && allIds.some((id: string) => selectedRunIds.has(id));
-                    return (
-                      <input
-                        type="checkbox"
-                        checked={allSelected}
-                        ref={el => { if (el) el.indeterminate = someSelected; }}
-                        onChange={toggleSelectAll}
-                        title={allSelected ? "Deselect all" : `Select all ${allIds.length} visible calls`}
-                        style={{ cursor: "pointer", accentColor: T.primary }}
-                      />
-                    );
-                  })()}
+                  <SelectAllCheckbox
+                    tableRuns={tableRuns}
+                    selectedRunIds={selectedRunIds}
+                    onToggle={toggleSelectAll}
+                    accentColor={T.primary}
+                  />
                 </th>
                 {["", "Conv ID", "Date", "Call Outcome", "Score", "Duration", ...(dashData?.objectiveRate != null ? ["Objective"] : []), ...outcomeColumns, ""].map((col) => (
                   <th key={col} style={{
