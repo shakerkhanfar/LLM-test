@@ -216,10 +216,12 @@ export default function RunDetail() {
   }, [(run as any)?.callLog]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Absolute ms of the first known node movement — used as the recording start anchor.
-  const callStartMs = useMemo(
-    () => (nodeMovementsForSync.length > 0 ? new Date(nodeMovementsForSync[0].timestamp).getTime() : null),
-    [nodeMovementsForSync]
-  );
+  // Guard against NaN from invalid ISO strings (new Date("bad").getTime() === NaN).
+  const callStartMs = useMemo(() => {
+    if (nodeMovementsForSync.length === 0) return null;
+    const ms = new Date(nodeMovementsForSync[0].timestamp).getTime();
+    return Number.isFinite(ms) && ms > 0 ? ms : null;
+  }, [nodeMovementsForSync]);
 
   // The node the agent was on at the current audio playback position.
   const activeNodeId = useMemo(() => {
@@ -227,7 +229,10 @@ export default function RunDetail() {
     const absTimeMs = callStartMs + audioTime * 1000;
     let active: string | null = null;
     for (const m of nodeMovementsForSync) {
-      if (new Date(m.timestamp).getTime() <= absTimeMs) active = m.nodeId;
+      const ms = new Date(m.timestamp).getTime();
+      // Skip movements with invalid timestamps rather than short-circuiting the whole loop
+      if (!Number.isFinite(ms)) continue;
+      if (ms <= absTimeMs) active = m.nodeId;
       else break;
     }
     return active;

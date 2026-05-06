@@ -240,7 +240,6 @@ export default function ProjectDashboard({ project, onDashLoaded }: Props) {
   const [reEvalProgress, setReEvalProgress] = useState<{ total: number; done: number; failed: number } | null>(null);
   const reEvalTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const reEvalPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const reEvalSubmittedRef = useRef<string[]>([]);
 
   // Cleanup timers on unmount
   useEffect(() => () => {
@@ -266,41 +265,44 @@ export default function ProjectDashboard({ project, onDashLoaded }: Props) {
   }
 
   async function handleReEvaluateSelected() {
-    if (selectedRunIds.size === 0 || reEvalStatus === "loading") return;
-    // Cancel any in-flight poll from a previous re-eval
+    // Block if already submitting or if a poll is actively tracking a previous batch
+    if (selectedRunIds.size === 0 || reEvalStatus === "loading" || reEvalProgress !== null) return;
+    // Cancel any residual timers from a previous completed poll
     if (reEvalPollRef.current) { clearInterval(reEvalPollRef.current); reEvalPollRef.current = null; }
     if (reEvalTimerRef.current) { clearTimeout(reEvalTimerRef.current); reEvalTimerRef.current = null; }
 
     setReEvalStatus("loading");
-    const submittedIds = Array.from(selectedRunIds);
+    // Snapshot the IDs now — close over them in the poll callback so a future
+    // re-eval (if the guard ever misses) cannot overwrite what this poll tracks.
+    const pollIds = Array.from(selectedRunIds);
     try {
-      await reEvaluateRuns(project.id, submittedIds);
+      await reEvaluateRuns(project.id, pollIds);
       setReEvalStatus("done");
-      reEvalSubmittedRef.current = submittedIds;
-      setReEvalProgress({ total: submittedIds.length, done: 0, failed: 0 });
+      setReEvalProgress({ total: pollIds.length, done: 0, failed: 0 });
 
-      // Poll every 3 s to track evaluation progress
+      // Poll every 3 s to track evaluation progress.
+      // Scale ceiling with batch size: at least 10 min, +30 s per run, hard cap 30 min.
       let pollCount = 0;
-      const MAX_POLLS = 120; // ~6 min ceiling
+      const MAX_POLLS = Math.min(600, Math.max(200, pollIds.length * 10));
       const TERMINAL = new Set(["COMPLETE", "FAILED", "ERROR"]);
       reEvalPollRef.current = setInterval(async () => {
         pollCount++;
         try {
-          const runs = await getRunsByIds(project.id, reEvalSubmittedRef.current);
+          const runs = await getRunsByIds(project.id, pollIds); // closed-over, never mutated
           const done = runs.filter((r: any) => TERMINAL.has(r.status)).length;
           const failed = runs.filter((r: any) => r.status === "FAILED" || r.status === "ERROR").length;
-          setReEvalProgress({ total: reEvalSubmittedRef.current.length, done, failed });
+          setReEvalProgress({ total: pollIds.length, done, failed });
 
-          if (done >= reEvalSubmittedRef.current.length || pollCount >= MAX_POLLS) {
+          if (done >= pollIds.length || pollCount >= MAX_POLLS) {
             clearInterval(reEvalPollRef.current!);
             reEvalPollRef.current = null;
-            // Keep progress visible briefly then fade out
+            // Keep progress visible briefly then auto-dismiss
             reEvalTimerRef.current = setTimeout(() => {
               setReEvalProgress(null);
               setReEvalStatus("idle");
             }, 5000);
           }
-        } catch { /* skip failed poll, try again next tick */ }
+        } catch { /* skip failed poll, retry next tick */ }
       }, 3000);
     } catch {
       setReEvalStatus("error");
@@ -1240,13 +1242,14 @@ export default function ProjectDashboard({ project, onDashLoaded }: Props) {
                           </div>
                         ) : (() => {
                           const issueSelectedCount = affectedRuns.filter((r: any) => selectedRunIds.has(r.id)).length;
-                          const allIssueSelected = affectedRuns.length > 0 && issueSelectedCount === affectedRuns.length;
+                          const issueIds = affectedRuns.map((r: any) => r.id as string);
                           function toggleIssueAll() {
-                            const ids = affectedRuns.map((r: any) => r.id as string);
                             setSelectedRunIds(prev => {
+                              // Recompute inside updater so rapid toggles always see current state
+                              const allSelected = issueIds.length > 0 && issueIds.every((id: string) => prev.has(id));
                               const next = new Set(prev);
-                              if (allIssueSelected) { ids.forEach((id: string) => next.delete(id)); }
-                              else { ids.forEach((id: string) => next.add(id)); }
+                              if (allSelected) { issueIds.forEach((id: string) => next.delete(id)); }
+                              else { issueIds.forEach((id: string) => next.add(id)); }
                               return next;
                             });
                           }
@@ -1273,15 +1276,16 @@ export default function ProjectDashboard({ project, onDashLoaded }: Props) {
                                   </button>
                                   <button
                                     onClick={handleReEvaluateSelected}
-                                    disabled={reEvalStatus === "loading"}
+                                    disabled={reEvalStatus === "loading" || reEvalProgress !== null}
                                     style={{
                                       marginLeft: "auto", fontSize: 11, fontWeight: 600,
                                       background: T.primary, color: "#fff", border: "none",
-                                      borderRadius: 5, padding: "3px 10px", cursor: reEvalStatus === "loading" ? "default" : "pointer",
-                                      opacity: reEvalStatus === "loading" ? 0.7 : 1,
+                                      borderRadius: 5, padding: "3px 10px",
+                                      cursor: (reEvalStatus === "loading" || reEvalProgress !== null) ? "default" : "pointer",
+                                      opacity: (reEvalStatus === "loading" || reEvalProgress !== null) ? 0.7 : 1,
                                     }}
                                   >
-                                    {reEvalStatus === "loading" ? "Queuing…" : reEvalStatus === "done" ? "✓ Queued" : `Re-evaluate (${issueSelectedCount})`}
+                                    {reEvalStatus === "loading" ? "Queuing…" : reEvalProgress !== null ? "Evaluating…" : `Re-evaluate (${issueSelectedCount})`}
                                   </button>
                                 </div>
                               )}
@@ -1520,14 +1524,16 @@ export default function ProjectDashboard({ project, onDashLoaded }: Props) {
                       {visibleIssues.map((issue, i) => {
                         const isActive = issueFilter?.text === issue.text && issueFilter?.outcome === outcome;
                         const issueSelectedCount = issue.runIds.filter(id => selectedRunIds.has(id)).length;
-                        const allIssueSelected = issueSelectedCount === issue.runIds.length;
+                        const allIssueSelected = issueSelectedCount === issue.runIds.length && issue.runIds.length > 0;
+                        const issueRunIds = issue.runIds; // stable reference for closure
                         function toggleIssueSelection(e: React.MouseEvent) {
                           e.stopPropagation();
-                          const ids = issue.runIds;
                           setSelectedRunIds(prev => {
+                            // Recompute inside updater to avoid stale closure on rapid clicks
+                            const allSelected = issueRunIds.length > 0 && issueRunIds.every(id => prev.has(id));
                             const next = new Set(prev);
-                            if (allIssueSelected) { ids.forEach(id => next.delete(id)); }
-                            else { ids.forEach(id => next.add(id)); }
+                            if (allSelected) { issueRunIds.forEach(id => next.delete(id)); }
+                            else { issueRunIds.forEach(id => next.add(id)); }
                             return next;
                           });
                         }
@@ -1617,16 +1623,16 @@ export default function ProjectDashboard({ project, onDashLoaded }: Props) {
                         </button>
                         <button
                           onClick={(e) => { e.stopPropagation(); handleReEvaluateSelected(); }}
-                          disabled={reEvalStatus === "loading"}
+                          disabled={reEvalStatus === "loading" || reEvalProgress !== null}
                           style={{
                             fontSize: 11, fontWeight: 600,
                             background: T.primary, color: "#fff", border: "none",
                             borderRadius: 5, padding: "3px 10px",
-                            cursor: reEvalStatus === "loading" ? "default" : "pointer",
-                            opacity: reEvalStatus === "loading" ? 0.7 : 1,
+                            cursor: (reEvalStatus === "loading" || reEvalProgress !== null) ? "default" : "pointer",
+                            opacity: (reEvalStatus === "loading" || reEvalProgress !== null) ? 0.7 : 1,
                           }}
                         >
-                          {reEvalStatus === "loading" ? "Queuing…" : reEvalStatus === "done" ? "✓ Queued" : `Re-evaluate (${outcomeSelectedCount})`}
+                          {reEvalStatus === "loading" ? "Queuing…" : reEvalProgress !== null ? "Evaluating…" : `Re-evaluate (${outcomeSelectedCount})`}
                         </button>
                       </div>
                     )}
