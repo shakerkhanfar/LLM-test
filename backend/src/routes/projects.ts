@@ -714,8 +714,8 @@ router.get("/:id/dashboard", async (req: AuthRequest, res) => {
         // These runs have nothing to aggregate — skip silently.
         continue;
       }
-      // Explicitly skip notApplicable entries (abandoned calls etc.) — no metrics to extract
-      if (detail?.notApplicable === true) continue;
+      // Explicitly skip notApplicable or error entries — no valid metrics to extract
+      if (detail?.notApplicable === true || detail?.error === true) continue;
 
       // Sentiment
       const sentiment: string = (detail.callerSentiment || detail.sentiment || "unknown").toLowerCase();

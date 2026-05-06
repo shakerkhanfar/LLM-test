@@ -212,6 +212,9 @@ export default function RunDetail() {
         out.push({ nodeId: nid, timestamp: e.timestamp });
       }
     }
+    // Sort ascending by timestamp so the linear scan + `else break` is always correct,
+    // regardless of whether the backend delivers callLog events in order.
+    out.sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
     return out;
   }, [(run as any)?.callLog]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -224,8 +227,11 @@ export default function RunDetail() {
   }, [nodeMovementsForSync]);
 
   // The node the agent was on at the current audio playback position.
+  // Computed whenever audioTime > 0 (i.e. the user has started playback), not just while playing.
+  // This keeps the highlight visible when the user pauses to inspect the canvas.
+  // `isPlaying` is passed separately to WorkflowCanvas to control the dim-other-nodes effect.
   const activeNodeId = useMemo(() => {
-    if (!isAudioPlaying || callStartMs == null || nodeMovementsForSync.length === 0) return null;
+    if (callStartMs == null || nodeMovementsForSync.length === 0 || audioTime === 0) return null;
     const absTimeMs = callStartMs + audioTime * 1000;
     let active: string | null = null;
     for (const m of nodeMovementsForSync) {
@@ -236,7 +242,7 @@ export default function RunDetail() {
       else break;
     }
     return active;
-  }, [audioTime, isAudioPlaying, callStartMs, nodeMovementsForSync]);
+  }, [audioTime, callStartMs, nodeMovementsForSync]);
 
   if (loading) return <p>Loading...</p>;
   if (!run) return <p>Run not found</p>;
