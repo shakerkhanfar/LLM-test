@@ -1136,13 +1136,13 @@ async function evaluateLayered(_criterion: Criterion, run: any) {
   const evalContext: string | null = run.project?.evalContext ?? null;
 
   if (!agentStructure?.workflow?.nodes?.length) {
-    return { passed: null, score: null, detail: "No agent workflow nodes available for layered evaluation" };
+    return { passed: null, score: null, detail: JSON.stringify({ notApplicable: true, reason: "No agent workflow nodes available for layered evaluation" }) };
   }
   if (!transcript || transcript.length === 0) {
-    return { passed: null, score: null, detail: "No transcript available for layered evaluation" };
+    return { passed: null, score: null, detail: JSON.stringify({ notApplicable: true, reason: "No transcript available for layered evaluation" }) };
   }
   if (!Array.isArray(callLog) || callLog.length === 0) {
-    return { passed: null, score: null, detail: "No call log available — layered evaluation requires execution logs for node mapping" };
+    return { passed: null, score: null, detail: JSON.stringify({ notApplicable: true, reason: "No call log available — layered evaluation requires execution logs for node mapping" }) };
   }
 
   // Call abandoned before user spoke — agent greeted but got no response.
@@ -1152,7 +1152,7 @@ async function evaluateLayered(_criterion: Criterion, run: any) {
     return {
       passed: null,
       score: null,
-      detail: "Not applicable — call abandoned before user responded. No agent behavior to evaluate.",
+      detail: JSON.stringify({ notApplicable: true, reason: "Not applicable — call abandoned before user responded. No agent behavior to evaluate." }),
     };
   }
 
@@ -1169,7 +1169,7 @@ async function evaluateLayered(_criterion: Criterion, run: any) {
       userUtteranceCount,
     );
   } catch (err) {
-    return { passed: null, score: null, detail: `Layered evaluation failed: ${(err as Error).message}` };
+    return { passed: null, score: null, detail: JSON.stringify({ notApplicable: false, error: true, reason: `Layered evaluation failed: ${(err as Error).message}` }) };
   }
 
   // Compute overall score: weighted average of layer2 (30%) + layer3 avg (50%) + layer4 (20%)

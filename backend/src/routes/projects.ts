@@ -709,10 +709,13 @@ router.get("/:id/dashboard", async (req: AuthRequest, res) => {
         detail = typeof layered.detail === "string"
           ? JSON.parse(layered.detail)
           : layered.detail;   // Prisma may already parse JSON columns
-      } catch (e) {
-        console.warn(`[Dashboard] Could not parse eval detail for run ${run.id}: ${(e as Error).message}`);
+      } catch {
+        // Plain-string detail means the eval was skipped (abandoned call, no transcript, etc.)
+        // These runs have nothing to aggregate — skip silently.
         continue;
       }
+      // Explicitly skip notApplicable entries (abandoned calls etc.) — no metrics to extract
+      if (detail?.notApplicable === true) continue;
 
       // Sentiment
       const sentiment: string = (detail.callerSentiment || detail.sentiment || "unknown").toLowerCase();
