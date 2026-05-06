@@ -263,7 +263,8 @@ export default function ProjectDashboard({ project, onDashLoaded }: Props) {
     try {
       await reEvaluateRuns(project.id, Array.from(selectedRunIds));
       setReEvalStatus("done");
-      setSelectedRunIds(new Set());
+      // Keep selection intact so the user can see which calls were queued.
+      // They can clear manually or navigate away.
       reEvalTimerRef.current = setTimeout(() => setReEvalStatus("idle"), 3000);
     } catch {
       setReEvalStatus("error");
