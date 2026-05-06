@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect, useRef, useState } from "react";
+import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { useParams, Link } from "react-router-dom";
 import T from "../theme";
 import { getRun, createLabel, deleteLabel, triggerEvaluation, rehydrateRun } from "../api/client";
@@ -169,6 +169,9 @@ export default function RunDetail() {
   const [loading, setLoading] = useState(true);
   const [labelingWord, setLabelingWord] = useState<{ wordIndex: number; utteranceIndex: number; word: string; speaker: string } | null>(null);
   const [audioError, setAudioError] = useState(false);
+  const audioRef = useRef<HTMLAudioElement>(null);
+  const [audioTime, setAudioTime] = useState(0);
+  const [isAudioPlaying, setIsAudioPlaying] = useState(false);
   const [reEvaluating, setReEvaluating] = useState(false);
   const [rehydrating, setRehydrating] = useState(false);
   const [labeling, setLabeling] = useState(false);
@@ -189,11 +192,46 @@ export default function RunDetail() {
     activeRunIdRef.current = runId!; // mark the new run; invalidates all old polls
     setLoading(true);
     setAudioError(false);
+    setAudioTime(0);
+    setIsAudioPlaying(false);
     setReEvaluating(false);
     setLabelingWord(null);
     load();
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [runId]);
+
+  // ── Audio-sync: node movement timeline ─────────────────────────────
+  // Computed here (before early returns) so hooks are always called in the same order.
+  // Uses run?.callLog with optional chaining since run may be null while loading.
+  const nodeMovementsForSync = useMemo(() => {
+    const cl = Array.isArray((run as any)?.callLog) ? (run as any).callLog : [];
+    const out: Array<{ nodeId: string; timestamp: string }> = [];
+    for (const e of cl) {
+      const nid = e.node_id || e.nodeId;
+      if (e.category === "node_movement" && nid && e.timestamp) {
+        out.push({ nodeId: nid, timestamp: e.timestamp });
+      }
+    }
+    return out;
+  }, [(run as any)?.callLog]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Absolute ms of the first known node movement — used as the recording start anchor.
+  const callStartMs = useMemo(
+    () => (nodeMovementsForSync.length > 0 ? new Date(nodeMovementsForSync[0].timestamp).getTime() : null),
+    [nodeMovementsForSync]
+  );
+
+  // The node the agent was on at the current audio playback position.
+  const activeNodeId = useMemo(() => {
+    if (!isAudioPlaying || callStartMs == null || nodeMovementsForSync.length === 0) return null;
+    const absTimeMs = callStartMs + audioTime * 1000;
+    let active: string | null = null;
+    for (const m of nodeMovementsForSync) {
+      if (new Date(m.timestamp).getTime() <= absTimeMs) active = m.nodeId;
+      else break;
+    }
+    return active;
+  }, [audioTime, isAudioPlaying, callStartMs, nodeMovementsForSync]);
 
   if (loading) return <p>Loading...</p>;
   if (!run) return <p>Run not found</p>;
@@ -476,18 +514,36 @@ export default function RunDetail() {
 
       {/* Call recording */}
       {recordingUrl && (
-        <div style={{ marginBottom: 20 }}>
+        <div style={{ marginBottom: 20, background: T.card, border: `1px solid ${T.border}`, borderRadius: 8, padding: "10px 14px" }}>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: audioError ? 0 : 8 }}>
+            <span style={{ fontSize: 11, fontWeight: 600, color: T.textMuted, textTransform: "uppercase", letterSpacing: 0.5 }}>
+              Call Recording
+              {isAudioPlaying && (
+                <span style={{ marginLeft: 8, color: T.primary, fontWeight: 700 }}>
+                  ● LIVE
+                </span>
+              )}
+            </span>
+            <a href={recordingUrl} target="_blank" rel="noopener noreferrer"
+              style={{ fontSize: 12, color: T.link, textDecoration: "none" }}>
+              Open directly ↗
+            </a>
+          </div>
           {audioError ? (
-            <div style={{ padding: "10px 14px", background: T.card, border: `1px solid ${T.border}`, borderRadius: 6, fontSize: 12, color: T.textSecondary, display: "flex", alignItems: "center", gap: 10 }}>
-              <span>Recording unavailable (URL may have expired)</span>
-              <a href={recordingUrl} target="_blank" rel="noopener noreferrer" style={{ color: T.link, textDecoration: "none" }}>Open directly ↗</a>
+            <div style={{ fontSize: 12, color: T.textSecondary }}>
+              Recording unavailable — URL may have expired. Use "Open directly" above.
             </div>
           ) : (
             <audio
+              ref={audioRef}
               controls
               src={recordingUrl}
               onError={() => setAudioError(true)}
-              style={{ width: "100%", accentColor: T.primary }}
+              onTimeUpdate={() => setAudioTime(audioRef.current?.currentTime ?? 0)}
+              onPlay={() => setIsAudioPlaying(true)}
+              onPause={() => setIsAudioPlaying(false)}
+              onEnded={() => { setIsAudioPlaying(false); setAudioTime(0); }}
+              style={{ width: "100%", accentColor: T.primary, display: "block" }}
             />
           )}
         </div>
@@ -1393,6 +1449,8 @@ export default function RunDetail() {
           workflowEdges={run.project.agentStructure.workflow.edges || []}
           callLog={run.callLog}
           evalResult={evalResults.find((er: any) => er.criterion?.type === "FLOW_PROGRESSION")}
+          activeNodeId={activeNodeId}
+          isPlaying={isAudioPlaying}
         />
       )}
 
@@ -1769,11 +1827,15 @@ function FlowProgressionView({
   workflowEdges,
   callLog,
   evalResult,
+  activeNodeId,
+  isPlaying,
 }: {
   workflowNodes: any[];
   workflowEdges: any[];
   callLog: any[];
   evalResult?: any;
+  activeNodeId?: string | null;
+  isPlaying?: boolean;
 }) {
   // Determine which nodes were visited from the call log
   const visitedNodeIds = new Set<string>();
@@ -1962,6 +2024,8 @@ function FlowProgressionView({
             stuckNodeId={stuckNodeId}
             extractedVars={extractedVars}
             toolCalls={toolCalls}
+            activeNodeId={activeNodeId ?? null}
+            isPlaying={isPlaying ?? false}
           />
         </Suspense>
       )}

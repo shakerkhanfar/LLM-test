@@ -274,17 +274,6 @@ export default function ProjectDashboard({ project, onDashLoaded }: Props) {
   // Clear selection when filters change (selected runs may no longer be visible)
   useEffect(() => { setSelectedRunIds(new Set()); }, [selectedOutcome, objectiveFilter, scoreFilter, nodeFilter, issueFilter, criteriaFilter, intentFilter, tableSearch]);
 
-  // When async filter loads complete and tableRuns changes, trim selected IDs to only
-  // those still visible — prevents stale count in action bar (issue #10)
-  useEffect(() => {
-    if (selectedRunIds.size === 0) return;
-    const visibleIds = new Set(tableRuns.map((r: any) => r.id as string));
-    setSelectedRunIds(prev => {
-      const trimmed = new Set([...prev].filter(id => visibleIds.has(id)));
-      return trimmed.size === prev.size ? prev : trimmed; // avoid re-render if unchanged
-    });
-  }, [tableRuns]); // eslint-disable-line react-hooks/exhaustive-deps
-
   // When issue / node / criteria filter is set with runIds, fetch any runs not already loaded
   useEffect(() => {
     const filterRunIds = issueFilter?.runIds ?? nodeFilter?.runIds ?? criteriaFilter?.runIds ?? null;
@@ -668,6 +657,18 @@ export default function ProjectDashboard({ project, onDashLoaded }: Props) {
       );
     });
   }, [project.runs, filterExtraRuns, tableSearch, outcomeColumns, selectedOutcome, objectiveFilter, scoreFilter, nodeFilter, issueFilter, criteriaFilter, intentFilter, intentFieldKey, dashData]);
+
+  // When async filter loads complete and tableRuns changes, trim selected IDs to only
+  // those still visible — prevents stale count in action bar (issue #10).
+  // Placed after tableRuns declaration to satisfy TypeScript block-scoping rules.
+  useEffect(() => {
+    if (selectedRunIds.size === 0) return;
+    const visibleIds = new Set(tableRuns.map((r: any) => r.id as string));
+    setSelectedRunIds(prev => {
+      const trimmed = new Set([...prev].filter(id => visibleIds.has(id)));
+      return trimmed.size === prev.size ? prev : trimmed;
+    });
+  }, [tableRuns]); // eslint-disable-line react-hooks/exhaustive-deps
 
   function exportCsv() {
     const headers = ["Conv ID", "Date", "Call Outcome", "Score", "Duration", ...outcomeColumns];

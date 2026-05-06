@@ -24,6 +24,10 @@ interface WorkflowCanvasProps {
   stuckNodeId?: string;
   extractedVars: Array<{ name: string; value: string }>;
   toolCalls: Array<{ name: string; nodeId: string }>;
+  /** ID of the node currently active during audio playback. Null when not playing. */
+  activeNodeId?: string | null;
+  /** True while the call recording is playing — triggers playback-mode highlighting. */
+  isPlaying?: boolean;
 }
 
 // ─── Node type config ───────────────────────────────────────────────
@@ -109,6 +113,8 @@ function AgentNode({ id: nodeId, data }: NodeProps) {
   const cfg = NODE_CONFIG[data.nodeType as string] ?? FALLBACK_CONFIG;
   const visited = data.visited as boolean;
   const stuck = data.stuck as boolean;
+  const isActive = data.isActive as boolean;   // currently playing node
+  const isPlaying = data.isPlaying as boolean; // audio is playing
   const transitions = (data.transitions as any[]) ?? [];
   const varNames = (data.extractedVarNames as string[]) ?? [];
   const message = (data.message as string) ?? "";
@@ -119,12 +125,24 @@ function AgentNode({ id: nodeId, data }: NodeProps) {
   const hasPrompt = !!message && !isToolNode;
   const truncatedMsg = message.slice(0, 160) + (message.length > 160 ? "…" : "");
 
-  const borderColor = stuck ? "#ef4444" : visited ? "#22c55e" : "#e5e7eb";
-  const cardShadow = stuck
+  // During playback: active node gets a pulsing colored border; others dim.
+  // When not playing: revert to visited/stuck/default coloring.
+  const borderColor = isActive
+    ? cfg.color
+    : stuck ? "#ef4444"
+    : visited ? "#22c55e"
+    : "#e5e7eb";
+
+  const cardShadow = isActive
+    ? `0 0 0 2.5px ${cfg.color}, 0 4px 20px ${cfg.color}44`
+    : stuck
     ? "0 0 0 2px #fecaca, 0 4px 16px rgba(239,68,68,0.12)"
     : visited
     ? "0 0 0 1.5px #bbf7d0, 0 4px 16px rgba(34,197,94,0.08)"
     : "0 1px 3px rgba(0,0,0,0.07), 0 4px 12px rgba(0,0,0,0.05)";
+
+  // Dim non-active nodes during playback
+  const nodeOpacity = isPlaying && !isActive ? 0.4 : 1;
 
   return (
     <div
@@ -136,6 +154,9 @@ function AgentNode({ id: nodeId, data }: NodeProps) {
         boxShadow: cardShadow,
         overflow: "visible", // important: handles need to bleed outside
         fontFamily: "system-ui, -apple-system, sans-serif",
+        opacity: nodeOpacity,
+        transition: "opacity 0.3s ease, box-shadow 0.3s ease, border-color 0.3s ease",
+        animation: isActive ? "node-pulse 1.8s ease-in-out infinite" : "none",
       }}
     >
       {/* Target handle — ID must match edge targetHandle format: "target-handle-{nodeId}" */}
@@ -173,7 +194,15 @@ function AgentNode({ id: nodeId, data }: NodeProps) {
           </div>
         </div>
         {/* Status indicator — right side */}
-        {stuck ? (
+        {isActive ? (
+          <span style={{
+            fontSize: 9, padding: "2px 7px", borderRadius: 4, fontWeight: 700,
+            background: cfg.color + "22", color: cfg.color,
+            border: `1px solid ${cfg.color}66`, flexShrink: 0, letterSpacing: "0.04em",
+          }}>
+            ● NOW
+          </span>
+        ) : stuck ? (
           <span style={{ fontSize: 9, padding: "2px 7px", borderRadius: 4, fontWeight: 700, background: "#fef2f2", color: "#ef4444", border: "1px solid #fecaca", flexShrink: 0, letterSpacing: "0.04em" }}>
             STUCK
           </span>
@@ -354,6 +383,8 @@ function WorkflowCanvasInner({
   stuckNodeId,
   extractedVars,
   toolCalls,
+  activeNodeId,
+  isPlaying,
 }: WorkflowCanvasProps) {
   const [selectedNode, setSelectedNode] = useState<any>(null);
 
@@ -371,9 +402,12 @@ function WorkflowCanvasInner({
         message: n.message || "",
         transitions: n.transitions || [],
         tools: n.tools || [],
+        // Playback-mode highlighting
+        isActive: isPlaying && activeNodeId === n.id,
+        isPlaying: !!isPlaying,
       },
     }));
-  }, [workflowNodes, visitedNodeIds, stuckNodeId]);
+  }, [workflowNodes, visitedNodeIds, stuckNodeId, activeNodeId, isPlaying]);
 
   const rfEdges: Edge[] = useMemo(() => {
     // Build a set of node IDs that have no transitions — their fallback handle
@@ -450,6 +484,10 @@ function WorkflowCanvasInner({
         .light-flow .react-flow__handle { cursor: default !important; }
         .light-flow .react-flow__edge-interaction { stroke-width: 14; }
         .light-flow .react-flow__node { overflow: visible !important; }
+        @keyframes node-pulse {
+          0%, 100% { transform: scale(1); }
+          50% { transform: scale(1.015); }
+        }
       `}</style>
 
       <ReactFlow
