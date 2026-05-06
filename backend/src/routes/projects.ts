@@ -565,7 +565,7 @@ router.get("/:id/dashboard", async (req: AuthRequest, res) => {
     const dateTo = req.query.to ? (() => {
       const d = new Date(req.query.to as string);
       // If only a date string (YYYY-MM-DD), set to end of day so the full day is included
-      if ((req.query.to as string).length <= 10) d.setHours(23, 59, 59, 999);
+      if ((req.query.to as string).length <= 10) d.setUTCHours(23, 59, 59, 999);
       return d;
     })() : null;
     // Reusable SQL fragment — injected into every query that uses alias "r" for the Run table
