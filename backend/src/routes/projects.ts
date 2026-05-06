@@ -1375,6 +1375,53 @@ router.post("/:id/re-evaluate", evalRateLimit, async (req: AuthRequest, res) => 
 });
 
 /**
+ * POST /api/projects/:id/re-evaluate-runs
+ *
+ * Re-evaluate a specific set of run IDs (selected by the user in the dashboard).
+ * Body: { runIds: string[] }  — max 200 at once
+ */
+router.post("/:id/re-evaluate-runs", evalRateLimit, async (req: AuthRequest, res) => {
+  const projectId = req.params.id;
+  const p = await prisma.project.findUnique({ where: { id: projectId }, select: { userId: true } });
+  if (!p) return res.status(404).json({ error: "Project not found" });
+  if (!await canAccess(p.userId, req)) return res.status(403).json({ error: "Access denied" });
+
+  const { runIds } = req.body as { runIds?: string[] };
+  if (!Array.isArray(runIds) || runIds.length === 0) {
+    return res.status(400).json({ error: "runIds must be a non-empty array" });
+  }
+  if (runIds.length > 200) {
+    return res.status(400).json({ error: "Maximum 200 runs per re-evaluate request" });
+  }
+
+  try {
+    // Only re-evaluate runs that belong to this project
+    const [, result] = await prisma.$transaction([
+      prisma.evalResult.deleteMany({ where: { runId: { in: runIds }, run: { projectId } } }),
+      prisma.run.updateMany({
+        where: { id: { in: runIds }, projectId },
+        data: { status: "PENDING", overallScore: null, evalCost: null },
+      }),
+    ]);
+
+    const runs = await prisma.run.findMany({
+      where: { id: { in: runIds }, projectId, status: "PENDING" },
+      select: { id: true },
+    });
+    for (const run of runs) {
+      runEvaluationCheck(run.id).catch((err) =>
+        console.error(`[ReEvaluateRuns] Failed to trigger eval for ${run.id}: ${(err as Error).message}`)
+      );
+    }
+
+    audit(req, "project.re_evaluate_runs", projectId, { resetCount: result.count, runIds });
+    res.json({ ok: true, resetCount: result.count });
+  } catch (err) {
+    res.status(500).json({ error: (err as Error).message });
+  }
+});
+
+/**
  * POST /api/projects/:id/re-evaluate-failed
  *
  * Re-queues only FAILED runs for evaluation, preserving COMPLETE run results.

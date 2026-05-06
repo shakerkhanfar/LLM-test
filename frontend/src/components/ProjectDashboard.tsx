@@ -3,7 +3,7 @@ import {
   LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer,
   PieChart, Pie, Cell, BarChart, Bar,
 } from "recharts";
-import { getProjectDashboard, getRunsByIds } from "../api/client";
+import { getProjectDashboard, getRunsByIds, reEvaluateRuns } from "../api/client";
 import T from "../theme";
 
 interface DashData {
@@ -202,6 +202,45 @@ export default function ProjectDashboard({ project, onDashLoaded }: Props) {
   const [filterExtraRuns, setFilterExtraRuns] = useState<any[]>([]);
   const [filterExtraLoading, setFilterExtraLoading] = useState(false);
   const tableRef = useRef<HTMLDivElement>(null);
+
+  // ── Bulk selection ────────────────────────────────────────────────
+  const [selectedRunIds, setSelectedRunIds] = useState<Set<string>>(new Set());
+  const [reEvalStatus, setReEvalStatus] = useState<"idle" | "loading" | "done" | "error">("idle");
+
+  function toggleRun(runId: string) {
+    setSelectedRunIds(prev => {
+      const next = new Set(prev);
+      if (next.has(runId)) next.delete(runId); else next.add(runId);
+      return next;
+    });
+  }
+
+  function toggleSelectAll() {
+    const allIds = tableRuns.map((r: any) => r.id);
+    const allSelected = allIds.every((id: string) => selectedRunIds.has(id));
+    if (allSelected) {
+      setSelectedRunIds(new Set());
+    } else {
+      setSelectedRunIds(new Set(allIds));
+    }
+  }
+
+  async function handleReEvaluateSelected() {
+    if (selectedRunIds.size === 0 || reEvalStatus === "loading") return;
+    setReEvalStatus("loading");
+    try {
+      await reEvaluateRuns(project.id, Array.from(selectedRunIds));
+      setReEvalStatus("done");
+      setSelectedRunIds(new Set());
+      setTimeout(() => setReEvalStatus("idle"), 3000);
+    } catch {
+      setReEvalStatus("error");
+      setTimeout(() => setReEvalStatus("idle"), 4000);
+    }
+  }
+
+  // Clear selection when filters change (selected runs may no longer be visible)
+  useEffect(() => { setSelectedRunIds(new Set()); }, [selectedOutcome, objectiveFilter, scoreFilter, nodeFilter, issueFilter, criteriaFilter, intentFilter, tableSearch]);
 
   // When issue / node / criteria filter is set with runIds, fetch any runs not already loaded
   useEffect(() => {
@@ -1682,10 +1721,62 @@ export default function ProjectDashboard({ project, onDashLoaded }: Props) {
             </button>
           </div>
         </div>
+
+        {/* ── Bulk action bar ── */}
+        {selectedRunIds.size > 0 && (
+          <div style={{
+            display: "flex", alignItems: "center", gap: 10,
+            padding: "8px 14px",
+            background: "#eff6ff",
+            border: `1px solid #bfdbfe`,
+            borderRadius: 7,
+            marginBottom: 8,
+          }}>
+            <span style={{ fontSize: 12, fontWeight: 600, color: "#1d4ed8", flex: 1 }}>
+              {selectedRunIds.size} call{selectedRunIds.size > 1 ? "s" : ""} selected
+            </span>
+            <button
+              onClick={() => setSelectedRunIds(new Set())}
+              style={{ background: "none", border: "none", fontSize: 12, color: "#6b7280", cursor: "pointer", padding: "3px 8px" }}
+            >
+              Clear
+            </button>
+            <button
+              onClick={handleReEvaluateSelected}
+              disabled={reEvalStatus === "loading"}
+              style={{
+                padding: "5px 14px", borderRadius: 5, border: "none",
+                background: reEvalStatus === "done" ? "#17B26A" : reEvalStatus === "error" ? "#ef4444" : "#1d4ed8",
+                color: "#fff", fontWeight: 600, fontSize: 12, cursor: reEvalStatus === "loading" ? "wait" : "pointer",
+              }}
+            >
+              {reEvalStatus === "loading" ? "Queuing…" : reEvalStatus === "done" ? "✓ Queued" : reEvalStatus === "error" ? "Error — retry?" : "Re-evaluate selected"}
+            </button>
+          </div>
+        )}
+
         <div style={{ maxHeight: 400, overflowY: "auto" }}>
           <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
             <thead>
               <tr style={{ borderBottom: `1px solid ${T.border}` }}>
+                {/* Select-all checkbox */}
+                <th style={{ padding: "6px 8px", position: "sticky", top: 0, background: T.card, width: 32 }}>
+                  {(() => {
+                    const allIds = tableRuns.map((r: any) => r.id);
+                    const allSelected = allIds.length > 0 && allIds.every((id: string) => selectedRunIds.has(id));
+                    const someSelected = !allSelected && allIds.some((id: string) => selectedRunIds.has(id));
+                    return (
+                      <input
+                        type="checkbox"
+                        checked={allSelected}
+                        ref={el => { if (el) el.indeterminate = someSelected; }}
+                        onChange={toggleSelectAll}
+                        title={allSelected ? "Deselect all" : `Select all ${allIds.length} visible calls`}
+                        style={{ cursor: "pointer", accentColor: T.primary }}
+                      />
+                    );
+                  })()}
+                </th>
                 {["", "Conv ID", "Date", "Call Outcome", "Score", "Duration", ...(dashData?.objectiveRate != null ? ["Objective"] : []), ...outcomeColumns, ""].map((col) => (
                   <th key={col} style={{
                     padding: "6px 10px", textAlign: "left", fontWeight: 600,
@@ -1725,8 +1816,17 @@ export default function ProjectDashboard({ project, onDashLoaded }: Props) {
                   copyToClipboard(vals.join("\t"), rowKey);
                 }
 
+                const isRowSelected = selectedRunIds.has(run.id);
                 return (
-                <tr key={run.id} style={{ borderBottom: `1px solid ${T.borderLight}` }}>
+                <tr key={run.id} style={{ borderBottom: `1px solid ${T.borderLight}`, background: isRowSelected ? "#eff6ff" : undefined }}>
+                  <td style={{ padding: "6px 8px", width: 32 }}>
+                    <input
+                      type="checkbox"
+                      checked={isRowSelected}
+                      onChange={() => toggleRun(run.id)}
+                      style={{ cursor: "pointer", accentColor: T.primary }}
+                    />
+                  </td>
                   <td style={{ padding: "6px 8px", whiteSpace: "nowrap" }}>
                     <a href={`/projects/${project.id}/runs/${run.id}`} style={{ color: T.primary, fontSize: 13, fontWeight: 600, textDecoration: "none" }}>→</a>
                   </td>

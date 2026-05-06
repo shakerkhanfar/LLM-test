@@ -319,6 +319,13 @@ export function reEvaluateProject(projectId: string) {
   return request<any>(`/projects/${projectId}/re-evaluate`, { method: "POST" });
 }
 
+export function reEvaluateRuns(projectId: string, runIds: string[]) {
+  return request<{ ok: boolean; resetCount: number }>(`/projects/${projectId}/re-evaluate-runs`, {
+    method: "POST",
+    body: JSON.stringify({ runIds }),
+  });
+}
+
 export function reEvaluateFailedProject(projectId: string) {
   return request<{ ok: boolean; resetCount: number }>(`/projects/${projectId}/re-evaluate-failed`, { method: "POST" });
 }
