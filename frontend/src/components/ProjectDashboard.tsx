@@ -299,6 +299,13 @@ export default function ProjectDashboard({ project, onDashLoaded, onLoadMore, ha
           if (done >= pollIds.length || pollCount >= MAX_POLLS) {
             clearInterval(reEvalPollRef.current!);
             reEvalPollRef.current = null;
+            // Refresh dashboard aggregates so Objective column reflects the new eval results
+            getProjectDashboard(project.id)
+              .then((data: DashData) => {
+                setDashData(data);
+                onDashLoadedRef.current?.({ totalRuns: data.totalRuns, totalEvalCost: data.totalEvalCost ?? 0, totalFailed: data.totalFailed ?? 0 });
+              })
+              .catch(() => { /* non-critical — table still works via fallback */ });
             // Keep progress visible briefly then auto-dismiss
             reEvalTimerRef.current = setTimeout(() => {
               setReEvalProgress(null);
@@ -2117,13 +2124,17 @@ export default function ProjectDashboard({ project, onDashLoaded, onLoadMore, ha
                   </td>
                   {showObjective && (
                     <td style={{ padding: "6px 10px", whiteSpace: "nowrap" }}>
-                      {achievedSet.has(run.id) ? (
-                        <span style={{ fontSize: 11, fontWeight: 600, color: "#17B26A", background: "#17B26A18", borderRadius: 4, padding: "2px 7px" }}>✓ Met</span>
-                      ) : notAchievedSet.has(run.id) ? (
-                        <span style={{ fontSize: 11, fontWeight: 600, color: "#ef4444", background: "#ef444418", borderRadius: 4, padding: "2px 7px" }}>✗ Not met</span>
-                      ) : (
-                        <span style={{ fontSize: 11, color: T.textMuted }}>—</span>
-                      )}
+                      {(() => {
+                        // Primary: layered eval objectiveAchieved (from dashData aggregation)
+                        if (achievedSet.has(run.id)) return <span style={{ fontSize: 11, fontWeight: 600, color: "#17B26A", background: "#17B26A18", borderRadius: 4, padding: "2px 7px" }}>✓ Met</span>;
+                        if (notAchievedSet.has(run.id)) return <span style={{ fontSize: 11, fontWeight: 600, color: "#ef4444", background: "#ef444418", borderRadius: 4, padding: "2px 7px" }}>✗ Not met</span>;
+                        // Fallback: Hamsa's objective_met field — for webhook runs that arrived
+                        // after dashData was loaded and haven't been aggregated yet
+                        const om = (run.outcomeResult?.objective_met || "").toLowerCase();
+                        if (om === "yes") return <span style={{ fontSize: 11, fontWeight: 600, color: "#17B26A", background: "#17B26A18", borderRadius: 4, padding: "2px 7px", opacity: 0.7 }}>✓ Met</span>;
+                        if (om === "no")  return <span style={{ fontSize: 11, fontWeight: 600, color: "#ef4444", background: "#ef444418", borderRadius: 4, padding: "2px 7px", opacity: 0.7 }}>✗ Not met</span>;
+                        return <span style={{ fontSize: 11, color: T.textMuted }}>—</span>;
+                      })()}
                     </td>
                   )}
                   {outcomeColumns.map((key) => (

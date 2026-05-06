@@ -1006,7 +1006,7 @@ ${nodeSummaries}
 Based on these pre-evaluated results, provide a final JSON assessment:
 {
   "overall_score": 0-10,
-  "objective_achieved": true/false/null,
+  "objective_achieved": true/false/null,   // true if the agent successfully completed the call's purpose — INCLUDING out-of-scope calls where the agent correctly redirected, transferred, or provided the appropriate fixed response. The objective is whether the AGENT did its job, not whether the caller's specific off-scope request was fulfilled. Set true for: completed bookings, correct redirects for out-of-scope, correct escalations. Set false only for genuine agent failures (stuck, wrong info, ignored user, missed required step). Set null if indeterminate.
   "caller_sentiment": "positive" | "neutral" | "negative" | "unknown",
   "out_of_scope_handled": true/false/null,
   "out_of_scope_topics": ["topics the user raised that fall outside this agent's stated purpose — derive scope from AGENT CONTEXT above, not assumptions"],
