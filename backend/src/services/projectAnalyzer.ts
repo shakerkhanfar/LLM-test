@@ -24,15 +24,21 @@ function computeGoalStatus(run: any): "SUCCESSFUL" | "FAILED" | "PARTIAL" | null
   if (["NO_ANSWER", "BUSY", "VOICEMAIL"].includes(callStatus)) return "FAILED";
   if (callStatus === "FAILED") return "FAILED";
 
+  const objectiveMet = (run.outcomeResult?.objective_met || "").toLowerCase();
   const isNegative = outcome.includes("not_interested") || outcome.includes("rejected")
-                  || outcome.includes("refused")        || outcome.includes("declined");
+                  || outcome.includes("refused")        || outcome.includes("declined")
+                  || objectiveMet === "no";
   const isPositive = !isNegative && (
     outcome.includes("interested") || outcome.includes("success")   ||
     outcome.includes("booked")     || outcome.includes("converted") ||
     outcome.includes("completed")  || outcome.includes("agreed")
+    || objectiveMet === "yes"
   );
-  const isFollowup = outcome.includes("followup") || outcome.includes("callback")
-                  || outcome.includes("pending")   || outcome.includes("later");
+  const isFollowup = !isNegative && !isPositive && (
+    outcome.includes("followup") || outcome.includes("callback")
+    || outcome.includes("pending") || outcome.includes("later")
+    || objectiveMet === "partial"
+  );
 
   if (isNegative) return (score != null && score >= 0.7) ? "PARTIAL" : "FAILED";
   if (isPositive) return (score == null || score >= 0.7) ? "SUCCESSFUL" : "PARTIAL";

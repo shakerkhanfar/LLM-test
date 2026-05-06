@@ -15,7 +15,8 @@ function computeGoal(run: any): { status: GoalStatus; reason: string } | null {
   const callStatus = (run.callStatus || "").toUpperCase();
   const outcome = (run.callOutcome || "").toLowerCase();
   const score: number | null = run.overallScore ?? null;
-  const summary: string = run.outcomeResult?.summary || "";
+  // Handle "Sunnary" typo (double-n, capital S) that some agent LLMs emit alongside "summary"
+  const summary: string = run.outcomeResult?.summary || run.outcomeResult?.Sunnary || "";
   const evalResults: any[] = run.evalResults || [];
 
 
@@ -57,11 +58,14 @@ function computeGoal(run: any): { status: GoalStatus; reason: string } | null {
 
   if (isNegative) {
     const isIncomplete = outcome.includes("hangup") || outcome.includes("hang_up")
-                      || outcome.includes("stuck") || outcome.includes("timeout")
+                      || outcome.includes("stuck")  || outcome.includes("timeout")
                       || outcome.includes("confused") || outcome.includes("dropped");
+    // "transferred" = agent correctly escalated an out-of-scope or complex request
+    // — not a "customer declined" scenario, treat like an incomplete/redirected call
+    const isTransferred = outcome.includes("transferred") || outcome.includes("transfer");
     const status: GoalStatus = (score != null && score >= 0.7) ? "PARTIAL" : "FAILED";
     const reason = summary
-      || (isIncomplete
+      || (isIncomplete || isTransferred
         ? (status === "PARTIAL"
           ? `Call ended before objective was met, but agent performed correctly (${(score! * 100).toFixed(0)}% quality).`
           : `Call did not complete — ${outcome.replace(/_/g, " ")}.${failedStr}`)
