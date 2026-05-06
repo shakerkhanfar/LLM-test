@@ -37,6 +37,9 @@ interface DashData {
 interface Props {
   project: any;
   onDashLoaded?: (data: { totalRuns: number; totalEvalCost: number; totalFailed: number }) => void;
+  onLoadMore?: () => void;
+  hasMoreRuns?: boolean;
+  loadingMore?: boolean;
 }
 
 const OUTCOME_COLORS: Record<string, string> = {
@@ -170,7 +173,7 @@ function ScorePill({ score }: { score: number }) {
   );
 }
 
-export default function ProjectDashboard({ project, onDashLoaded }: Props) {
+export default function ProjectDashboard({ project, onDashLoaded, onLoadMore, hasMoreRuns, loadingMore }: Props) {
   const [dashData, setDashData] = useState<DashData | null>(null);
   const [dashError, setDashError] = useState<string | null>(null);
   const [tableSearch, setTableSearch] = useState("");
@@ -2155,6 +2158,22 @@ export default function ProjectDashboard({ project, onDashLoaded }: Props) {
             </tbody>
           </table>
         </div>
+        {/* Load more older runs */}
+        {hasMoreRuns && onLoadMore && (
+          <div style={{ textAlign: "center", padding: "12px 0 4px" }}>
+            <button
+              onClick={onLoadMore}
+              disabled={loadingMore}
+              style={{
+                background: "none", border: `1px solid ${T.border}`, borderRadius: 6,
+                padding: "6px 18px", fontSize: 13, color: T.textSecondary,
+                cursor: loadingMore ? "not-allowed" : "pointer", opacity: loadingMore ? 0.6 : 1,
+              }}
+            >
+              {loadingMore ? "Loading…" : `Load older calls`}
+            </button>
+          </div>
+        )}
       </div>
 
       {/* ── Issues Modal ──────────────────────────────────────────── */}

@@ -87,6 +87,8 @@ export default function ProjectDetail() {
   const importWarning = searchParams.get("importWarning");
   const [project, setProject] = useState<any>(null);
   const [loading, setLoading] = useState(true);
+  const [hasMoreRuns, setHasMoreRuns] = useState(false);
+  const [loadingMoreRuns, setLoadingMoreRuns] = useState(false);
   // Accurate totals lifted from dashboard aggregate (covers all runs, not just loaded 200)
   const [dashTotalRuns, setDashTotalRuns]       = useState<number | null>(null);
   const [dashTotalCost, setDashTotalCost]       = useState<number | null>(null);
@@ -180,9 +182,30 @@ export default function ProjectDetail() {
 
   const load = useCallback(() => {
     getProject(id!)
-      .then(setProject)
+      .then(data => { setProject(data); setHasMoreRuns(data.hasMoreRuns ?? false); })
       .finally(() => setLoading(false));
   }, [id]);
+
+  const loadMoreRuns = useCallback(async () => {
+    if (!project?.runs?.length || loadingMoreRuns) return;
+    const cursor = project.runs[project.runs.length - 1]?.id;
+    if (!cursor) return;
+    setLoadingMoreRuns(true);
+    try {
+      const data = await getProject(id!, cursor);
+      setProject((prev: any) => ({
+        ...prev,
+        runs: [
+          ...prev.runs,
+          // dedupe just in case
+          ...data.runs.filter((r: any) => !prev.runs.some((pr: any) => pr.id === r.id)),
+        ],
+      }));
+      setHasMoreRuns(data.hasMoreRuns ?? false);
+    } finally {
+      setLoadingMoreRuns(false);
+    }
+  }, [id, project, loadingMoreRuns]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -1271,6 +1294,9 @@ export default function ProjectDetail() {
             setDashTotalCost(totalEvalCost);
             if (totalFailed != null) setDashTotalFailed(totalFailed);
           }}
+          onLoadMore={loadMoreRuns}
+          hasMoreRuns={hasMoreRuns}
+          loadingMore={loadingMoreRuns}
         />
       ) : (
       <table style={{ width: "100%", borderCollapse: "collapse" }}>

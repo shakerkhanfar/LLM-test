@@ -44,8 +44,9 @@ export function listProjects() {
   return request<any[]>("/projects");
 }
 
-export function getProject(id: string) {
-  return request<any>(`/projects/${id}`);
+export function getProject(id: string, before?: string) {
+  const qs = before ? `?before=${before}` : "";
+  return request<any>(`/projects/${id}${qs}`);
 }
 
 export function createProject(data: {

@@ -27,11 +27,10 @@ async function verifyWebhookSignature(
   const signature = req.headers["x-hamsa-signature"] as string | undefined;
 
   if (!secret) {
-    // No secret configured — accept but warn operators
+    // No secret configured — accept the webhook (unauthenticated).
+    // Log at debug level only; repeated warnings per-call are noisy and unhelpful.
     if (signature) {
-      console.warn(`[Webhook] Received signature header but project ${projectId} has no webhookSecret configured`);
-    } else {
-      console.warn(`[Webhook] Project ${projectId} has no webhookSecret — webhook is unauthenticated`);
+      console.log(`[Webhook] Project ${projectId} has no webhookSecret — ignoring signature header`);
     }
     return true;
   }

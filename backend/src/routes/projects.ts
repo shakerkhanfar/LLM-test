@@ -434,10 +434,15 @@ router.post("/hamsa-projects", async (req: AuthRequest, res) => {
   }
 });
 
-// Get single project with criteria and runs (most recent 100 runs)
+// Get single project with criteria and runs (most recent 100 runs, cursor-paginatable)
+// Query params:
+//   ?before=<runId>  — cursor: return 100 runs older than this run (exclusive)
 router.get("/:id", async (req: AuthRequest, res) => {
   console.log(`[Projects] GET /:id called with id=${req.params.id} userId=${req.userId}`);
   try {
+    const beforeId = req.query.before as string | undefined;
+    const PAGE_SIZE = 100;
+
     const project = await prisma.project.findUnique({
       where: { id: req.params.id },
       include: {
@@ -445,9 +450,14 @@ router.get("/:id", async (req: AuthRequest, res) => {
         _count: { select: { runs: true } },
         runs: {
           orderBy: { createdAt: "desc" },
-          take: 200,
+          take: PAGE_SIZE,
+          // Cursor pagination: skip the cursor run itself, then take the next PAGE_SIZE
+          ...(beforeId ? { cursor: { id: beforeId }, skip: 1 } : {}),
           include: {
-            evalResults: { include: { criterion: true } },
+            // Only the fields the project page needs — no criterion JOIN, no detail/metadata
+            evalResults: {
+              select: { id: true, criterionId: true, passed: true, score: true },
+            },
           },
         },
       },
@@ -470,8 +480,9 @@ router.get("/:id", async (req: AuthRequest, res) => {
       }),
     ]);
 
-    // Strip heavy fields from list response to keep payload under proxy limits.
+    // Strip heavy fields from list response to keep payload small.
     // Individual run detail pages load full data via GET /runs/:id.
+    // evalResults already scoped to {id, criterionId, passed, score} by the Prisma select above.
     const lightRuns = project.runs.map((run: any) => {
       // Keep only the fields the project page actually uses from webhookData
       const wd = run.webhookData as any;
@@ -485,18 +496,15 @@ router.get("/:id", async (req: AuthRequest, res) => {
       return {
         ...run,
         webhookData: lightWebhookData,
-        callLog: run.callLog ? true : null,       // boolean flag — frontend checks existence
+        callLog: run.callLog ? true : null,        // boolean flag — frontend checks existence
         transcript: run.transcript ? true : null,  // boolean flag — frontend checks existence
-        evalResults: run.evalResults.map((er: any) => ({
-          ...er,
-          detail: undefined,
-          metadata: undefined,
-        })),
+        // evalResults: already {id, criterionId, passed, score} — no change needed
       };
     });
+    const hasMoreRuns = lightRuns.length === PAGE_SIZE;
     const responseSize = JSON.stringify({ ...project, runs: lightRuns }).length;
     console.log(`[Projects] Returning project ${project.name} with ${lightRuns.length} runs (~${(responseSize / 1024).toFixed(0)}KB)`);
-    res.json({ ...project, runs: lightRuns, failedRunCount, errorRunCount });
+    res.json({ ...project, runs: lightRuns, failedRunCount, errorRunCount, hasMoreRuns });
   } catch (err) {
     console.error("[Projects] GET /:id error:", (err as Error).message, (err as Error).stack?.slice(0, 300));
     res.status(500).json({ error: "Failed to fetch project" });

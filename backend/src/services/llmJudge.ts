@@ -178,9 +178,14 @@ RULES YOU MUST FOLLOW:
 
 2. EVIDENCE REQUIRED: Your "detail" field MUST quote the exact word(s) or phrase(s) from the <transcript> above that support your verdict. Do NOT cite words or phrases that do not appear verbatim in the transcript. If you cannot find direct evidence, say so.
 
-3. COMMIT TO A VERDICT FIRST, THEN WRITE DETAIL: Decide passed=true/false, then write one or two sentences that explain why. Do NOT write a reasoning chain that walks through possibilities — state only the final conclusion. Do NOT write corrections or second-guesses in the detail field.
+3. COMMIT TO A VERDICT FIRST, THEN WRITE DETAIL: Decide passed=true/false before writing anything. Then write one or two sentences that state only the final conclusion and the evidence. Do NOT write a reasoning chain that walks through possibilities. Do NOT include "However", "Although", "While", or "Despite" — these lead to contradictions.
 
-4. CONSISTENCY: Your "passed" and "score" MUST match your "detail". If the agent behaved correctly → passed=true, score near 1.0. If the agent made a clear error → passed=false, score near 0. Never contradict yourself across the three fields.
+4. CONSISTENCY: Your "passed" and "score" MUST match your "detail". If the agent behaved correctly → passed=true, score near 1.0. If the agent made a clear error → passed=false, score near 0. Never contradict yourself.
+
+5. DETAIL FORMAT — start with one of these and nothing else:
+   - Pass: "Agent correctly [action]…" or "No [issue] occurred…"
+   - Fail: "Agent [failed to / did not / violated] [action]…"
+   Do NOT start with "The agent" then switch conclusion mid-sentence.
 
 Respond with JSON only — no text outside the JSON:
 {
