@@ -1201,46 +1201,116 @@ export default function ProjectDashboard({ project, onDashLoaded }: Props) {
                           <div style={{ padding: "8px 12px", fontSize: 12, color: T.textMuted }}>
                             Run details not available in current view.
                           </div>
-                        ) : (
-                          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11 }}>
-                            <thead>
-                              <tr style={{ background: T.cardAlt }}>
-                                {["Conv ID", "Date", "Score", "Outcome"].map(h => (
-                                  <th key={h} style={{ padding: "5px 10px", textAlign: "left", fontWeight: 600, color: T.textMuted, letterSpacing: 0.3 }}>{h}</th>
-                                ))}
-                                <th style={{ padding: "5px 10px" }} />
-                              </tr>
-                            </thead>
-                            <tbody>
-                              {affectedRuns.map((r: any, ri: number) => (
-                                <tr key={r.id} style={{ borderTop: ri > 0 ? `1px solid ${T.border}` : "none" }}>
-                                  <td style={{ padding: "6px 10px", fontFamily: "monospace", color: T.textMuted }}>
-                                    {(r.conversationId || r.id || "—").slice(0, 13)}
-                                  </td>
-                                  <td style={{ padding: "6px 10px", color: T.textSecondary }}>
-                                    {r.callDate ? new Date(r.callDate).toLocaleDateString() : "—"}
-                                  </td>
-                                  <td style={{ padding: "6px 10px" }}>
-                                    {r.overallScore != null
-                                      ? <ScorePill score={r.overallScore * 10} />
-                                      : <span style={{ color: T.textMuted }}>—</span>}
-                                  </td>
-                                  <td style={{ padding: "6px 10px", color: T.textSecondary, textTransform: "capitalize" }}>
-                                    {(r.callOutcome || "—").replace(/_/g, " ")}
-                                  </td>
-                                  <td style={{ padding: "6px 10px", textAlign: "right" }}>
-                                    <a
-                                      href={`/projects/${project.id}/runs/${r.id}`}
-                                      style={{ color: T.primary, fontSize: 11, fontWeight: 500, textDecoration: "none" }}
-                                    >
-                                      View →
-                                    </a>
-                                  </td>
-                                </tr>
-                              ))}
-                            </tbody>
-                          </table>
-                        )}
+                        ) : (() => {
+                          const issueSelectedCount = affectedRuns.filter((r: any) => selectedRunIds.has(r.id)).length;
+                          const allIssueSelected = affectedRuns.length > 0 && issueSelectedCount === affectedRuns.length;
+                          function toggleIssueAll() {
+                            const ids = affectedRuns.map((r: any) => r.id as string);
+                            setSelectedRunIds(prev => {
+                              const next = new Set(prev);
+                              if (allIssueSelected) { ids.forEach((id: string) => next.delete(id)); }
+                              else { ids.forEach((id: string) => next.add(id)); }
+                              return next;
+                            });
+                          }
+                          return (
+                            <>
+                              {/* Mini action bar — appears when any runs in this issue are selected */}
+                              {issueSelectedCount > 0 && (
+                                <div style={{
+                                  display: "flex", alignItems: "center", gap: 10,
+                                  padding: "6px 10px", background: "#1d4ed822",
+                                  borderBottom: `1px solid #1d4ed844`,
+                                }}>
+                                  <span style={{ fontSize: 11, color: T.primary, fontWeight: 600 }}>
+                                    {issueSelectedCount} selected
+                                  </span>
+                                  <button
+                                    onClick={() => {
+                                      const ids = affectedRuns.map((r: any) => r.id as string);
+                                      setSelectedRunIds(prev => { const next = new Set(prev); ids.forEach((id: string) => next.delete(id)); return next; });
+                                    }}
+                                    style={{ fontSize: 11, background: "none", border: "none", color: T.textSecondary, cursor: "pointer", padding: 0 }}
+                                  >
+                                    Clear
+                                  </button>
+                                  <button
+                                    onClick={handleReEvaluateSelected}
+                                    disabled={reEvalStatus === "loading"}
+                                    style={{
+                                      marginLeft: "auto", fontSize: 11, fontWeight: 600,
+                                      background: T.primary, color: "#fff", border: "none",
+                                      borderRadius: 5, padding: "3px 10px", cursor: reEvalStatus === "loading" ? "default" : "pointer",
+                                      opacity: reEvalStatus === "loading" ? 0.7 : 1,
+                                    }}
+                                  >
+                                    {reEvalStatus === "loading" ? "Queuing…" : reEvalStatus === "done" ? "✓ Queued" : `Re-evaluate (${issueSelectedCount})`}
+                                  </button>
+                                </div>
+                              )}
+                              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11 }}>
+                                <thead>
+                                  <tr style={{ background: T.cardAlt }}>
+                                    <th style={{ padding: "5px 8px", width: 28 }}>
+                                      <SelectAllCheckbox
+                                        tableRuns={affectedRuns}
+                                        selectedRunIds={selectedRunIds}
+                                        onToggle={toggleIssueAll}
+                                        accentColor={T.primary}
+                                      />
+                                    </th>
+                                    {["Conv ID", "Date", "Score", "Outcome"].map(h => (
+                                      <th key={h} style={{ padding: "5px 10px", textAlign: "left", fontWeight: 600, color: T.textMuted, letterSpacing: 0.3 }}>{h}</th>
+                                    ))}
+                                    <th style={{ padding: "5px 10px" }} />
+                                  </tr>
+                                </thead>
+                                <tbody>
+                                  {affectedRuns.map((r: any, ri: number) => {
+                                    const isRowSelected = selectedRunIds.has(r.id);
+                                    return (
+                                      <tr key={r.id} style={{
+                                        borderTop: ri > 0 ? `1px solid ${T.border}` : "none",
+                                        background: isRowSelected ? T.primary + "0f" : "transparent",
+                                      }}>
+                                        <td style={{ padding: "5px 8px" }}>
+                                          <input
+                                            type="checkbox"
+                                            checked={isRowSelected}
+                                            onChange={() => toggleRun(r.id)}
+                                            style={{ cursor: "pointer", accentColor: T.primary }}
+                                          />
+                                        </td>
+                                        <td style={{ padding: "6px 10px", fontFamily: "monospace", color: T.textMuted }}>
+                                          {(r.conversationId || r.id || "—").slice(0, 13)}
+                                        </td>
+                                        <td style={{ padding: "6px 10px", color: T.textSecondary }}>
+                                          {r.callDate ? new Date(r.callDate).toLocaleDateString() : "—"}
+                                        </td>
+                                        <td style={{ padding: "6px 10px" }}>
+                                          {r.overallScore != null
+                                            ? <ScorePill score={r.overallScore * 10} />
+                                            : <span style={{ color: T.textMuted }}>—</span>}
+                                        </td>
+                                        <td style={{ padding: "6px 10px", color: T.textSecondary, textTransform: "capitalize" }}>
+                                          {(r.callOutcome || "—").replace(/_/g, " ")}
+                                        </td>
+                                        <td style={{ padding: "6px 10px", textAlign: "right" }}>
+                                          <a
+                                            href={`/projects/${project.id}/runs/${r.id}`}
+                                            style={{ color: T.primary, fontSize: 11, fontWeight: 500, textDecoration: "none" }}
+                                          >
+                                            View →
+                                          </a>
+                                        </td>
+                                      </tr>
+                                    );
+                                  })}
+                                </tbody>
+                              </table>
+                            </>
+                          );
+                        })()}
                       </div>
                     )}
                   </div>
@@ -1389,78 +1459,143 @@ export default function ProjectDashboard({ project, onDashLoaded }: Props) {
               const isExpanded = expandedOutcomes.has(outcome);
               const visibleIssues = isExpanded ? issues : issues.slice(0, COLLAPSED_LIMIT);
               const hiddenCount = issues.length - COLLAPSED_LIMIT;
-              return (
-                <div key={outcome} style={{ border: `1px solid ${color}44`, borderRadius: 8, overflow: "hidden" }}>
-                  <div
-                    onClick={() => selectOutcome(outcome)}
-                    style={{
-                      display: "flex", alignItems: "center", justifyContent: "space-between",
-                      padding: "8px 12px", background: color + "18", cursor: "pointer",
-                    }}
-                  >
-                    <span style={{ fontSize: 12, fontWeight: 700, color, textTransform: "capitalize" }}>
-                      {outcome.replace(/_/g, " ")}
-                    </span>
-                    <span style={{ fontSize: 11, color: T.textSecondary }}>
-                      {total} call{total !== 1 ? "s" : ""}
-                    </span>
-                  </div>
-                  <div style={{ padding: "8px 12px", display: "flex", flexDirection: "column", gap: 6 }}>
-                    {visibleIssues.map((issue, i) => {
-                      const isActive = issueFilter?.text === issue.text && issueFilter?.outcome === outcome;
-                      return (
-                      <div
-                        key={i}
-                        onClick={() => selectIssue(issue.text, outcome, issue.runIds)}
-                        title={`View ${issue.count} call${issue.count !== 1 ? "s" : ""} with this issue`}
-                        style={{
-                          cursor: "pointer", borderRadius: 6, padding: "4px 6px", margin: "0 -6px",
-                          background: isActive ? color + "22" : "none",
-                          border: isActive ? `1px solid ${color}55` : "1px solid transparent",
-                          transition: "background 0.15s",
-                        }}
-                      >
-                        <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 2 }}>
-                          <SeverityBadge severity={issue.severity} />
-                          <span style={{ flex: 1, fontSize: 11, color: isActive ? T.text : T.text, fontWeight: isActive ? 600 : 400, lineHeight: 1.3, overflow: "hidden", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical" }}>
-                            {issue.text}
-                          </span>
-                          <span style={{ fontSize: 10, fontWeight: 700, color, flexShrink: 0 }}>{issue.count}</span>
-                        </div>
-                        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                          <div style={{ flex: 1, height: 3, background: T.cardAlt, borderRadius: 99, overflow: "hidden" }}>
-                            <div style={{ width: `${issue.pct}%`, height: "100%", background: color, borderRadius: 99 }} />
+              return (() => {
+                  // Collect all unique runIds across all issues in this outcome card
+                  const allOutcomeRunIds = [...new Set(issues.flatMap(i => i.runIds))];
+                  const outcomeSelectedCount = allOutcomeRunIds.filter(id => selectedRunIds.has(id)).length;
+                  return (
+                  <div key={outcome} style={{ border: `1px solid ${color}44`, borderRadius: 8, overflow: "hidden" }}>
+                    <div
+                      onClick={() => selectOutcome(outcome)}
+                      style={{
+                        display: "flex", alignItems: "center", justifyContent: "space-between",
+                        padding: "8px 12px", background: color + "18", cursor: "pointer",
+                      }}
+                    >
+                      <span style={{ fontSize: 12, fontWeight: 700, color, textTransform: "capitalize" }}>
+                        {outcome.replace(/_/g, " ")}
+                      </span>
+                      <span style={{ fontSize: 11, color: T.textSecondary }}>
+                        {total} call{total !== 1 ? "s" : ""}
+                      </span>
+                    </div>
+                    <div style={{ padding: "8px 12px", display: "flex", flexDirection: "column", gap: 6 }}>
+                      {visibleIssues.map((issue, i) => {
+                        const isActive = issueFilter?.text === issue.text && issueFilter?.outcome === outcome;
+                        const issueSelectedCount = issue.runIds.filter(id => selectedRunIds.has(id)).length;
+                        const allIssueSelected = issueSelectedCount === issue.runIds.length;
+                        function toggleIssueSelection(e: React.MouseEvent) {
+                          e.stopPropagation();
+                          const ids = issue.runIds;
+                          setSelectedRunIds(prev => {
+                            const next = new Set(prev);
+                            if (allIssueSelected) { ids.forEach(id => next.delete(id)); }
+                            else { ids.forEach(id => next.add(id)); }
+                            return next;
+                          });
+                        }
+                        return (
+                        <div
+                          key={i}
+                          onClick={() => selectIssue(issue.text, outcome, issue.runIds)}
+                          title={`View ${issue.count} call${issue.count !== 1 ? "s" : ""} with this issue`}
+                          style={{
+                            cursor: "pointer", borderRadius: 6, padding: "4px 6px", margin: "0 -6px",
+                            background: isActive ? color + "22" : issueSelectedCount > 0 ? T.primary + "0d" : "none",
+                            border: isActive ? `1px solid ${color}55` : issueSelectedCount > 0 ? `1px solid ${T.primary}33` : "1px solid transparent",
+                            transition: "background 0.15s",
+                          }}
+                        >
+                          <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 2 }}>
+                            <SeverityBadge severity={issue.severity} />
+                            <span style={{ flex: 1, fontSize: 11, color: T.text, fontWeight: isActive ? 600 : 400, lineHeight: 1.3, overflow: "hidden", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical" }}>
+                              {issue.text}
+                            </span>
+                            {/* Select toggle — adds/removes all this issue's runs from selection */}
+                            <button
+                              onClick={toggleIssueSelection}
+                              title={allIssueSelected ? "Deselect these calls" : `Select ${issue.count} call${issue.count !== 1 ? "s" : ""} for re-evaluation`}
+                              style={{
+                                flexShrink: 0, fontSize: 10, fontWeight: 700,
+                                padding: "1px 7px", borderRadius: 10, border: "none",
+                                cursor: "pointer", lineHeight: "18px",
+                                background: allIssueSelected ? T.primary : issueSelectedCount > 0 ? T.primary + "55" : color + "22",
+                                color: allIssueSelected || issueSelectedCount > 0 ? "#fff" : color,
+                                transition: "background 0.15s",
+                              }}
+                            >
+                              {issueSelectedCount > 0 ? `${issueSelectedCount}/${issue.count}` : issue.count}
+                            </button>
                           </div>
-                          <span style={{ fontSize: 10, color: T.textMuted, flexShrink: 0 }}>{issue.pct}% of these calls</span>
+                          <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                            <div style={{ flex: 1, height: 3, background: T.cardAlt, borderRadius: 99, overflow: "hidden" }}>
+                              <div style={{ width: `${issue.pct}%`, height: "100%", background: color, borderRadius: 99 }} />
+                            </div>
+                            <span style={{ fontSize: 10, color: T.textMuted, flexShrink: 0 }}>{issue.pct}% of these calls</span>
+                          </div>
                         </div>
+                        );
+                      })}
+                      {!isExpanded && hiddenCount > 0 && (
+                        <button
+                          onClick={(e) => { e.stopPropagation(); setExpandedOutcomes(prev => new Set([...prev, outcome])); }}
+                          style={{
+                            marginTop: 2, padding: "4px 0", background: "none", border: "none",
+                            fontSize: 11, color, fontWeight: 600, cursor: "pointer", textAlign: "left",
+                          }}
+                        >
+                          + {hiddenCount} more issue{hiddenCount !== 1 ? "s" : ""}
+                        </button>
+                      )}
+                      {isExpanded && issues.length > COLLAPSED_LIMIT && (
+                        <button
+                          onClick={(e) => { e.stopPropagation(); setExpandedOutcomes(prev => { const s = new Set(prev); s.delete(outcome); return s; }); }}
+                          style={{
+                            marginTop: 2, padding: "4px 0", background: "none", border: "none",
+                            fontSize: 11, color: T.textMuted, fontWeight: 600, cursor: "pointer", textAlign: "left",
+                          }}
+                        >
+                          Show less
+                        </button>
+                      )}
+                    </div>
+                    {/* Re-evaluate action strip — shown when any of this outcome's runs are selected */}
+                    {outcomeSelectedCount > 0 && (
+                      <div style={{
+                        display: "flex", alignItems: "center", gap: 8,
+                        padding: "6px 12px", background: "#1d4ed814",
+                        borderTop: `1px solid ${T.primary}33`,
+                      }}>
+                        <span style={{ fontSize: 11, color: T.primary, fontWeight: 600, flex: 1 }}>
+                          {outcomeSelectedCount} call{outcomeSelectedCount !== 1 ? "s" : ""} selected
+                        </span>
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setSelectedRunIds(prev => { const next = new Set(prev); allOutcomeRunIds.forEach(id => next.delete(id)); return next; });
+                          }}
+                          style={{ fontSize: 11, background: "none", border: "none", color: T.textSecondary, cursor: "pointer", padding: 0 }}
+                        >
+                          Clear
+                        </button>
+                        <button
+                          onClick={(e) => { e.stopPropagation(); handleReEvaluateSelected(); }}
+                          disabled={reEvalStatus === "loading"}
+                          style={{
+                            fontSize: 11, fontWeight: 600,
+                            background: T.primary, color: "#fff", border: "none",
+                            borderRadius: 5, padding: "3px 10px",
+                            cursor: reEvalStatus === "loading" ? "default" : "pointer",
+                            opacity: reEvalStatus === "loading" ? 0.7 : 1,
+                          }}
+                        >
+                          {reEvalStatus === "loading" ? "Queuing…" : reEvalStatus === "done" ? "✓ Queued" : `Re-evaluate (${outcomeSelectedCount})`}
+                        </button>
                       </div>
-                      );
-                    })}
-                    {!isExpanded && hiddenCount > 0 && (
-                      <button
-                        onClick={(e) => { e.stopPropagation(); setExpandedOutcomes(prev => new Set([...prev, outcome])); }}
-                        style={{
-                          marginTop: 2, padding: "4px 0", background: "none", border: "none",
-                          fontSize: 11, color, fontWeight: 600, cursor: "pointer", textAlign: "left",
-                        }}
-                      >
-                        + {hiddenCount} more issue{hiddenCount !== 1 ? "s" : ""}
-                      </button>
-                    )}
-                    {isExpanded && issues.length > COLLAPSED_LIMIT && (
-                      <button
-                        onClick={(e) => { e.stopPropagation(); setExpandedOutcomes(prev => { const s = new Set(prev); s.delete(outcome); return s; }); }}
-                        style={{
-                          marginTop: 2, padding: "4px 0", background: "none", border: "none",
-                          fontSize: 11, color: T.textMuted, fontWeight: 600, cursor: "pointer", textAlign: "left",
-                        }}
-                      >
-                        Show less
-                      </button>
                     )}
                   </div>
-                </div>
-              );
+                  );
+                })();
             })}
           </div>
         </div>
