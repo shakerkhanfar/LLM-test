@@ -217,6 +217,8 @@ export default function ProjectDashboard({ project, onDashLoaded }: Props) {
     setExpandedOutcomes(new Set());
     setIssueExtraRuns([]);
     setSelectedRunIds(new Set()); // issue #8: clear selection on project switch
+    setReEvalProgress(null);
+    if (reEvalPollRef.current) { clearInterval(reEvalPollRef.current); reEvalPollRef.current = null; }
   }, [project.id]);
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [selectedOutcome, setSelectedOutcome] = useState<string | null>(null);
@@ -235,10 +237,16 @@ export default function ProjectDashboard({ project, onDashLoaded }: Props) {
   // ── Bulk selection ────────────────────────────────────────────────
   const [selectedRunIds, setSelectedRunIds] = useState<Set<string>>(new Set());
   const [reEvalStatus, setReEvalStatus] = useState<"idle" | "loading" | "done" | "error">("idle");
+  const [reEvalProgress, setReEvalProgress] = useState<{ total: number; done: number; failed: number } | null>(null);
   const reEvalTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const reEvalPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const reEvalSubmittedRef = useRef<string[]>([]);
 
-  // Cleanup status reset timer on unmount (issue #11)
-  useEffect(() => () => { if (reEvalTimerRef.current) clearTimeout(reEvalTimerRef.current); }, []);
+  // Cleanup timers on unmount
+  useEffect(() => () => {
+    if (reEvalTimerRef.current) clearTimeout(reEvalTimerRef.current);
+    if (reEvalPollRef.current) clearInterval(reEvalPollRef.current);
+  }, []);
 
   function toggleRun(runId: string) {
     setSelectedRunIds(prev => {
@@ -259,13 +267,41 @@ export default function ProjectDashboard({ project, onDashLoaded }: Props) {
 
   async function handleReEvaluateSelected() {
     if (selectedRunIds.size === 0 || reEvalStatus === "loading") return;
+    // Cancel any in-flight poll from a previous re-eval
+    if (reEvalPollRef.current) { clearInterval(reEvalPollRef.current); reEvalPollRef.current = null; }
+    if (reEvalTimerRef.current) { clearTimeout(reEvalTimerRef.current); reEvalTimerRef.current = null; }
+
     setReEvalStatus("loading");
+    const submittedIds = Array.from(selectedRunIds);
     try {
-      await reEvaluateRuns(project.id, Array.from(selectedRunIds));
+      await reEvaluateRuns(project.id, submittedIds);
       setReEvalStatus("done");
-      // Keep selection intact so the user can see which calls were queued.
-      // They can clear manually or navigate away.
-      reEvalTimerRef.current = setTimeout(() => setReEvalStatus("idle"), 3000);
+      reEvalSubmittedRef.current = submittedIds;
+      setReEvalProgress({ total: submittedIds.length, done: 0, failed: 0 });
+
+      // Poll every 3 s to track evaluation progress
+      let pollCount = 0;
+      const MAX_POLLS = 120; // ~6 min ceiling
+      const TERMINAL = new Set(["COMPLETE", "FAILED", "ERROR"]);
+      reEvalPollRef.current = setInterval(async () => {
+        pollCount++;
+        try {
+          const runs = await getRunsByIds(project.id, reEvalSubmittedRef.current);
+          const done = runs.filter((r: any) => TERMINAL.has(r.status)).length;
+          const failed = runs.filter((r: any) => r.status === "FAILED" || r.status === "ERROR").length;
+          setReEvalProgress({ total: reEvalSubmittedRef.current.length, done, failed });
+
+          if (done >= reEvalSubmittedRef.current.length || pollCount >= MAX_POLLS) {
+            clearInterval(reEvalPollRef.current!);
+            reEvalPollRef.current = null;
+            // Keep progress visible briefly then fade out
+            reEvalTimerRef.current = setTimeout(() => {
+              setReEvalProgress(null);
+              setReEvalStatus("idle");
+            }, 5000);
+          }
+        } catch { /* skip failed poll, try again next tick */ }
+      }, 3000);
     } catch {
       setReEvalStatus("error");
       reEvalTimerRef.current = setTimeout(() => setReEvalStatus("idle"), 4000);
@@ -1903,35 +1939,74 @@ export default function ProjectDashboard({ project, onDashLoaded }: Props) {
         </div>
 
         {/* ── Bulk action bar ── */}
-        {selectedRunIds.size > 0 && (
+        {(selectedRunIds.size > 0 || reEvalProgress !== null) && (
           <div style={{
-            display: "flex", alignItems: "center", gap: 10,
             padding: "8px 14px",
             background: "#eff6ff",
             border: `1px solid #bfdbfe`,
             borderRadius: 7,
             marginBottom: 8,
           }}>
-            <span style={{ fontSize: 12, fontWeight: 600, color: "#1d4ed8", flex: 1 }}>
-              {selectedRunIds.size} call{selectedRunIds.size > 1 ? "s" : ""} selected
-            </span>
-            <button
-              onClick={() => setSelectedRunIds(new Set())}
-              style={{ background: "none", border: "none", fontSize: 12, color: "#6b7280", cursor: "pointer", padding: "3px 8px" }}
-            >
-              Clear
-            </button>
-            <button
-              onClick={handleReEvaluateSelected}
-              disabled={reEvalStatus === "loading"}
-              style={{
-                padding: "5px 14px", borderRadius: 5, border: "none",
-                background: reEvalStatus === "done" ? "#17B26A" : reEvalStatus === "error" ? "#ef4444" : "#1d4ed8",
-                color: "#fff", fontWeight: 600, fontSize: 12, cursor: reEvalStatus === "loading" ? "wait" : "pointer",
-              }}
-            >
-              {reEvalStatus === "loading" ? "Queuing…" : reEvalStatus === "done" ? "✓ Queued" : reEvalStatus === "error" ? "Error — retry?" : "Re-evaluate selected"}
-            </button>
+            <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+              <span style={{ fontSize: 12, fontWeight: 600, color: "#1d4ed8", flex: 1 }}>
+                {reEvalProgress !== null
+                  ? reEvalProgress.done >= reEvalProgress.total
+                    ? `✓ Done — ${reEvalProgress.total} call${reEvalProgress.total !== 1 ? "s" : ""} evaluated`
+                    : `Evaluating ${reEvalProgress.done} / ${reEvalProgress.total}…`
+                  : `${selectedRunIds.size} call${selectedRunIds.size > 1 ? "s" : ""} selected`}
+              </span>
+              <button
+                onClick={() => {
+                  setSelectedRunIds(new Set());
+                  setReEvalProgress(null);
+                  if (reEvalPollRef.current) { clearInterval(reEvalPollRef.current); reEvalPollRef.current = null; }
+                  setReEvalStatus("idle");
+                }}
+                style={{ background: "none", border: "none", fontSize: 12, color: "#6b7280", cursor: "pointer", padding: "3px 8px" }}
+              >
+                Clear
+              </button>
+              <button
+                onClick={handleReEvaluateSelected}
+                disabled={reEvalStatus === "loading" || reEvalProgress !== null}
+                style={{
+                  padding: "5px 14px", borderRadius: 5, border: "none",
+                  background: reEvalStatus === "error" ? "#ef4444"
+                    : reEvalProgress !== null && reEvalProgress.done >= reEvalProgress.total ? "#17B26A"
+                    : "#1d4ed8",
+                  color: "#fff", fontWeight: 600, fontSize: 12,
+                  cursor: (reEvalStatus === "loading" || reEvalProgress !== null) ? "default" : "pointer",
+                  opacity: (reEvalStatus === "loading" || (reEvalProgress !== null && reEvalProgress.done < reEvalProgress.total)) ? 0.6 : 1,
+                }}
+              >
+                {reEvalStatus === "loading" ? "Queuing…"
+                  : reEvalStatus === "error" ? "Error — retry?"
+                  : "Re-evaluate selected"}
+              </button>
+            </div>
+
+            {/* Progress bar — shown while evaluation is in flight */}
+            {reEvalProgress !== null && (
+              <div style={{ marginTop: 8 }}>
+                <div style={{ height: 6, background: "#bfdbfe", borderRadius: 99, overflow: "hidden" }}>
+                  <div style={{
+                    height: "100%", borderRadius: 99,
+                    background: reEvalProgress.done >= reEvalProgress.total ? "#17B26A" : "#1d4ed8",
+                    width: `${reEvalProgress.total > 0 ? Math.round((reEvalProgress.done / reEvalProgress.total) * 100) : 0}%`,
+                    transition: "width 0.5s ease, background 0.3s ease",
+                  }} />
+                </div>
+                <div style={{ display: "flex", justifyContent: "space-between", marginTop: 4, fontSize: 10, color: "#6b7280" }}>
+                  <span>
+                    {reEvalProgress.done} of {reEvalProgress.total} complete
+                    {reEvalProgress.failed > 0 && (
+                      <span style={{ color: "#ef4444", marginLeft: 6 }}>{reEvalProgress.failed} failed</span>
+                    )}
+                  </span>
+                  <span>{reEvalProgress.total > 0 ? Math.round((reEvalProgress.done / reEvalProgress.total) * 100) : 0}%</span>
+                </div>
+              </div>
+            )}
           </div>
         )}
 
