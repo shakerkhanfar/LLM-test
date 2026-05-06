@@ -570,6 +570,7 @@ export default function RunDetail() {
                 }
               }}
               onTimeUpdate={() => setAudioTime(audioRef.current?.currentTime ?? 0)}
+              onSeeked={() => setAudioTime(audioRef.current?.currentTime ?? 0)}
               onPlay={() => setIsAudioPlaying(true)}
               onPause={() => setIsAudioPlaying(false)}
               onEnded={() => { setIsAudioPlaying(false); setAudioTime(0); }}
