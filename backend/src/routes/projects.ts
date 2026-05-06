@@ -649,12 +649,17 @@ router.get("/:id/dashboard", async (req: AuthRequest, res) => {
       LIMIT 30
     `;
 
-    // SQL-level: per-day score trend over ALL complete runs (used for Score Over Time chart)
+    // SQL-level: score trend over ALL complete runs (used for Score Over Time chart)
+    // Use hourly granularity for short date ranges (≤2 days) so single-day views show data
+    const rangeMs = dateFrom && dateTo ? dateTo.getTime() - dateFrom.getTime() : Infinity;
+    const trendGranularity = rangeMs <= 2 * 24 * 60 * 60 * 1000 ? "hour" : "day";
+    const trendTrunc = trendGranularity === "hour" ? Prisma.sql`'hour'` : Prisma.sql`'day'`;
+
     const scoreTrendRows = await prisma.$queryRaw<Array<{
-      day: Date; avg_score: number; run_count: bigint;
+      period: Date; avg_score: number; run_count: bigint;
     }>>`
       SELECT
-        DATE_TRUNC('day', "callDate")            AS day,
+        DATE_TRUNC(${trendTrunc}, "callDate")    AS period,
         AVG("overallScore")::double precision    AS avg_score,
         COUNT(*)                                 AS run_count
       FROM "Run" r
@@ -667,8 +672,8 @@ router.get("/:id/dashboard", async (req: AuthRequest, res) => {
           WHERE er."runId" = r.id AND er.passed IS NOT NULL
         ) >= ${MIN_EVALUATED_CRITERIA}
         ${dateClause}
-      GROUP BY DATE_TRUNC('day', "callDate")
-      ORDER BY day
+      GROUP BY DATE_TRUNC(${trendTrunc}, "callDate")
+      ORDER BY period
     `;
 
     const runs = await prisma.run.findMany({
@@ -898,9 +903,9 @@ router.get("/:id/dashboard", async (req: AuthRequest, res) => {
       outcomeDist[row.outcome ?? "unknown"] = Number(row.cnt);
     }
 
-    // Score trend from SQL (all runs, per-day averages)
+    // Score trend from SQL — per-day or per-hour averages depending on range
     const scoreTrend = scoreTrendRows.map(r => ({
-      day:      r.day instanceof Date ? r.day.toISOString().slice(0, 10) : String(r.day),
+      day:      r.period instanceof Date ? r.period.toISOString() : String(r.period),
       avgScore: r.avg_score != null ? Math.round(Number(r.avg_score) * 100 * 10) / 10 : null,
       count:    Number(r.run_count),
     }));
@@ -914,7 +919,8 @@ router.get("/:id/dashboard", async (req: AuthRequest, res) => {
       avgDuration,
       totalEvalCost,
       outcomeDist,               // Full outcome distribution (all runs, SQL-level)
-      scoreTrend,                // Per-day score averages (all runs, SQL-level)
+      scoreTrend,                // Per-day (or per-hour for short ranges) score averages
+      trendGranularity,          // "hour" | "day" — tells frontend how to format axis labels
       sentiment: sentimentCounts,
       objectiveRate: objectiveTotal > 0 ? Math.round((objectiveCount / objectiveTotal) * 100) / 100 : null,
       outcomeObjectiveRate: outcomeObjTotal > 0 ? Math.round((outcomeObjCount / outcomeObjTotal) * 100) / 100 : null,

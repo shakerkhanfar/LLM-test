@@ -16,8 +16,9 @@ interface DashData {
   totalFailed: number;
   /** SQL-level outcome distribution — all complete runs */
   outcomeDist: Record<string, number>;
-  /** SQL-level per-day score trend — all complete runs */
+  /** SQL-level score trend — per-day or per-hour for short date ranges */
   scoreTrend: Array<{ day: string; avgScore: number | null; count: number }>;
+  trendGranularity?: "hour" | "day";
   sentiment: Record<string, number>;
   objectiveRate: number | null;
   /** Objective rate from outcome extractor LLM (outcomeResult.objective_met) */
@@ -505,6 +506,7 @@ export default function ProjectDashboard({ project, onDashLoaded, onLoadMore, ha
   // Score trend — use SQL per-day aggregates (all runs) when available,
   // fall back to loaded completeRuns while dashData is loading
   const trendData = useMemo(() => {
+    const isHourly = dashData?.trendGranularity === "hour";
     if (dashData?.scoreTrend && dashData.scoreTrend.length > 0) {
       return dashData.scoreTrend
         .filter(r => r.avgScore != null)
@@ -512,7 +514,9 @@ export default function ProjectDashboard({ project, onDashLoaded, onLoadMore, ha
           idx: i + 1,
           score: r.avgScore,
           count: r.count,
-          date: new Date(r.day).toLocaleDateString(),
+          date: isHourly
+            ? new Date(r.day).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
+            : new Date(r.day).toLocaleDateString(),
         }));
     }
     // Fallback: individual points from loaded runs
@@ -524,7 +528,7 @@ export default function ProjectDashboard({ project, onDashLoaded, onLoadMore, ha
         count: 1,
         date: r.callDate ? new Date(r.callDate).toLocaleDateString() : "",
       }));
-  }, [dashData?.scoreTrend, completeRuns]);
+  }, [dashData?.scoreTrend, dashData?.trendGranularity, completeRuns]);
 
   // Outcome donut — use SQL-level distribution (all runs) when available
   const outcomeCounts = useMemo(() => {
@@ -776,13 +780,12 @@ export default function ProjectDashboard({ project, onDashLoaded, onLoadMore, ha
       <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
         <span style={{ fontSize: 12, fontWeight: 600, color: T.textSecondary }}>Date Range</span>
         {[
-          { label: "Today", days: 0 },
-          { label: "7d", days: 7 },
-          { label: "30d", days: 30 },
-          { label: "90d", days: 90 },
-        ].map(({ label, days }) => {
-          const to = new Date().toISOString().slice(0, 10);
-          const from = (() => { const d = new Date(); d.setDate(d.getDate() - days); return d.toISOString().slice(0, 10); })();
+          { label: "Today", from: new Date().toISOString().slice(0, 10), to: new Date().toISOString().slice(0, 10) },
+          { label: "Yesterday", from: (() => { const d = new Date(); d.setDate(d.getDate() - 1); return d.toISOString().slice(0, 10); })(), to: (() => { const d = new Date(); d.setDate(d.getDate() - 1); return d.toISOString().slice(0, 10); })() },
+          { label: "7d", from: (() => { const d = new Date(); d.setDate(d.getDate() - 7); return d.toISOString().slice(0, 10); })(), to: new Date().toISOString().slice(0, 10) },
+          { label: "30d", from: (() => { const d = new Date(); d.setDate(d.getDate() - 30); return d.toISOString().slice(0, 10); })(), to: new Date().toISOString().slice(0, 10) },
+          { label: "90d", from: (() => { const d = new Date(); d.setDate(d.getDate() - 90); return d.toISOString().slice(0, 10); })(), to: new Date().toISOString().slice(0, 10) },
+        ].map(({ label, from, to }) => {
           const isActive = dateFilter?.from === from && dateFilter?.to === to;
           return (
             <button
@@ -955,20 +958,20 @@ export default function ProjectDashboard({ project, onDashLoaded, onLoadMore, ha
         <div style={CARD_STYLE}>
           <div style={{ ...SECTION_LABEL_STYLE, display: "flex", alignItems: "center" }}>
             Score Over Time
-            <InfoTip text="Daily average score across all calls. Each point represents one day's average. All calls are included (not just the latest 200)." />
+            <InfoTip text={dashData?.trendGranularity === "hour" ? "Hourly average score for the selected date range. Each point represents one hour's average." : "Daily average score across all calls. Each point represents one day's average."} />
           </div>
           {trendData.length < 2 ? (
             <div style={{ color: T.textMuted, fontSize: 12 }}>Not enough data</div>
           ) : (
             <ResponsiveContainer width="100%" height={200}>
               <LineChart data={trendData} margin={{ top: 4, right: 8, bottom: 0, left: -20 }}>
-                <XAxis dataKey="idx" tick={{ fontSize: 10, fill: T.textMuted }} tickLine={false} axisLine={false} />
+                <XAxis dataKey={dashData?.trendGranularity === "hour" ? "date" : "idx"} tick={{ fontSize: 10, fill: T.textMuted }} tickLine={false} axisLine={false} interval={dashData?.trendGranularity === "hour" ? 2 : undefined} />
                 <YAxis domain={[0, 100]} tick={{ fontSize: 10, fill: T.textMuted }} tickLine={false} axisLine={false} />
                 <Tooltip
                   contentStyle={{ background: T.card, border: `1px solid ${T.border}`, borderRadius: 6, fontSize: 11 }}
                   formatter={(value: any, name: any) => {
                     if (value == null) return ["—", name];
-                    if (name === "score") return [`${Number(value).toFixed(1)}%`, "Daily avg score"];
+                    if (name === "score") return [`${Number(value).toFixed(1)}%`, dashData?.trendGranularity === "hour" ? "Hourly avg" : "Daily avg"];
                     return [`${value}`, name];
                   }}
                   labelFormatter={(_: any, payload: any) => {
