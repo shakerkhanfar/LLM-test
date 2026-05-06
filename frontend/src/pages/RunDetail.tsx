@@ -1,7 +1,7 @@
 import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { useParams, Link } from "react-router-dom";
 import T from "../theme";
-import { getRun, createLabel, deleteLabel, triggerEvaluation, rehydrateRun } from "../api/client";
+import { getRun, createLabel, deleteLabel, triggerEvaluation, rehydrateRun, getRecordingUrl } from "../api/client";
 
 const WorkflowCanvas = lazy(() => import("../components/WorkflowCanvas"));
 
@@ -173,6 +173,8 @@ export default function RunDetail() {
   const [loading, setLoading] = useState(true);
   const [labelingWord, setLabelingWord] = useState<{ wordIndex: number; utteranceIndex: number; word: string; speaker: string } | null>(null);
   const [audioError, setAudioError] = useState(false);
+  const [freshRecordingUrl, setFreshRecordingUrl] = useState<string | null>(null);
+  const [recordingRefreshAttempted, setRecordingRefreshAttempted] = useState(false);
   const audioRef = useRef<HTMLAudioElement>(null);
   const [audioTime, setAudioTime] = useState(0);
   const [isAudioPlaying, setIsAudioPlaying] = useState(false);
@@ -196,6 +198,8 @@ export default function RunDetail() {
     activeRunIdRef.current = runId!; // mark the new run; invalidates all old polls
     setLoading(true);
     setAudioError(false);
+    setFreshRecordingUrl(null);
+    setRecordingRefreshAttempted(false);
     setAudioTime(0);
     setIsAudioPlaying(false);
     setReEvaluating(false);
@@ -263,8 +267,9 @@ export default function RunDetail() {
     return null;
   })();
 
-  // Resolve recording URL — check all known Hamsa field locations
-  const recordingUrl: string | null = (() => {
+  // Resolve recording URL — prefer a fresh URL (fetched after CloudFront expiry),
+  // fall back to the stored webhook URL for recent calls where it's still valid.
+  const recordingUrl: string | null = freshRecordingUrl || (() => {
     const w = run.webhookData as any;
     return (
       w?.data?.conversationRecording ||      // webhook: payload.data.conversationRecording
@@ -553,7 +558,17 @@ export default function RunDetail() {
               ref={audioRef}
               controls
               src={recordingUrl}
-              onError={() => setAudioError(true)}
+              onError={() => {
+                // If the stored CloudFront URL expired, try fetching a fresh one from Hamsa
+                if (!recordingRefreshAttempted) {
+                  setRecordingRefreshAttempted(true);
+                  getRecordingUrl(runId!)
+                    .then(({ url }) => { setFreshRecordingUrl(url); setAudioError(false); })
+                    .catch(() => setAudioError(true));
+                } else {
+                  setAudioError(true);
+                }
+              }}
               onTimeUpdate={() => setAudioTime(audioRef.current?.currentTime ?? 0)}
               onPlay={() => setIsAudioPlaying(true)}
               onPause={() => setIsAudioPlaying(false)}

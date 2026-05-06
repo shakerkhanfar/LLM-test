@@ -1,7 +1,7 @@
 import prisma from "../lib/prisma";
 import { Router } from "express";
 import { RunStatus } from "@prisma/client";
-import { updateAgentModel } from "../services/hamsaApi";
+import { updateAgentModel, fetchConversation } from "../services/hamsaApi";
 import { runEvaluationCheck } from "../services/evaluationRunner";
 import { AuthRequest } from "../middleware/auth";
 import { assertProjectAccess, assertRunAccess, canAccess } from "../lib/ownership";
@@ -53,6 +53,34 @@ router.get("/:id", async (req: AuthRequest, res) => {
     res.json(run);
   } catch {
     res.status(500).json({ error: "Failed to fetch run" });
+  }
+});
+
+// Fetch a fresh recording URL from Hamsa for a run whose CloudFront signed URL may have expired.
+// Calls fetchConversation() and extracts the mediaUrl from the response.
+router.get("/:id/recording-url", async (req: AuthRequest, res) => {
+  try {
+    const run = await prisma.run.findUnique({
+      where: { id: req.params.id },
+      select: { conversationId: true, project: { select: { userId: true, hamsaApiKey: true } } },
+    });
+    if (!run) return res.status(404).json({ error: "Run not found" });
+    if (!await canAccess((run.project as any)?.userId ?? null, req)) {
+      return res.status(403).json({ error: "Access denied" });
+    }
+    if (!run.conversationId) return res.status(404).json({ error: "No conversationId on this run" });
+
+    const apiKey = (run.project as any)?.hamsaApiKey;
+    if (!apiKey) return res.status(400).json({ error: "Project has no Hamsa API key" });
+
+    const conv = await fetchConversation(run.conversationId, apiKey);
+    const url = conv?.mediaUrl || conv?.data?.conversationRecording || conv?.data?.recordingUrl || null;
+    if (!url) return res.status(404).json({ error: "No recording URL found in Hamsa response" });
+
+    res.json({ url });
+  } catch (err) {
+    console.error("[Runs] GET /:id/recording-url error:", (err as Error).message);
+    res.status(500).json({ error: "Failed to fetch recording URL" });
   }
 });
 

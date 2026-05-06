@@ -112,6 +112,11 @@ export function getRun(id: string) {
   return request<any>(`/runs/${id}`);
 }
 
+/** Fetch a fresh recording URL from Hamsa (the stored CloudFront URL may have expired). */
+export function getRecordingUrl(runId: string) {
+  return request<{ url: string }>(`/runs/${runId}/recording-url`);
+}
+
 export function createRun(data: { projectId: string; modelUsed: string }) {
   return request<any>("/runs", {
     method: "POST",
