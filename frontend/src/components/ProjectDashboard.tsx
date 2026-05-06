@@ -232,6 +232,7 @@ export default function ProjectDashboard({ project, onDashLoaded, onLoadMore, ha
   const [criteriaFilter, setCriteriaFilter] = useState<{ name: string; runIds: string[] } | null>(null);
   const [expandedOutcomes, setExpandedOutcomes] = useState<Set<string>>(new Set());
   const [intentFilter, setIntentFilter] = useState<string | null>(null);
+  const [dateFilter, setDateFilter] = useState<{ from: string; to: string } | null>(null);
   // Runs fetched on-demand when a filter's runIds aren't all in the loaded project.runs
   const [filterExtraRuns, setFilterExtraRuns] = useState<any[]>([]);
   const [filterExtraLoading, setFilterExtraLoading] = useState(false);
@@ -300,7 +301,7 @@ export default function ProjectDashboard({ project, onDashLoaded, onLoadMore, ha
             clearInterval(reEvalPollRef.current!);
             reEvalPollRef.current = null;
             // Refresh dashboard aggregates so Objective column reflects the new eval results
-            getProjectDashboard(project.id)
+            getProjectDashboard(project.id, dateFilter)
               .then((data: DashData) => {
                 setDashData(data);
                 onDashLoadedRef.current?.({ totalRuns: data.totalRuns, totalEvalCost: data.totalEvalCost ?? 0, totalFailed: data.totalFailed ?? 0 });
@@ -321,7 +322,7 @@ export default function ProjectDashboard({ project, onDashLoaded, onLoadMore, ha
   }
 
   // Clear selection when filters change (selected runs may no longer be visible)
-  useEffect(() => { setSelectedRunIds(new Set()); }, [selectedOutcome, objectiveFilter, scoreFilter, nodeFilter, issueFilter, criteriaFilter, intentFilter, tableSearch]);
+  useEffect(() => { setSelectedRunIds(new Set()); }, [selectedOutcome, objectiveFilter, scoreFilter, nodeFilter, issueFilter, criteriaFilter, intentFilter, dateFilter, tableSearch]);
 
   // When issue / node / criteria filter is set with runIds, fetch any runs not already loaded
   useEffect(() => {
@@ -474,7 +475,9 @@ export default function ProjectDashboard({ project, onDashLoaded, onLoadMore, ha
 
   useEffect(() => {
     let cancelled = false;
-    getProjectDashboard(project.id)
+    setDashData(null); // clear stale data while re-fetching
+    setDashError(null);
+    getProjectDashboard(project.id, dateFilter)
       .then((data: DashData) => {
         if (cancelled) return;
         setDashData(data);
@@ -482,7 +485,7 @@ export default function ProjectDashboard({ project, onDashLoaded, onLoadMore, ha
       })
       .catch((err: Error) => { if (!cancelled) setDashError(err.message); });
     return () => { cancelled = true; };
-  }, [project.id]);
+  }, [project.id, dateFilter]);
 
   const completeRuns = useMemo(
     () => ((project.runs ?? []) as any[]).filter((r: any) => r.status === "COMPLETE"),
@@ -691,6 +694,14 @@ export default function ProjectDashboard({ project, onDashLoaded, onLoadMore, ha
         (r.outcomeResult?.[intentFieldKey] || "").toString().trim().toLowerCase() === intentFilter
       );
     }
+    if (dateFilter) {
+      const fromMs = new Date(dateFilter.from).getTime();
+      const toMs = new Date(dateFilter.to + "T23:59:59.999Z").getTime();
+      sorted = sorted.filter((r: any) => {
+        const d = new Date(r.callDate || r.createdAt).getTime();
+        return d >= fromMs && d <= toMs;
+      });
+    }
     if (!tableSearch.trim()) return sorted;
     const q = tableSearch.toLowerCase();
     return sorted.filter((r: any) => {
@@ -705,7 +716,7 @@ export default function ProjectDashboard({ project, onDashLoaded, onLoadMore, ha
         (intentFieldKey ? String((r.outcomeResult || {})[intentFieldKey] || "").toLowerCase().includes(q) : false)
       );
     });
-  }, [project.runs, filterExtraRuns, tableSearch, outcomeColumns, selectedOutcome, objectiveFilter, scoreFilter, nodeFilter, issueFilter, criteriaFilter, intentFilter, intentFieldKey, dashData]);
+  }, [project.runs, filterExtraRuns, tableSearch, outcomeColumns, selectedOutcome, objectiveFilter, scoreFilter, nodeFilter, issueFilter, criteriaFilter, intentFilter, intentFieldKey, dateFilter, dashData]);
 
   // When async filter loads complete and tableRuns changes, trim selected IDs to only
   // those still visible — prevents stale count in action bar (issue #10).
@@ -761,6 +772,68 @@ export default function ProjectDashboard({ project, onDashLoaded, onLoadMore, ha
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+      {/* ── Date Range Filter ─────────────────────────────────────── */}
+      <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+        <span style={{ fontSize: 12, fontWeight: 600, color: T.textSecondary }}>Date Range</span>
+        {[
+          { label: "Today", days: 0 },
+          { label: "7d", days: 7 },
+          { label: "30d", days: 30 },
+          { label: "90d", days: 90 },
+        ].map(({ label, days }) => {
+          const to = new Date().toISOString().slice(0, 10);
+          const from = (() => { const d = new Date(); d.setDate(d.getDate() - days); return d.toISOString().slice(0, 10); })();
+          const isActive = dateFilter?.from === from && dateFilter?.to === to;
+          return (
+            <button
+              key={label}
+              onClick={() => setDateFilter(isActive ? null : { from, to })}
+              style={{
+                padding: "3px 10px", fontSize: 12, fontWeight: 600, borderRadius: 6, cursor: "pointer",
+                border: `1px solid ${isActive ? T.primary : T.border}`,
+                background: isActive ? T.primary + "14" : "transparent",
+                color: isActive ? T.primary : T.textSecondary,
+              }}
+            >
+              {label}
+            </button>
+          );
+        })}
+        <span style={{ color: T.border }}>|</span>
+        <input
+          type="date"
+          value={dateFilter?.from ?? ""}
+          onChange={(e) => {
+            const from = e.target.value;
+            if (!from) { setDateFilter(null); return; }
+            setDateFilter(prev => ({ from, to: prev?.to || new Date().toISOString().slice(0, 10) }));
+          }}
+          style={{ fontSize: 12, padding: "3px 8px", border: `1px solid ${T.border}`, borderRadius: 6, background: T.card, color: T.text }}
+        />
+        <span style={{ color: T.textMuted, fontSize: 12 }}>to</span>
+        <input
+          type="date"
+          value={dateFilter?.to ?? ""}
+          onChange={(e) => {
+            const to = e.target.value;
+            if (!to) { setDateFilter(null); return; }
+            setDateFilter(prev => ({ from: prev?.from || to, to }));
+          }}
+          style={{ fontSize: 12, padding: "3px 8px", border: `1px solid ${T.border}`, borderRadius: 6, background: T.card, color: T.text }}
+        />
+        {dateFilter && (
+          <button
+            onClick={() => setDateFilter(null)}
+            style={{
+              padding: "3px 10px", fontSize: 12, fontWeight: 600, borderRadius: 6, cursor: "pointer",
+              border: `1px solid ${T.border}`, background: "transparent", color: T.textSecondary,
+            }}
+          >
+            Clear
+          </button>
+        )}
+      </div>
+
       {/* KPI Row */}
       <div style={{ display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: 12 }}>
         {([

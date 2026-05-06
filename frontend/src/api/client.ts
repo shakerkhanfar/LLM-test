@@ -410,8 +410,12 @@ export function applyPromptFix(projectId: string, nodeId: string, prompt: string
   );
 }
 
-export function getProjectDashboard(projectId: string) {
-  return request<any>(`/projects/${projectId}/dashboard`);
+export function getProjectDashboard(projectId: string, dateFilter?: { from: string; to: string } | null) {
+  const params = new URLSearchParams();
+  if (dateFilter?.from) params.set("from", dateFilter.from);
+  if (dateFilter?.to) params.set("to", dateFilter.to);
+  const qs = params.toString() ? `?${params}` : "";
+  return request<any>(`/projects/${projectId}/dashboard${qs}`);
 }
 
 export function getRunsByIds(projectId: string, ids: string[]) {

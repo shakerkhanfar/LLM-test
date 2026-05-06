@@ -1,6 +1,6 @@
 import prisma from "../lib/prisma";
 import { Router } from "express";
-import { CriterionType } from "@prisma/client";
+import { CriterionType, Prisma } from "@prisma/client";
 import { z } from "zod";
 import { getAgent } from "../services/hamsaApi";
 import { generateAgentSummary } from "../services/llmJudge";
@@ -560,6 +560,23 @@ router.get("/:id/dashboard", async (req: AuthRequest, res) => {
       return res.status(403).json({ error: "Access denied" });
     }
 
+    // ── Optional date range filter ──────────────────────────────────────
+    const dateFrom = req.query.from ? new Date(req.query.from as string) : null;
+    const dateTo = req.query.to ? (() => {
+      const d = new Date(req.query.to as string);
+      // If only a date string (YYYY-MM-DD), set to end of day so the full day is included
+      if ((req.query.to as string).length <= 10) d.setHours(23, 59, 59, 999);
+      return d;
+    })() : null;
+    // Reusable SQL fragment — injected into every query that uses alias "r" for the Run table
+    const dateClause = dateFrom && dateTo
+      ? Prisma.sql`AND COALESCE(r."callDate", r."createdAt") >= ${dateFrom} AND COALESCE(r."callDate", r."createdAt") <= ${dateTo}`
+      : dateFrom
+      ? Prisma.sql`AND COALESCE(r."callDate", r."createdAt") >= ${dateFrom}`
+      : dateTo
+      ? Prisma.sql`AND COALESCE(r."callDate", r."createdAt") <= ${dateTo}`
+      : Prisma.empty;
+
     // Accurate KPI aggregates over ALL runs — no row limit
     // total_all   = every run regardless of status (shown as "Total Runs/Calls")
     // total_complete / avg_score / passed = stats for COMPLETE runs only (for KPI cards)
@@ -600,6 +617,7 @@ router.get("/:id/dashboard", async (req: AuthRequest, res) => {
         SUM("evalCost")::double precision                                       AS total_eval_cost
       FROM "Run" r
       WHERE r."projectId" = ${req.params.id}
+      ${dateClause}
     `;
 
     // SQL-level: score distribution in 10% buckets over ALL complete scored runs
@@ -615,16 +633,18 @@ router.get("/:id/dashboard", async (req: AuthRequest, res) => {
           SELECT COUNT(*) FROM "EvalResult" er
           WHERE er."runId" = r.id AND er.passed IS NOT NULL
         ) >= ${MIN_EVALUATED_CRITERIA}
+        ${dateClause}
       GROUP BY bucket
       ORDER BY bucket
     `;
 
     // SQL-level: outcome distribution over ALL runs (callOutcome is a plain column, no JSON)
     const outcomeDistRows = await prisma.$queryRaw<Array<{ outcome: string | null; cnt: bigint }>>`
-      SELECT "callOutcome" AS outcome, COUNT(*) AS cnt
-      FROM "Run"
-      WHERE "projectId" = ${req.params.id} AND status = 'COMPLETE'
-      GROUP BY "callOutcome"
+      SELECT r."callOutcome" AS outcome, COUNT(*) AS cnt
+      FROM "Run" r
+      WHERE r."projectId" = ${req.params.id} AND r.status = 'COMPLETE'
+      ${dateClause}
+      GROUP BY r."callOutcome"
       ORDER BY cnt DESC
       LIMIT 30
     `;
@@ -646,12 +666,24 @@ router.get("/:id/dashboard", async (req: AuthRequest, res) => {
           SELECT COUNT(*) FROM "EvalResult" er
           WHERE er."runId" = r.id AND er.passed IS NOT NULL
         ) >= ${MIN_EVALUATED_CRITERIA}
+        ${dateClause}
       GROUP BY DATE_TRUNC('day', "callDate")
       ORDER BY day
     `;
 
     const runs = await prisma.run.findMany({
-      where: { projectId: req.params.id, status: "COMPLETE" },
+      where: {
+        projectId: req.params.id,
+        status: "COMPLETE",
+        // Date range filter — uses callDate when available, otherwise createdAt
+        ...(dateFrom || dateTo ? {
+          OR: [
+            { callDate: { ...(dateFrom ? { gte: dateFrom } : {}), ...(dateTo ? { lte: dateTo } : {}) } },
+            // Runs without callDate: fall back to createdAt
+            { callDate: null, createdAt: { ...(dateFrom ? { gte: dateFrom } : {}), ...(dateTo ? { lte: dateTo } : {}) } },
+          ],
+        } : {}),
+      },
       orderBy: { callDate: "asc" },
       take: 1000,   // cap at 1000 for detailed JSON analysis (sentiment, issues, node perf)
       select: {
