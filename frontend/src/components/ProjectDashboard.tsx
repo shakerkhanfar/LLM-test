@@ -234,6 +234,8 @@ export default function ProjectDashboard({ project, onDashLoaded, onLoadMore, ha
   const [expandedOutcomes, setExpandedOutcomes] = useState<Set<string>>(new Set());
   const [intentFilter, setIntentFilter] = useState<string | null>(null);
   const [dateFilter, setDateFilter] = useState<{ from: string; to: string } | null>(null);
+  // Chart dot click → filter table to that specific hour/day (does NOT re-fetch dashData)
+  const [trendPeriodFilter, setTrendPeriodFilter] = useState<{ fromMs: number; toMs: number; label: string } | null>(null);
   // Runs fetched on-demand when a filter's runIds aren't all in the loaded project.runs
   const [filterExtraRuns, setFilterExtraRuns] = useState<any[]>([]);
   const [filterExtraLoading, setFilterExtraLoading] = useState(false);
@@ -323,7 +325,7 @@ export default function ProjectDashboard({ project, onDashLoaded, onLoadMore, ha
   }
 
   // Clear selection when filters change (selected runs may no longer be visible)
-  useEffect(() => { setSelectedRunIds(new Set()); }, [selectedOutcome, objectiveFilter, scoreFilter, nodeFilter, issueFilter, criteriaFilter, intentFilter, dateFilter, tableSearch]);
+  useEffect(() => { setSelectedRunIds(new Set()); }, [selectedOutcome, objectiveFilter, scoreFilter, nodeFilter, issueFilter, criteriaFilter, intentFilter, dateFilter, trendPeriodFilter, tableSearch]);
 
   // When issue / node / criteria filter is set with runIds, fetch any runs not already loaded
   useEffect(() => {
@@ -478,6 +480,7 @@ export default function ProjectDashboard({ project, onDashLoaded, onLoadMore, ha
     let cancelled = false;
     setDashData(null); // clear stale data while re-fetching
     setDashError(null);
+    setTrendPeriodFilter(null); // clear chart-period filter when date range changes
     getProjectDashboard(project.id, dateFilter)
       .then((data: DashData) => {
         if (cancelled) return;
@@ -514,6 +517,7 @@ export default function ProjectDashboard({ project, onDashLoaded, onLoadMore, ha
           idx: i + 1,
           score: r.avgScore,
           count: r.count,
+          rawDay: r.day,  // ISO string — used for click-to-filter
           date: isHourly
             ? new Date(r.day).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
             : new Date(r.day).toLocaleDateString(),
@@ -706,6 +710,12 @@ export default function ProjectDashboard({ project, onDashLoaded, onLoadMore, ha
         return d >= fromMs && d <= toMs;
       });
     }
+    if (trendPeriodFilter) {
+      sorted = sorted.filter((r: any) => {
+        const d = new Date(r.callDate || r.createdAt).getTime();
+        return d >= trendPeriodFilter.fromMs && d <= trendPeriodFilter.toMs;
+      });
+    }
     if (!tableSearch.trim()) return sorted;
     const q = tableSearch.toLowerCase();
     return sorted.filter((r: any) => {
@@ -720,7 +730,7 @@ export default function ProjectDashboard({ project, onDashLoaded, onLoadMore, ha
         (intentFieldKey ? String((r.outcomeResult || {})[intentFieldKey] || "").toLowerCase().includes(q) : false)
       );
     });
-  }, [project.runs, filterExtraRuns, tableSearch, outcomeColumns, selectedOutcome, objectiveFilter, scoreFilter, nodeFilter, issueFilter, criteriaFilter, intentFilter, intentFieldKey, dateFilter, dashData]);
+  }, [project.runs, filterExtraRuns, tableSearch, outcomeColumns, selectedOutcome, objectiveFilter, scoreFilter, nodeFilter, issueFilter, criteriaFilter, intentFilter, intentFieldKey, dateFilter, trendPeriodFilter, dashData]);
 
   // When async filter loads complete and tableRuns changes, trim selected IDs to only
   // those still visible — prevents stale count in action bar (issue #10).
@@ -964,7 +974,20 @@ export default function ProjectDashboard({ project, onDashLoaded, onLoadMore, ha
             <div style={{ color: T.textMuted, fontSize: 12 }}>Not enough data</div>
           ) : (
             <ResponsiveContainer width="100%" height={200}>
-              <LineChart data={trendData} margin={{ top: 4, right: 8, bottom: 0, left: -20 }}>
+              <LineChart data={trendData} margin={{ top: 4, right: 8, bottom: 0, left: -20 }} onClick={(e: any) => {
+                if (!e?.activePayload?.[0]?.payload?.rawDay) return;
+                const p = e.activePayload[0].payload;
+                const isHourly = dashData?.trendGranularity === "hour";
+                const periodStart = new Date(p.rawDay).getTime();
+                const periodEnd = isHourly ? periodStart + 60 * 60 * 1000 - 1 : periodStart + 24 * 60 * 60 * 1000 - 1;
+                // Toggle: click same period again to clear
+                if (trendPeriodFilter && trendPeriodFilter.fromMs === periodStart) {
+                  setTrendPeriodFilter(null);
+                } else {
+                  setTrendPeriodFilter({ fromMs: periodStart, toMs: periodEnd, label: p.date + (p.count > 1 ? ` (${p.count} calls)` : "") });
+                  setTimeout(() => tableRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }), 50);
+                }
+              }} style={{ cursor: "pointer" }}>
                 <XAxis dataKey={dashData?.trendGranularity === "hour" ? "date" : "idx"} tick={{ fontSize: 10, fill: T.textMuted }} tickLine={false} axisLine={false} interval={dashData?.trendGranularity === "hour" ? 2 : undefined} />
                 <YAxis domain={[0, 100]} tick={{ fontSize: 10, fill: T.textMuted }} tickLine={false} axisLine={false} />
                 <Tooltip
@@ -1823,6 +1846,15 @@ export default function ProjectDashboard({ project, onDashLoaded, onLoadMore, ha
 
       {/* Call Outcomes Table */}
       <div ref={tableRef} style={{ ...CARD_STYLE, scrollMarginTop: 16 }}>
+        {/* Chart period filter badge */}
+        {trendPeriodFilter && (
+          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10, padding: "6px 12px", background: T.primary + "0c", border: `1px solid ${T.primary}33`, borderRadius: 6 }}>
+            <span style={{ fontSize: 12, color: T.primary, fontWeight: 600 }}>
+              Showing calls from: {trendPeriodFilter.label}
+            </span>
+            <button onClick={() => setTrendPeriodFilter(null)} style={{ background: "none", border: "none", color: T.primary, cursor: "pointer", fontSize: 14, fontWeight: 700, padding: "0 4px" }}>×</button>
+          </div>
+        )}
         {/* Outcome + intent filter chips — show whenever at least one set of chips exists */}
         {(outcomeCounts.length > 0 || intentCounts.length > 0) && (
           <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 12 }}>
