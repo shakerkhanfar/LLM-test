@@ -1047,7 +1047,7 @@ ${outcomeResult ? (() => {
       return `- ${k}: ${val}`;
     })
     .join("\n");
-  return lines ? `\nSYSTEM-RECORDED OUTCOME (ground truth — these are FACTS, not agent claims):\n${lines}` : "";
+  return lines ? `\nSYSTEM-RECORDED OUTCOME (recorded by the platform after the call):\n${lines}\nNOTE ON INTERPRETING OUTCOME: If objective_met = "no" but the transcript shows the agent was actively serving the user when the call ended (e.g., presenting appointment options, confirming details), that means the CALLER abandoned or hung up — not that the agent failed. In such cases, quality_score should reflect the agent's performance up to that point (typically 7-8 for good service interrupted by caller). Only score low if the agent itself caused the failure.` : "";
 })() : ""}
 
 FULL CONVERSATION TRANSCRIPT:
