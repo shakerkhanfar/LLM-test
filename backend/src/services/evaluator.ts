@@ -1167,6 +1167,7 @@ async function evaluateLayered(_criterion: Criterion, run: any) {
       run.callDuration || null,
       evalContext,
       userUtteranceCount,
+      (run.outcomeResult as Record<string, any>) || null,
     );
   } catch (err) {
     return { passed: null, score: null, detail: JSON.stringify({ notApplicable: false, error: true, reason: `Layered evaluation failed: ${(err as Error).message}` }) };

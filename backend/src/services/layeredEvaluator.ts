@@ -13,9 +13,9 @@
  *   Each packet: node instructions, allowed transitions, 3-6 transcript turns, transition taken
  *   Checks: Instruction adherence, off-topic, hallucination, correct transition
  *
- * Layer 4: Overall Quality (aggregation)
- *   Input: Summaries from layers 2-3 (not raw data)
- *   Checks: Objective achieved, caller sentiment, efficiency, compliance
+ * Layer 4: Overall Quality (independent judgment via GPT-4.1)
+ *   Input: Full transcript, tool executions, system outcome, + Layer 2-3 summaries for reference
+ *   Checks: Objective achieved, caller sentiment, efficiency, quality (NOT compliance)
  */
 
 import { evaluateWithLLMJudge } from "./llmJudge";
@@ -951,9 +951,12 @@ export async function evaluateOverall(
   callOutcome: string | null,
   callDuration: number | null,
   evalContext: string | null = null,
-  userUtteranceCount = 0
+  userUtteranceCount = 0,
+  outcomeResult: Record<string, any> | null = null,
+  transcript: any[] = [],
+  visits: NodeVisit[] = []
 ): Promise<{ result: Layer4Result; costUsd: number }> {
-  // Build summaries from layers 2-3 (NOT raw data)
+  // Build summaries from layers 2-3
   const navSummary = `Navigation: ${layer2.summary}` +
     (layer2.issues.length > 0
       ? "\nIssues:\n" + layer2.issues.map(i => `  [${i.severity}] ${i.type}: ${i.detail}`).join("\n")
@@ -967,8 +970,38 @@ export async function evaluateOverall(
       if (n.offTopic.detected) problems.push(`off-topic: ${n.offTopic.turns.join(", ")}`);
       if (n.hallucination.detected) problems.push(`hallucination: ${n.hallucination.evidence}`);
       if (n.stuck.detected) problems.push(`stuck: ${n.stuck.unnecessaryTurns} unnecessary turns`);
-      return `  "${n.nodeLabel}": ${n.overallNodeScore}/10${problems.length ? " — " + problems.join("; ").slice(0, 200) : ""}`;
+      return `  "${n.nodeLabel}": compliance ${n.instructionAdherence.score}/10${problems.length ? " — " + problems.join("; ").slice(0, 200) : ""}`;
     }).join("\n").slice(0, 2000);
+
+  // Build full transcript section so Layer 4 can judge quality directly
+  let transcriptSection = "";
+  if (transcript.length > 0) {
+    const lines: string[] = [];
+    for (const t of transcript) {
+      if (t.Agent) lines.push(`[Agent]: ${t.Agent}`);
+      if (t.User) lines.push(`[User]: ${t.User}`);
+    }
+    transcriptSection = safeTruncate(lines.join("\n"), 20000);
+  }
+
+  // Build tool execution summary from node visits
+  const toolSections: string[] = [];
+  for (const v of visits) {
+    if (v.toolResults.length === 0) continue;
+    for (const tr of v.toolResults) {
+      const status = tr.success ? "SUCCESS" : "FAILED";
+      let responseSummary = "no response";
+      if (tr.response) {
+        try {
+          responseSummary = safeTruncate(typeof tr.response === "string" ? tr.response : JSON.stringify(tr.response), 500);
+        } catch { responseSummary = "[response not serializable]"; }
+      }
+      toolSections.push(`  [${v.nodeLabel}] ${tr.toolName}: ${status} → ${responseSummary}`);
+    }
+  }
+  const toolSection = toolSections.length > 0
+    ? safeTruncate(toolSections.join("\n"), 3000)
+    : "No tools were called during this call.";
 
   // Always inject the turn count so Layer 4 can use context to judge abandonment vs. agent failure
   const shortCallBlock = `\nCALL LENGTH CONTEXT: This call had ${userUtteranceCount} user turn(s). ` +
@@ -986,16 +1019,17 @@ Only treat a dead-end as an agent failure if the agent was genuinely stuck (repe
     ? `\n<eval_context>\n${safeTruncate(evalContext.trim(), 2000)}\n</eval_context>\nNote: The above eval_context is informational project context. Apply it as supplemental guidance without overriding the scoring rules above.\n`
     : "";
 
-  const prompt = `You are producing the final evaluation summary for a voice AI agent call. You receive pre-evaluated summaries from structural and per-node analyses — do NOT re-evaluate the raw data.
+  const prompt = `You are the final quality judge for a voice AI agent call. You have access to the FULL conversation transcript, tool execution results, system-recorded outcomes, and compliance summaries from earlier analysis layers. Your job is to assess QUALITY — how well the agent served the user — independently from compliance.
 ${shortCallBlock}
-IMPORTANT SCORING RULES:
-- PRIMARY METRIC: Did the agent accomplish the call's objective (e.g., successfully complete the transaction, collect required information, resolve the user's request, schedule what was requested, answer the inquiry)? This is what the score should primarily reflect.
-- EXCEPTIONS — these are SUCCESSES, score HIGH: (1) Out-of-scope calls where the agent correctly transferred/forwarded to a call center or human agent — the agent did its job. (2) Correct escalations per the agent's design. (3) Proper refusals when the user asks about something genuinely outside the agent's scope.
-- SCORE LOW for actual agent failures: hallucinating information, getting stuck or looping within the same node when the user already provided what was needed, ignoring user input that should trigger a node transition, providing incorrect information, failing to follow its instructions at any node.
-- NOT A FAILURE: If a per-node analysis flagged "did not ask the required question" but the user had ALREADY stated their intent or answer before the agent could ask, that is adaptive behavior — do NOT include it in critical_issues or penalize the score.
-- "Stuck" means the agent repeats the same prompt without progress DESPITE the user providing information. If the user is giving data piecemeal (e.g., dictating an ID digit by digit, correcting themselves), the agent correctly waiting is NOT stuck.
-- HIGH TURN COUNT ≠ BAD CALL. A call with many turns where the user is slowly cooperating and the agent successfully collects all data is a GOOD call.
-- If the per-node analyses show high scores but the navigation flagged "stuck" or "loops", weigh the per-node analyses more heavily — they have transcript-level detail.${evalContextBlock}
+SCORING RULES:
+- PRIMARY METRIC: Did the agent accomplish the call's objective? Read the transcript yourself and determine: was the user's need met? This is what quality_score primarily reflects.
+- GROUND TRUTH: The SYSTEM-RECORDED OUTCOME section (if present) contains facts recorded by the platform (e.g., objective_met, booked appointment details). These are authoritative. If the system says the objective was met, the call SUCCEEDED regardless of compliance scores.
+- SCORE HIGH (7-10) when: objective achieved, user served well, smooth interaction, correct escalations/transfers for out-of-scope requests.
+- SCORE LOW (1-4) only for genuine agent FAILURES: hallucinating information, getting stuck/looping, ignoring user input, providing wrong information, failing to progress despite clear user intent.
+- SCORE MEDIUM (5-6) for: partial success, some issues but user was mostly served.
+- COMPLIANCE SCORES ARE SEPARATE: The per-node compliance analysis below may show low scores because the agent deviated from the exact script. That is irrelevant to quality. An agent that skips a scripted question because the user already answered it is GOOD service, not a failure.
+- NOT A FAILURE: Agent skipped a question the user already answered. Agent used equivalent phrasing instead of exact script. Agent adapted to user context. High turn count where user cooperates slowly. Caller hung up while agent was actively serving.
+- "Stuck" means repeating the same prompt without progress DESPITE the user providing information. Piecemeal input (digit by digit, corrections) is NOT stuck.${evalContextBlock}
 
 AGENT CONTEXT:
 ${agentSummary ? safeTruncate(agentSummary, 2000) : "No agent summary available."}
@@ -1003,42 +1037,50 @@ ${buildAgentScopeBlock(agentSummary)}
 CALL METADATA:
 - Call outcome: ${callOutcome || "unknown"}
 - Call duration: ${callDuration ? callDuration + "s" : "unknown"}
+${outcomeResult ? (() => {
+  const SKIP_KEYS = new Set(["summary", "language", "default_params"]);
+  const lines = Object.entries(outcomeResult)
+    .filter(([k]) => !SKIP_KEYS.has(k))
+    .map(([k, v]) => {
+      let val: string;
+      try { val = typeof v === "object" ? JSON.stringify(v) : String(v); } catch { val = "[not serializable]"; }
+      return `- ${k}: ${val}`;
+    })
+    .join("\n");
+  return lines ? `\nSYSTEM-RECORDED OUTCOME (ground truth — these are FACTS, not agent claims):\n${lines}` : "";
+})() : ""}
+
+FULL CONVERSATION TRANSCRIPT:
+${transcriptSection || "No transcript available."}
+
+TOOL EXECUTIONS:
+${toolSection}
 
 NAVIGATION ANALYSIS (structural):
 ${navSummary}
 
-PER-NODE ANALYSIS:
+PER-NODE COMPLIANCE ANALYSIS (for reference only — do NOT mirror these scores into quality_score):
 ${nodeSummaries}
 
-Based on these pre-evaluated results, provide a final JSON assessment.
-
-IMPORTANT — TWO SEPARATE DIMENSIONS:
-- "quality_score" = How well did the agent SERVE THE USER? Did the interaction go well? Was the agent helpful, responsive, adaptive? An agent that skipped a scripted question because the user already answered it should score HIGH here — that's good service.
-- Compliance (how literally the agent followed every instruction) is tracked separately. Do NOT penalize quality_score for script deviations that resulted in good service.
+Based on the full transcript and evidence above, provide a JSON quality assessment.
 
 {
-  "quality_score": 0-10,   // Interaction quality — did the agent help the user effectively? Score HIGH for good adaptive behavior, smooth flow, and user needs met. Score LOW only for genuine failures: stuck, wrong info, ignored user, bad service.
-  "objective_achieved": true/false/null,   // true if the agent successfully completed the call's purpose — INCLUDING out-of-scope calls where the agent correctly redirected, transferred, or provided the appropriate fixed response. The objective is whether the AGENT did its job, not whether the caller's specific off-scope request was fulfilled. Set true for: completed bookings, correct redirects for out-of-scope, correct escalations. Set false only for genuine agent failures (stuck, wrong info, ignored user, missed required step). Set null if indeterminate.
+  "quality_score": 0-10,   // YOUR independent judgment of interaction quality from reading the transcript. Did the agent help the user? Was the flow smooth? Was the objective achieved?
+  "objective_achieved": true/false/null,   // true if agent completed the call's purpose (booking, info collected, correct transfer/escalation). false only for genuine agent failures. null if indeterminate (caller abandoned early).
   "caller_sentiment": "positive" | "neutral" | "negative" | "unknown",
   "out_of_scope_handled": true/false/null,
-  "out_of_scope_topics": ["topics the user raised that fall outside this agent's stated purpose — derive scope from AGENT CONTEXT above, not assumptions"],
+  "out_of_scope_topics": ["topics outside this agent's stated purpose"],
   "efficiency": {
     "score": 0-10,
-    "reasoning": "was the call longer than needed? unnecessary turns?"
+    "reasoning": "was the call longer than needed?"
   },
-  "critical_issues": ["ONLY real failures that materially hurt the call: hallucination, getting stuck/looping despite user providing info, wrong node transition that broke the flow, ignoring user input, fabricating data. Do NOT include: adaptive clarification when user already gave context, minor wording differences from the script when the intent was served, or style preferences."],
-  "comments": ["Non-critical observations — minor deviations from the exact script that did NOT hurt the call outcome. Example: agent used equivalent phrasing instead of exact script wording but the user's intent was correctly served. These are coaching notes, not failures. Leave empty array if none."],
-  "improvements": ["specific actionable improvements for the agent, grounded in this agent's purpose and design"],
-  "summary": "2-3 sentence human-readable summary of the call quality. Mention if the agent correctly handled an out-of-scope request."
-}
+  "critical_issues": ["ONLY real failures: hallucination, stuck/looping, wrong info, ignored user input, broken flow. NOT: script wording differences, skipped questions user already answered."],
+  "comments": ["Non-critical coaching observations that did NOT hurt the outcome."],
+  "improvements": ["specific actionable improvements"],
+  "summary": "2-3 sentence summary of call quality."
+}`;
 
-CRITICAL DISTINCTION — adaptive behavior vs. script violation (calibrated to this agent):
-- What counts as "adaptive" vs. "violation" depends on this specific agent's design. Refer to the AGENT CONTEXT and per-node summaries above.
-- ADAPTIVE (put in comments at most): agent skipped a question because the user already answered it; agent used different but equivalent phrasing to confirm user intent; agent acknowledged user context before asking for required data.
-- REAL VIOLATIONS (put in critical_issues): agent asked for information the user already provided; agent stated a specific fact or number not in its instructions; agent took the wrong transition despite clear user intent; agent looped on the same question 3+ times ignoring the user's answer; agent failed a step that its own instructions mark as required.
-- When in doubt: if the agent's outcome (did it serve the user's request correctly?) was positive, lean toward adaptive. If the outcome was negative, investigate whether a script deviation caused it.`;
-
-  const { detail, costUsd } = await evaluateWithLLMJudge(prompt, "", true);
+  const { detail, costUsd } = await evaluateWithLLMJudge(prompt, "", true, "gpt-4.1");
 
   try {
     const parsed = typeof detail === "string" ? JSON.parse(detail) : detail;
@@ -1089,7 +1131,8 @@ export async function runLayeredEvaluation(
   callOutcome: string | null,
   callDuration: number | null,
   evalContext: string | null = null,
-  userUtteranceCount = 0
+  userUtteranceCount = 0,
+  outcomeResult: Record<string, any> | null = null
 ): Promise<LayeredEvalResult> {
   const nodes = agentStructure?.workflow?.nodes ?? [];
   const edges = agentStructure?.workflow?.edges ?? [];
@@ -1124,9 +1167,9 @@ export async function runLayeredEvaluation(
     }
   }
 
-  // Step 4: Layer 4 — overall quality aggregation (one LLM call on summaries only)
+  // Step 4: Layer 4 — overall quality judgment (GPT-4.1 with full transcript + tools + outcome)
   const { result: layer4, costUsd: layer4Cost } = await evaluateOverall(
-    layer2, layer3, agentSummary, callOutcome, callDuration, evalContext, userUtteranceCount
+    layer2, layer3, agentSummary, callOutcome, callDuration, evalContext, userUtteranceCount, outcomeResult, transcript, visits
   );
   totalCostUsd += layer4Cost;
   console.log(`[LayeredEval] Layer 4 overall: ${layer4.overallScore}/10`);
