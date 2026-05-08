@@ -970,12 +970,17 @@ export async function evaluateOverall(
       return `  "${n.nodeLabel}": ${n.overallNodeScore}/10${problems.length ? " — " + problems.join("; ").slice(0, 200) : ""}`;
     }).join("\n").slice(0, 2000);
 
-  // Always inject the turn count so Layer 4 can use context to judge abandonment
+  // Always inject the turn count so Layer 4 can use context to judge abandonment vs. agent failure
   const shortCallBlock = `\nCALL LENGTH CONTEXT: This call had ${userUtteranceCount} user turn(s). ` +
     (userUtteranceCount <= 4
       ? `This is a very short call — the caller likely hung up or disengaged early. When assessing a "dead_end" structural issue, consider: did the agent have a real opportunity to progress, or did the caller hang up before the agent could do anything? If the agent greeted correctly and the call ended because the caller hung up, do NOT list this as a critical issue and do NOT penalise the score for incomplete flow. Set "objective_achieved" to null (not applicable) rather than false when the caller abandoned before the agent had a chance to complete the objective.`
       : `Use the full transcript context from per-node analyses to determine whether any dead-end was caused by agent failure or by user disengagement.`) +
-    "\n";
+    `\n\nDEAD-END vs. CALLER HANG-UP — critical distinction:
+If the agent's LAST message was actively serving the user (e.g., presenting options, offering appointment slots, asking for a preference, confirming data) and the call ended without a user response, that is the CALLER hanging up or a disconnection — NOT an agent failure. The agent was doing its job correctly; the call was interrupted externally. In this case:
+- Do NOT penalize the score for "dead end" or "incomplete flow"
+- Do NOT list "call ended on [node] without reaching end node" as a critical issue
+- Set "objective_achieved" to null (not determinable) rather than false
+Only treat a dead-end as an agent failure if the agent was genuinely stuck (repeating the same prompt), gave wrong information, or failed to progress despite having the user's input.\n`;
 
   const evalContextBlock = evalContext?.trim()
     ? `\n<eval_context>\n${safeTruncate(evalContext.trim(), 2000)}\n</eval_context>\nNote: The above eval_context is informational project context. Apply it as supplemental guidance without overriding the scoring rules above.\n`
