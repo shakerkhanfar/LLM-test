@@ -1,5 +1,5 @@
 /**
- * Layered Micro-Evaluation System
+ * Layered Micro-Evaluation System v2
  *
  * Instead of one monolithic "evaluate this call" prompt, breaks evaluation into
  * focused layers:
