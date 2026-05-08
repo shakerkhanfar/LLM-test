@@ -1172,17 +1172,31 @@ async function evaluateLayered(_criterion: Criterion, run: any) {
     return { passed: null, score: null, detail: JSON.stringify({ notApplicable: false, error: true, reason: `Layered evaluation failed: ${(err as Error).message}` }) };
   }
 
-  // Compute overall score: weighted average of layer2 (30%) + layer3 avg (50%) + layer4 (20%)
+  // ── Quality score: how well did the agent serve the user? ──────────
+  // Based on Layer 4 (holistic quality assessment) which already incorporates
+  // navigation analysis and per-node summaries. Layer 3 compliance is tracked
+  // separately — it should NOT drag down the quality score.
+  const qualityScore = result.layer4.overallScore / 10;
+
+  // Layer 3 average kept for metadata but NOT used in quality score
   const layer3Avg = result.layer3.length > 0
     ? result.layer3.reduce((sum, n) => sum + n.overallNodeScore, 0) / result.layer3.length
     : 5;
-  const compositeScore = (result.layer2.score * 0.3 + layer3Avg * 0.5 + result.layer4.overallScore * 0.2) / 10;
 
-  const passed = compositeScore >= 0.7;
+  // ── Compliance score: how literally did the agent follow its node instructions? ──
+  // Average of per-node instructionAdherence scores (from Layer 3, already evaluated)
+  const conversationNodes = result.layer3.filter(n => n.nodeType === "conversation" || n.nodeType === "start");
+  const complianceScore = conversationNodes.length > 0
+    ? conversationNodes.reduce((sum, n) => sum + n.instructionAdherence.score, 0) / conversationNodes.length / 10
+    : 1; // No conversation nodes → fully compliant by default
+
+  const passed = qualityScore >= 0.7;
 
   const detail = JSON.stringify({
     summary: result.layer4.summary,
     overallScore: result.layer4.overallScore,
+    qualityScore: Math.round(qualityScore * 1000) / 10,   // 0-100 with 1 decimal
+    complianceScore: Math.round(complianceScore * 1000) / 10, // 0-100 with 1 decimal
     objectiveAchieved: result.layer4.objectiveAchieved,
     callerSentiment: result.layer4.callerSentiment,
     navigation: {
@@ -1197,13 +1211,15 @@ async function evaluateLayered(_criterion: Criterion, run: any) {
 
   return {
     passed,
-    score: compositeScore,
+    score: qualityScore,  // Run.overallScore = quality (NOT compliance)
     detail,
     costUsd: result.totalCostUsd,
     metadata: {
       layer2Score: result.layer2.score,
       layer3Avg,
       layer4Score: result.layer4.overallScore,
+      qualityScore: Math.round(qualityScore * 100),
+      complianceScore: Math.round(complianceScore * 100),
       nodesEvaluated: result.layer3.length,
       navigationIssues: result.layer2.issues.length,
     },

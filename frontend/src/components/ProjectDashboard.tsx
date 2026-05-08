@@ -16,6 +16,7 @@ interface DashData {
   totalFailed: number;
   /** SQL-level outcome distribution — all complete runs */
   outcomeDist: Record<string, number>;
+  avgCompliance: number | null;
   /** SQL-level score trend — per-day or per-hour for short date ranges */
   scoreTrend: Array<{ day: string; avgScore: number | null; count: number }>;
   trendGranularity?: "hour" | "day";
@@ -848,14 +849,17 @@ export default function ProjectDashboard({ project, onDashLoaded, onLoadMore, ha
       </div>
 
       {/* KPI Row */}
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: 12 }}>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(6, 1fr)", gap: 12 }}>
         {([
           { label: "Total Runs", value: totalRuns, color: T.text,
             tip: "Total number of evaluated calls in this project, including all statuses." },
-          { label: "Avg Score", value: avgScore != null ? `${avgScore}%` : "—", color: "#17B26A",
-            tip: "Weighted average evaluation score across all completed calls. 70%+ is passing. Combines structural flow (30%), per-node LLM scoring (50%), and overall call quality (20%)." },
+          { label: "Quality", value: avgScore != null ? `${avgScore}%` : "—", color: "#17B26A",
+            tip: "Average quality score — how well the agent served users across all calls. Based on interaction quality, not literal script compliance. 70%+ is passing." },
+          { label: "Compliance", value: dashData?.avgCompliance != null ? `${dashData.avgCompliance}%` : "—",
+            color: dashData?.avgCompliance != null && dashData.avgCompliance >= 70 ? "#17B26A" : dashData?.avgCompliance != null && dashData.avgCompliance >= 50 ? "#f59e0b" : "#ef4444",
+            tip: "Average compliance score — how literally the agent followed its node-by-node instructions. A low compliance with high quality means the agent adapted well but deviated from the script." },
           { label: "Pass Rate", value: passRate != null ? `${passRate}%` : "—", color: "#17B26A",
-            tip: "Percentage of completed calls that scored 70% or above. A call passes when the agent handled the conversation correctly end-to-end." },
+            tip: "Percentage of completed calls with quality score 70% or above." },
           { label: "Objective Achieved", value: null, color: T.text,
             tip: "Percentage of calls where the main call objective was met (e.g., appointment booked, request resolved). Out-of-scope calls handled with a correct transfer are counted as objective achieved." },
           { label: "Avg Duration", value: avgDuration ?? "—", color: T.text,
@@ -2147,7 +2151,7 @@ export default function ProjectDashboard({ project, onDashLoaded, onLoadMore, ha
                     accentColor={T.primary}
                   />
                 </th>
-                {["", "Conv ID", "Date", "Call Outcome", "Score", "Duration", ...(dashData?.objectiveRate != null ? ["Objective"] : []), ...outcomeColumns, ""].map((col) => (
+                {["", "Conv ID", "Date", "Call Outcome", "Quality", "Duration", ...(dashData?.objectiveRate != null ? ["Objective"] : []), ...outcomeColumns, ""].map((col) => (
                   <th key={col} style={{
                     padding: "6px 10px", textAlign: "left", fontWeight: 600,
                     color: T.textMuted, fontSize: 11, whiteSpace: "nowrap",

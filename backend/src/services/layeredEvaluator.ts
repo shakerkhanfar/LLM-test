@@ -1010,9 +1010,14 @@ ${navSummary}
 PER-NODE ANALYSIS:
 ${nodeSummaries}
 
-Based on these pre-evaluated results, provide a final JSON assessment:
+Based on these pre-evaluated results, provide a final JSON assessment.
+
+IMPORTANT — TWO SEPARATE DIMENSIONS:
+- "quality_score" = How well did the agent SERVE THE USER? Did the interaction go well? Was the agent helpful, responsive, adaptive? An agent that skipped a scripted question because the user already answered it should score HIGH here — that's good service.
+- Compliance (how literally the agent followed every instruction) is tracked separately. Do NOT penalize quality_score for script deviations that resulted in good service.
+
 {
-  "overall_score": 0-10,
+  "quality_score": 0-10,   // Interaction quality — did the agent help the user effectively? Score HIGH for good adaptive behavior, smooth flow, and user needs met. Score LOW only for genuine failures: stuck, wrong info, ignored user, bad service.
   "objective_achieved": true/false/null,   // true if the agent successfully completed the call's purpose — INCLUDING out-of-scope calls where the agent correctly redirected, transferred, or provided the appropriate fixed response. The objective is whether the AGENT did its job, not whether the caller's specific off-scope request was fulfilled. Set true for: completed bookings, correct redirects for out-of-scope, correct escalations. Set false only for genuine agent failures (stuck, wrong info, ignored user, missed required step). Set null if indeterminate.
   "caller_sentiment": "positive" | "neutral" | "negative" | "unknown",
   "out_of_scope_handled": true/false/null,
@@ -1039,7 +1044,7 @@ CRITICAL DISTINCTION — adaptive behavior vs. script violation (calibrated to t
     const parsed = typeof detail === "string" ? JSON.parse(detail) : detail;
     return {
       result: {
-        overallScore: num(parsed.overall_score, 5),
+        overallScore: num(parsed.quality_score ?? parsed.overall_score, 5),
         objectiveAchieved: parsed.objective_achieved ?? null,
         callerSentiment: parsed.caller_sentiment ?? "unknown",
         outOfScopeHandled: parsed.out_of_scope_handled ?? null,

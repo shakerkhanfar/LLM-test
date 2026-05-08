@@ -721,6 +721,8 @@ router.get("/:id/dashboard", async (req: AuthRequest, res) => {
     let outcomeObjTotal = 0;
     // Criteria performance — per-criterion pass/fail stats + failed run IDs
     const criteriaPerf: Record<string, { name: string; type: string; total: number; passed: number; failedRunIds: string[] }> = {};
+    // Compliance scores — extracted from layered eval detail
+    const complianceScores: number[] = [];
 
     // Count all outcome totals first (including runs without eval results)
     for (const run of runs) {
@@ -761,6 +763,11 @@ router.get("/:id/dashboard", async (req: AuthRequest, res) => {
       }
       // Explicitly skip notApplicable or error entries — no valid metrics to extract
       if (detail?.notApplicable === true || detail?.error === true) continue;
+
+      // Compliance score (from split eval: quality vs compliance)
+      if (detail.complianceScore != null && typeof detail.complianceScore === "number") {
+        complianceScores.push(detail.complianceScore);
+      }
 
       // Sentiment
       const sentiment: string = (detail.callerSentiment || detail.sentiment || "unknown").toLowerCase();
@@ -915,6 +922,9 @@ router.get("/:id/dashboard", async (req: AuthRequest, res) => {
       totalFailed,               // FAILED runs — accurate count across all runs (not capped 200)
       totalComplete,             // COMPLETE runs only — denominator for avgScore/passRate
       avgScore,
+      avgCompliance: complianceScores.length > 0
+        ? Math.round(complianceScores.reduce((s, v) => s + v, 0) / complianceScores.length * 10) / 10
+        : null,
       passRate,
       avgDuration,
       totalEvalCost,

@@ -257,15 +257,13 @@ export default function RunDetail() {
 
   const transcript = (run.transcript || []) as any[];
   const evalResults = (run.evalResults || []) as any[];
-  const objectiveAchieved: boolean | null = (() => {
+  const layeredDetail: any = (() => {
     const le = evalResults.find((er: any) => er.criterion?.type === "LAYERED_EVALUATION");
     if (!le?.detail) return null;
-    try {
-      const parsed = typeof le.detail === "string" ? JSON.parse(le.detail) : le.detail;
-      if (parsed?.objectiveAchieved != null) return !!parsed.objectiveAchieved;
-    } catch { /* ignore */ }
-    return null;
+    try { return typeof le.detail === "string" ? JSON.parse(le.detail) : le.detail; } catch { return null; }
   })();
+  const objectiveAchieved: boolean | null = layeredDetail?.objectiveAchieved != null ? !!layeredDetail.objectiveAchieved : null;
+  const complianceScore: number | null = layeredDetail?.complianceScore ?? null;
 
   // Resolve recording URL — prefer a fresh URL (fetched after CloudFront expiry),
   // fall back to the stored webhook URL for recent calls where it's still valid.
@@ -584,9 +582,17 @@ export default function RunDetail() {
       <div style={{ display: "flex", gap: 32, alignItems: "flex-start", marginBottom: 24, flexWrap: "wrap" }}>
         {run.overallScore != null && (
           <div>
-            <div style={{ fontSize: 12, color: T.textSecondary, marginBottom: 4 }}>Overall Score</div>
+            <div style={{ fontSize: 12, color: T.textSecondary, marginBottom: 4 }}>Quality Score</div>
             <div style={{ fontSize: 36, fontWeight: 700, color: run.overallScore >= 0.8 ? "#22c55e" : run.overallScore >= 0.5 ? "#f59e0b" : "#ef4444" }}>
               {(run.overallScore * 100).toFixed(0)}%
+            </div>
+          </div>
+        )}
+        {complianceScore != null && (
+          <div>
+            <div style={{ fontSize: 12, color: T.textSecondary, marginBottom: 4 }}>Compliance</div>
+            <div style={{ fontSize: 36, fontWeight: 700, color: complianceScore >= 80 ? "#22c55e" : complianceScore >= 50 ? "#f59e0b" : "#ef4444" }}>
+              {Math.round(complianceScore)}%
             </div>
           </div>
         )}
