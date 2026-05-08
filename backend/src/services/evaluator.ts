@@ -1188,7 +1188,7 @@ async function evaluateLayered(_criterion: Criterion, run: any) {
   const conversationNodes = result.layer3.filter(n => n.nodeType === "conversation" || n.nodeType === "start");
   const complianceScore = conversationNodes.length > 0
     ? conversationNodes.reduce((sum, n) => sum + n.instructionAdherence.score, 0) / conversationNodes.length / 10
-    : 1; // No conversation nodes → fully compliant by default
+    : null; // No conversation nodes → compliance not applicable
 
   const passed = qualityScore >= 0.7;
 
@@ -1196,7 +1196,7 @@ async function evaluateLayered(_criterion: Criterion, run: any) {
     summary: result.layer4.summary,
     overallScore: result.layer4.overallScore,
     qualityScore: Math.round(qualityScore * 1000) / 10,   // 0-100 with 1 decimal
-    complianceScore: Math.round(complianceScore * 1000) / 10, // 0-100 with 1 decimal
+    complianceScore: complianceScore != null ? Math.round(complianceScore * 1000) / 10 : null, // 0-100 with 1 decimal, or null if no conversation nodes
     objectiveAchieved: result.layer4.objectiveAchieved,
     callerSentiment: result.layer4.callerSentiment,
     navigation: {
@@ -1219,7 +1219,7 @@ async function evaluateLayered(_criterion: Criterion, run: any) {
       layer3Avg,
       layer4Score: result.layer4.overallScore,
       qualityScore: Math.round(qualityScore * 100),
-      complianceScore: Math.round(complianceScore * 100),
+      complianceScore: complianceScore != null ? Math.round(complianceScore * 100) : null,
       nodesEvaluated: result.layer3.length,
       navigationIssues: result.layer2.issues.length,
     },
