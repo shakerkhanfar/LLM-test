@@ -1065,8 +1065,8 @@ ${nodeSummaries}
 Based on the full transcript and evidence above, provide a JSON quality assessment.
 
 {
-  "quality_score": 0-10,   // YOUR independent judgment of interaction quality from reading the transcript. Did the agent help the user? Was the flow smooth? Was the objective achieved?
-  "objective_achieved": true/false/null,   // true if agent completed the call's purpose (booking, info collected, correct transfer/escalation). false only for genuine agent failures. null if indeterminate (caller abandoned early).
+  "quality_score": 0-10,   // YOUR independent judgment of interaction quality from reading the transcript. Did the agent help the user? Was the flow smooth? Was the objective achieved or was the agent on track to achieve it?
+  "objective_achieved": true/false/null,   // Determine this DYNAMICALLY from the transcript — what was the caller trying to do, and did the agent accomplish it or make meaningful progress? TRUE: objective fully completed (booking confirmed, cancellation done, info provided, correct transfer/escalation, out-of-scope handled properly). Also TRUE if the agent did everything within its power and the remaining step was external (e.g., presented appointment slots and was waiting for user to pick one). PARTIAL (use null with comment): agent made significant progress but didn't finish (e.g., found doctors but didn't reach slot selection). FALSE: only for genuine agent failures — stuck, wrong info, ignored user, broke the flow. CALLER HANG-UP RULE: if the agent's LAST message was actively serving (presenting options, confirming data, asking for selection) and the call simply ended, set to null — the agent was doing its job; the caller left. Do NOT set false just because no booking was completed if the agent was mid-process when the call ended.
   "caller_sentiment": "positive" | "neutral" | "negative" | "unknown",
   "out_of_scope_handled": true/false/null,
   "out_of_scope_topics": ["topics outside this agent's stated purpose"],
