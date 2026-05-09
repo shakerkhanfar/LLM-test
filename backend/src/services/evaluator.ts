@@ -1207,6 +1207,8 @@ async function evaluateLayered(_criterion: Criterion, run: any) {
     perNode: result.layer3,
     efficiency: result.layer4.efficiency,
     criticalIssues: result.layer4.criticalIssues,
+    experienceIssues: result.layer4.experienceIssues,
+    comments: result.layer4.comments,
     improvements: result.layer4.improvements,
   });
 
