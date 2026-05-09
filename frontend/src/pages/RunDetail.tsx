@@ -1129,6 +1129,7 @@ export default function RunDetail() {
         const navIssues: any[] = parsed.navigation?.issues || [];
         const perNode: any[] = parsed.perNode || [];
         const criticalIssues: string[] = parsed.criticalIssues || [];
+        const experienceIssues: string[] = parsed.experienceIssues || [];
         const comments: string[] = parsed.comments || [];
         const improvements: string[] = parsed.improvements || [];
         const navScore = parsed.navigation?.score ?? meta.layer2Score;
@@ -1243,6 +1244,24 @@ export default function RunDetail() {
                     <div key={i} style={{
                       padding: "8px 12px", background: T.errorBg, borderRadius: 6,
                       border: `1px solid ${T.border}`, borderLeft: "3px solid #ef4444",
+                      fontSize: 13, color: T.text, lineHeight: 1.5,
+                    }}>
+                      {issue}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Experience Issues — system limitations, not agent failures */}
+            {experienceIssues.length > 0 && (
+              <div style={{ marginBottom: 16 }}>
+                <div style={{ fontSize: 13, color: "#f59e0b", fontWeight: 600, marginBottom: 8 }}>Experience Issues</div>
+                <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                  {experienceIssues.map((issue: string, i: number) => (
+                    <div key={i} style={{
+                      padding: "8px 12px", background: T.warningBg, borderRadius: 6,
+                      border: `1px solid ${T.border}`, borderLeft: "3px solid #f59e0b",
                       fontSize: 13, color: T.text, lineHeight: 1.5,
                     }}>
                       {issue}

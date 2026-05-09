@@ -120,6 +120,7 @@ export interface Layer4Result {
   outOfScopeTopics: string[];
   efficiency: { score: number; reasoning: string };
   criticalIssues: string[];
+  experienceIssues: string[];       // Issues that hurt the caller's experience but are NOT the agent's fault (system limitations, no availability, etc.)
   comments: string[];               // Non-critical observations — minor script deviations that didn't materially hurt the call
   improvements: string[];
   summary: string;
@@ -1075,6 +1076,7 @@ Based on the full transcript and evidence above, provide a JSON quality assessme
     "reasoning": "was the call longer than needed?"
   },
   "critical_issues": ["ONLY real failures: hallucination, stuck/looping, wrong info, ignored user input, broken flow. NOT: script wording differences, skipped questions user already answered."],
+  "experience_issues": ["Issues that hurt the CALLER's experience but are NOT the agent's fault. Examples: system had no availability so caller couldn't book, long hold times during tool calls, caller frustrated by system limitations, caller needed a service the agent doesn't support. These are coaching/product insights — things the business should address (add walk-in support, expand hours, add new capabilities) — not agent failures."],
   "comments": ["Non-critical coaching observations that did NOT hurt the outcome."],
   "improvements": ["specific actionable improvements"],
   "summary": "2-3 sentence summary of call quality."
@@ -1096,6 +1098,7 @@ Based on the full transcript and evidence above, provide a JSON quality assessme
           reasoning: parsed.efficiency?.reasoning ?? "",
         },
         criticalIssues: parsed.critical_issues ?? [],
+        experienceIssues: parsed.experience_issues ?? [],
         comments: parsed.comments ?? [],
         improvements: parsed.improvements ?? [],
         summary: parsed.summary ?? "",
@@ -1112,6 +1115,7 @@ Based on the full transcript and evidence above, provide a JSON quality assessme
         outOfScopeTopics: [],
         efficiency: { score: 5, reasoning: "" },
         criticalIssues: ["Failed to parse aggregation response"],
+        experienceIssues: [],
         comments: [],
         improvements: [],
         summary: "",
