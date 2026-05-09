@@ -716,6 +716,7 @@ router.get("/:id/dashboard", async (req: AuthRequest, res) => {
     let objectiveTotal = 0;
     const achievedRunIds: string[] = [];
     const notAchievedRunIds: string[] = [];
+    const indeterminateRunIds: string[] = [];
     // Outcome-extractor objective — from outcomeResult.objective_met ("yes"/"no"/bool)
     let outcomeObjCount = 0;
     let outcomeObjTotal = 0;
@@ -828,6 +829,10 @@ router.get("/:id/dashboard", async (req: AuthRequest, res) => {
         } else {
           notAchievedRunIds.push(run.id);
         }
+      } else if (detail.objectiveAchieved === null) {
+        // Layer 4 explicitly returned null (indeterminate — e.g. caller hang-up).
+        // Track these so the frontend can show "—" instead of falling back to Hamsa.
+        indeterminateRunIds.push(run.id);
       }
 
       // Objective (outcome extractor — outcomeResult.objective_met = "yes"/"no"/bool)
@@ -937,6 +942,7 @@ router.get("/:id/dashboard", async (req: AuthRequest, res) => {
       outcomeObjectiveTotal: outcomeObjTotal,
       achievedRunIds,
       notAchievedRunIds,
+      indeterminateRunIds,
       nodePerformance,
       topIssues,
       outcomeBreakdown,

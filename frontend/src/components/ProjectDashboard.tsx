@@ -30,6 +30,7 @@ interface DashData {
   topIssues: Array<{ text: string; severity: string; count: number; runIds: string[] }>;
   achievedRunIds: string[];
   notAchievedRunIds: string[];
+  indeterminateRunIds?: string[];
   outcomeBreakdown: Array<{ outcome: string; total: number; issues: Array<{ text: string; severity: string; count: number; pct: number; runIds: string[] }> }>;
   criteriaPerformance: Array<{ name: string; type: string; total: number; passRate: number | null; failedRunIds: string[] }>;
   /** SQL-level score distribution — all complete runs, 10 buckets */
@@ -2166,6 +2167,7 @@ export default function ProjectDashboard({ project, onDashLoaded, onLoadMore, ha
               {(() => {
                 const achievedSet = new Set(dashData?.achievedRunIds ?? []);
                 const notAchievedSet = new Set(dashData?.notAchievedRunIds ?? []);
+                const indeterminateSet = new Set(dashData?.indeterminateRunIds ?? []);
                 const showObjective = dashData?.objectiveRate != null;
                 return tableRuns.map((run: any) => {
                 const rowKey = `row-${run.id}`;
@@ -2240,11 +2242,16 @@ export default function ProjectDashboard({ project, onDashLoaded, onLoadMore, ha
                         // Primary: layered eval objectiveAchieved (from dashData aggregation)
                         if (achievedSet.has(run.id)) return <span style={{ fontSize: 11, fontWeight: 600, color: "#17B26A", background: "#17B26A18", borderRadius: 4, padding: "2px 7px" }}>✓ Met</span>;
                         if (notAchievedSet.has(run.id)) return <span style={{ fontSize: 11, fontWeight: 600, color: "#ef4444", background: "#ef444418", borderRadius: 4, padding: "2px 7px" }}>✗ Not met</span>;
-                        // Fallback: Hamsa's objective_met field — for webhook runs that arrived
-                        // after dashData was loaded and haven't been aggregated yet
-                        const om = (run.outcomeResult?.objective_met || "").toLowerCase();
-                        if (om === "yes") return <span style={{ fontSize: 11, fontWeight: 600, color: "#17B26A", background: "#17B26A18", borderRadius: 4, padding: "2px 7px", opacity: 0.7 }}>✓ Met</span>;
-                        if (om === "no")  return <span style={{ fontSize: 11, fontWeight: 600, color: "#ef4444", background: "#ef444418", borderRadius: 4, padding: "2px 7px", opacity: 0.7 }}>✗ Not met</span>;
+                        // Indeterminate: Layer 4 explicitly returned null (e.g. caller hang-up)
+                        if (indeterminateSet.has(run.id)) return <span style={{ fontSize: 11, color: T.textMuted }}>—</span>;
+                        // Fallback: Hamsa's objective_met field — only for evaluated runs that
+                        // arrived after dashData was loaded. Skip abandoned/unevaluated calls
+                        // (overallScore === null) to avoid showing "Not met" for zero-turn calls.
+                        if (run.overallScore != null) {
+                          const om = (run.outcomeResult?.objective_met || "").toLowerCase();
+                          if (om === "yes") return <span style={{ fontSize: 11, fontWeight: 600, color: "#17B26A", background: "#17B26A18", borderRadius: 4, padding: "2px 7px", opacity: 0.7 }}>✓ Met</span>;
+                          if (om === "no")  return <span style={{ fontSize: 11, fontWeight: 600, color: "#ef4444", background: "#ef444418", borderRadius: 4, padding: "2px 7px", opacity: 0.7 }}>✗ Not met</span>;
+                        }
                         return <span style={{ fontSize: 11, color: T.textMuted }}>—</span>;
                       })()}
                     </td>
