@@ -1,5 +1,4 @@
 import prisma from "../lib/prisma";
-import crypto from "crypto";
 import { Router } from "express";
 import { CriterionType, Prisma } from "@prisma/client";
 import { z } from "zod";
@@ -2155,42 +2154,46 @@ router.post("/:id/prompt-audit/apply", async (req: AuthRequest, res) => {
 });
 
 // ─── MCP Access Tokens ───────────────────────────────────────────────
-// Per-project API tokens used by the MCP server to scope all read/write
-// operations to a single project. The raw token is shown ONCE on generation;
-// only its SHA-256 hash is persisted, and lookups in the MCP auth middleware
-// re-hash the incoming token to match.
+// Per-project API tokens used by AI agents (via Model Context Protocol) to
+// access project data. See backend/src/services/mcpTokens.ts for the auth
+// model. Every token operation is project-owner-or-org-member gated via
+// canAccess() — same semantics as other project write operations.
+//
+// Notes for security review:
+//  - Raw tokens are returned exactly once on issuance and never persisted.
+//  - Hashes are HMAC-SHA-256 keyed by MCP_TOKEN_PEPPER (env-required in prod).
+//  - Tokens are revocable (soft-delete) and have configurable TTL.
+//  - All operations are audit-logged with the issuing user's identity.
+//  - Generation is rate-limited via llmRateLimit (reused — this caps token
+//    issuance at the same rate as other privileged ops).
 
-function hashMcpToken(raw: string): string {
-  return crypto.createHash("sha256").update(raw).digest("hex");
-}
+import { issueToken, revokeToken, listProjectTokens } from "../services/mcpTokens";
 
 /**
- * GET /api/projects/:id/mcp-token
- * Returns whether this project has an active MCP token, but never the token itself.
+ * GET /api/projects/:id/mcp-tokens
+ * List active and recently revoked tokens for the project. Token metadata
+ * only — raw values are never retrievable after issuance.
  */
-router.get("/:id/mcp-token", async (req: AuthRequest, res) => {
+router.get("/:id/mcp-tokens", async (req: AuthRequest, res) => {
   const project = await prisma.project.findUnique({
     where: { id: req.params.id },
-    select: { userId: true, mcpTokenCreatedAt: true, mcpTokenHash: true },
+    select: { userId: true },
   });
   if (!project) return res.status(404).json({ error: "Project not found" });
   if (!await canAccess(project.userId, req)) return res.status(403).json({ error: "Access denied" });
 
-  res.json({
-    hasToken: !!project.mcpTokenHash,
-    createdAt: project.mcpTokenCreatedAt,
-  });
+  const tokens = await listProjectTokens(req.params.id);
+  res.json({ tokens });
 });
 
 /**
- * POST /api/projects/:id/mcp-token
- * Generate a new MCP token. Replaces any existing token (rotation).
- * The raw token is returned ONCE in the response — there is no way to retrieve
- * it later. Clients must copy it immediately.
+ * POST /api/projects/:id/mcp-tokens
+ * Issue a new MCP token. Multiple tokens per project are supported (each
+ * agent/laptop should get its own named token for clean revocation).
  *
- * Token format: mcp_proj_<32-byte base64url>
+ * Body: { name?, scope?: "read" | "read_write", ttlDays?: number | null }
  */
-router.post("/:id/mcp-token", async (req: AuthRequest, res) => {
+router.post("/:id/mcp-tokens", llmRateLimit, async (req: AuthRequest, res) => {
   const project = await prisma.project.findUnique({
     where: { id: req.params.id },
     select: { userId: true },
@@ -2198,29 +2201,58 @@ router.post("/:id/mcp-token", async (req: AuthRequest, res) => {
   if (!project) return res.status(404).json({ error: "Project not found" });
   if (!await canAccess(project.userId, req)) return res.status(403).json({ error: "Access denied" });
 
-  // 32 bytes = 256 bits of entropy; base64url-encoded for URL/header safety.
-  // The "mcp_proj_" prefix lets us identify token type by inspection.
-  const raw = `mcp_proj_${crypto.randomBytes(32).toString("base64url")}`;
-  const hash = hashMcpToken(raw);
-  const now = new Date();
+  const { name, scope, ttlDays } = (req.body ?? {}) as {
+    name?: unknown; scope?: unknown; ttlDays?: unknown;
+  };
 
-  await prisma.project.update({
-    where: { id: req.params.id },
-    data: { mcpTokenHash: hash, mcpTokenCreatedAt: now },
-  });
+  // Validate and narrow inputs. We default rather than reject on missing values,
+  // but reject obviously invalid types to keep the service layer simple.
+  if (name !== undefined && name !== null && typeof name !== "string") {
+    return res.status(400).json({ error: "name must be a string or null" });
+  }
+  if (scope !== undefined && scope !== "read" && scope !== "read_write") {
+    return res.status(400).json({ error: 'scope must be "read" or "read_write"' });
+  }
+  if (ttlDays !== undefined && ttlDays !== null && (typeof ttlDays !== "number" || !Number.isFinite(ttlDays))) {
+    return res.status(400).json({ error: "ttlDays must be a positive number or null for no expiry" });
+  }
 
-  audit(req, "project.mcp_token.generate", req.params.id, { rotated: true });
-  // The raw token is returned exactly once. Persisting only the hash means
-  // a DB leak does not expose tokens — attackers would need the original raw
-  // value (or have to brute-force SHA-256 over a 256-bit space).
-  res.json({ token: raw, createdAt: now });
+  try {
+    const issued = await issueToken({
+      projectId: req.params.id,
+      name: (name as string | null | undefined) ?? null,
+      scope: (scope as "read" | "read_write" | undefined) ?? "read",
+      // null is meaningful (no expiry); undefined means "use default"
+      ttlDays: ttlDays === null ? null : (ttlDays as number | undefined),
+      createdByUserId: req.userId ?? null,
+    });
+
+    audit(req, "mcp_token.issue", issued.id, {
+      projectId: req.params.id,
+      scope: scope ?? "read",
+      hasName: !!name,
+      expiresAt: issued.expiresAt,
+    });
+    // The raw token is in this response and nowhere else. No-store prevents
+    // any caching layer from holding it.
+    res.set("Cache-Control", "no-store");
+    res.json({
+      id: issued.id,
+      token: issued.rawToken,
+      createdAt: issued.createdAt,
+      expiresAt: issued.expiresAt,
+    });
+  } catch (err) {
+    res.status(400).json({ error: (err as Error).message });
+  }
 });
 
 /**
- * DELETE /api/projects/:id/mcp-token
- * Revoke the project's MCP token immediately. Idempotent.
+ * DELETE /api/projects/:id/mcp-tokens/:tokenId
+ * Revoke (soft-delete) a single token. Idempotent — revoking a non-existent
+ * or already-revoked token returns 200 with revoked: false.
  */
-router.delete("/:id/mcp-token", async (req: AuthRequest, res) => {
+router.delete("/:id/mcp-tokens/:tokenId", async (req: AuthRequest, res) => {
   const project = await prisma.project.findUnique({
     where: { id: req.params.id },
     select: { userId: true },
@@ -2228,13 +2260,23 @@ router.delete("/:id/mcp-token", async (req: AuthRequest, res) => {
   if (!project) return res.status(404).json({ error: "Project not found" });
   if (!await canAccess(project.userId, req)) return res.status(403).json({ error: "Access denied" });
 
-  await prisma.project.update({
-    where: { id: req.params.id },
-    data: { mcpTokenHash: null, mcpTokenCreatedAt: null },
+  // Verify the token belongs to this project before allowing revocation —
+  // prevents an org member from revoking another project's tokens by guessing
+  // a token id (defence in depth; ids are cuids and not enumerable in practice).
+  const tok = await prisma.mcpToken.findUnique({
+    where: { id: req.params.tokenId },
+    select: { projectId: true },
   });
+  if (!tok || tok.projectId !== req.params.id) {
+    return res.status(404).json({ error: "Token not found for this project" });
+  }
 
-  audit(req, "project.mcp_token.revoke", req.params.id, {});
-  res.json({ ok: true });
+  const result = await revokeToken(req.params.tokenId);
+  audit(req, "mcp_token.revoke", req.params.tokenId, {
+    projectId: req.params.id,
+    alreadyRevoked: !result.revoked,
+  });
+  res.json({ ok: true, revoked: result.revoked });
 });
 
 export default router;

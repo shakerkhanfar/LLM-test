@@ -349,14 +349,36 @@ export function reEvaluateFailedProject(projectId: string) {
 }
 
 // ─── MCP Access Tokens ───────────────────────────────────────────────
-export function getMcpTokenStatus(projectId: string) {
-  return request<{ hasToken: boolean; createdAt: string | null }>(`/projects/${projectId}/mcp-token`);
+export interface McpTokenSummary {
+  id: string;
+  name: string | null;
+  scope: "read" | "read_write" | string;
+  createdAt: string;
+  expiresAt: string | null;
+  lastUsedAt: string | null;
+  revokedAt: string | null;
+  createdByUserId: string | null;
 }
-export function generateMcpToken(projectId: string) {
-  return request<{ token: string; createdAt: string }>(`/projects/${projectId}/mcp-token`, { method: "POST" });
+
+export function listMcpTokens(projectId: string) {
+  return request<{ tokens: McpTokenSummary[] }>(`/projects/${projectId}/mcp-tokens`);
 }
-export function revokeMcpToken(projectId: string) {
-  return request<{ ok: boolean }>(`/projects/${projectId}/mcp-token`, { method: "DELETE" });
+
+export function issueMcpToken(
+  projectId: string,
+  body: { name?: string | null; scope?: "read" | "read_write"; ttlDays?: number | null } = {}
+) {
+  return request<{ id: string; token: string; createdAt: string; expiresAt: string | null }>(
+    `/projects/${projectId}/mcp-tokens`,
+    { method: "POST", body: JSON.stringify(body) }
+  );
+}
+
+export function revokeMcpToken(projectId: string, tokenId: string) {
+  return request<{ ok: boolean; revoked: boolean }>(
+    `/projects/${projectId}/mcp-tokens/${tokenId}`,
+    { method: "DELETE" }
+  );
 }
 
 export function reEvaluateErrorsProject(projectId: string) {

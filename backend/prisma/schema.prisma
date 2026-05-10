@@ -41,34 +41,64 @@ model User {
 }
 
 model Project {
-  id                String            @id @default(cuid())
-  userId            String? // Owner — null for legacy projects
-  user              User?             @relation(fields: [userId], references: [id])
-  name              String
-  agentId           String // Hamsa agent ID
-  hamsaApiKey       String? // Hamsa API key for this agent
-  description       String?
-  agentStructure    Json? // Full agent JSON (workflow nodes, edges, tools)
-  flowDefinition    Json? // Extracted expected node sequence + tool calls
-  agentSummary      String? // LLM-generated plain-text analysis: purpose, scenarios, success criteria
-  evalContext       String? // User-defined evaluation rules injected into every eval for this project
-  webhookSecret     String? // HMAC-SHA256 secret for verifying incoming webhook payloads
-  mcpTokenHash      String?           @unique // SHA-256 hash of the project's MCP API token (raw token shown once on generation)
-  mcpTokenCreatedAt DateTime? // Timestamp when MCP token was last generated — null = no active token
-  projectType       ProjectType       @default(LIVE)
-  historyStartDate  DateTime? // For HISTORY projects: start of date range
-  historyEndDate    DateTime? // For HISTORY projects: end of date range
-  criteria          Criterion[]
-  runs              Run[]
-  analyses          ProjectAnalysis[]
-  createdAt         DateTime          @default(now())
-  updatedAt         DateTime          @updatedAt
+  id               String            @id @default(cuid())
+  userId           String? // Owner — null for legacy projects
+  user             User?             @relation(fields: [userId], references: [id])
+  name             String
+  agentId          String // Hamsa agent ID
+  hamsaApiKey      String? // Hamsa API key for this agent
+  description      String?
+  agentStructure   Json? // Full agent JSON (workflow nodes, edges, tools)
+  flowDefinition   Json? // Extracted expected node sequence + tool calls
+  agentSummary     String? // LLM-generated plain-text analysis: purpose, scenarios, success criteria
+  evalContext      String? // User-defined evaluation rules injected into every eval for this project
+  webhookSecret    String? // HMAC-SHA256 secret for verifying incoming webhook payloads
+  mcpTokens        McpToken[] // MCP access tokens (read/write) — see McpToken model
+  projectType      ProjectType       @default(LIVE)
+  historyStartDate DateTime? // For HISTORY projects: start of date range
+  historyEndDate   DateTime? // For HISTORY projects: end of date range
+  criteria         Criterion[]
+  runs             Run[]
+  analyses         ProjectAnalysis[]
+  createdAt        DateTime          @default(now())
+  updatedAt        DateTime          @updatedAt
 }
 
 enum ProjectType {
   LIVE
   HISTORY
   WEBHOOK
+}
+
+// MCP access token — used by AI agents (via Model Context Protocol) to access
+// project data programmatically. Tokens are scoped to a single project for now;
+// schema is designed to support org-level scope in the future (one of projectId
+// or organizationId must be set).
+//
+// The raw token is shown ONCE at creation and never persisted — only the
+// HMAC-SHA-256 hash (HMAC keyed by MCP_TOKEN_PEPPER env var) is stored. Without
+// the pepper, hashes are useless to an attacker even if the DB leaks.
+//
+// `revokedAt` is preferred over hard-delete so audit history is preserved.
+// The MCP auth middleware ignores rows where revokedAt IS NOT NULL or where
+// expiresAt < now().
+model McpToken {
+  id              String    @id @default(cuid())
+  projectId       String? // EITHER projectId OR organizationId is required (CHECK constraint enforced in migration)
+  project         Project?  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  organizationId  String? // Reserved for future org-scoped tokens; currently always null
+  tokenHash       String    @unique // HMAC-SHA-256 hex digest of the raw token (keyed with server pepper)
+  name            String? // User-supplied label e.g. "Claude Desktop - laptop". Helps identify tokens during rotation.
+  scope           String    @default("read") // "read" | "read_write" — gates write tools behind explicit opt-in
+  createdByUserId String? // Audit: who issued this token
+  createdAt       DateTime  @default(now())
+  expiresAt       DateTime? // null = no expiry; default 1 year set in endpoint, configurable
+  lastUsedAt      DateTime? // Updated by MCP auth middleware (debounced, see middleware)
+  revokedAt       DateTime? // Soft-delete; non-null means token cannot authenticate
+
+  @@index([projectId, revokedAt])
+  @@index([organizationId, revokedAt])
+  @@index([expiresAt]) // Cleanup queries
 }
 
 model Criterion {
