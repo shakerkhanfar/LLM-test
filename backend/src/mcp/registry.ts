@@ -35,6 +35,14 @@ export class McpToolError extends Error {
 const TOOL_TIMEOUT_MS = parseInt(process.env.MCP_TOOL_TIMEOUT_MS || "30000", 10);
 const DEBUG = process.env.MCP_DEBUG === "true";
 
+/**
+ * Cap on the JSON-serialized size of a tool result. Agents are expensive to
+ * feed huge payloads and the network round-trip is wasted. If a tool returns
+ * more than this, we replace the body with an error pointing the agent at
+ * narrower tools (e.g. get_run_breakdown instead of get_run_full).
+ */
+const TOOL_RESULT_MAX_BYTES = parseInt(process.env.MCP_TOOL_RESULT_MAX_BYTES || "524288", 10); // 512 KiB
+
 function tokenLogId(tokenId: string): string {
   // Log only the first 8 chars of the cuid; full id is privacy-adjacent and
   // appears unredacted in stdout logs which may be aggregated to third parties.
@@ -132,12 +140,28 @@ function registerSingleTool(server: McpServer, ctx: McpContext, tool: AnyTool): 
         )),
       ]);
       const duration = Date.now() - start;
+      const text = JSON.stringify(result);
+      if (text.length > TOOL_RESULT_MAX_BYTES) {
+        console.warn(
+          `[Mcp] tool=${tool.name} project=${ctx.projectId} token=${logToken}` +
+          ` duration_ms=${duration} status=oversized bytes=${text.length} limit=${TOOL_RESULT_MAX_BYTES}`,
+        );
+        return {
+          isError: true,
+          content: [{
+            type: "text" as const,
+            text: `Tool error: response too large (${text.length} bytes; limit ${TOOL_RESULT_MAX_BYTES}). ` +
+              `Use a narrower tool (e.g. get_run_breakdown instead of get_run_full, or set ` +
+              `includeCallLog/includeWebhookData=false), or paginate via list_runs.`,
+          }],
+        };
+      }
       console.log(
         `[Mcp] tool=${tool.name} project=${ctx.projectId} token=${logToken}` +
-        ` scope=${ctx.scope} duration_ms=${duration} status=ok`,
+        ` scope=${ctx.scope} duration_ms=${duration} status=ok bytes=${text.length}`,
       );
       return {
-        content: [{ type: "text" as const, text: JSON.stringify(result) }],
+        content: [{ type: "text" as const, text }],
       };
     } catch (err) {
       const duration = Date.now() - start;

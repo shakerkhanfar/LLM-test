@@ -31,6 +31,21 @@ import { mcpPreAuthRateLimit } from "../middleware/rateLimiter";
 import { registerTools, type AnyTool } from "./registry";
 
 import { pingTool } from "./tools/_read/ping";
+import { getProjectOverviewTool } from "./tools/_read/overview";
+import { getDashboardSummaryTool } from "./tools/_read/dashboardSummary";
+import {
+  getTopCriticalIssuesTool,
+  getTopExperienceIssuesTool,
+  getNodePerformanceTool,
+} from "./tools/_read/topIssues";
+import {
+  listRunsTool,
+  getRunBreakdownTool,
+  getRunTranscriptTool,
+  getRunFullTool,
+  searchRunsTool,
+} from "./tools/_read/runs";
+import { getAgentStructureTool, getNodePromptTool } from "./tools/_read/agentStructure";
 
 if (process.env.MCP_ALLOW_QUERY_TOKEN === "true") {
   console.warn(
@@ -41,8 +56,27 @@ if (process.env.MCP_ALLOW_QUERY_TOKEN === "true") {
 
 // Master tool list. Adding a new tool means adding an import + push here.
 // Scope filtering happens at registration time per-request.
+//
+// Order matters for the tool list shown to agents — they tend to scan top-down.
+// Drill-down chain: orientation → KPIs → issues → runs → structure.
 const ALL_TOOLS: AnyTool[] = [
   pingTool,
+  // Tier 1 — orientation
+  getProjectOverviewTool,
+  getDashboardSummaryTool,
+  // Tier 2 — issues
+  getTopCriticalIssuesTool,
+  getTopExperienceIssuesTool,
+  getNodePerformanceTool,
+  // Tier 3 — runs
+  listRunsTool,
+  getRunBreakdownTool,
+  getRunTranscriptTool,
+  getRunFullTool,
+  searchRunsTool,
+  // Tier 4 — agent structure
+  getAgentStructureTool,
+  getNodePromptTool,
 ];
 
 const SERVER_NAME = "hamsa-eval-mcp";
