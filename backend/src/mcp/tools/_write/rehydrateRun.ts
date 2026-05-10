@@ -59,7 +59,10 @@ export const rehydrateRunTool: McpToolDefinition<typeof inputSchema> = {
         runId: run.id,
         currentStatus: run.status,
         hasHamsaIds: !!(run.hamsaCallId || run.conversationId),
-        estimatedCostUsd: 0.30,
+        // Order-of-magnitude estimate; actual cost depends on transcript
+        // length and model. Slightly higher than reevaluate_run because we
+        // also pay for two Hamsa API calls.
+        estimatedCostUsdOrderOfMagnitude: 0.3,
       });
     }
 

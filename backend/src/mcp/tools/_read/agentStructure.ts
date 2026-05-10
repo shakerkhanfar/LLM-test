@@ -30,16 +30,30 @@ function redactString(s: string): string {
   return s.replace(URL_CRED_PATTERN, "$1[redacted]");
 }
 
-function deepRedact(value: any): any {
+/**
+ * Recursively redact a value. Cycle detection via WeakSet protects against
+ * stack overflow if upstream data ever contains a circular reference (Hamsa
+ * agent structures are pure JSON so this shouldn't happen, but defensive
+ * coding wins). Depth-limited too — workflows are flat (~3 levels deep) and
+ * a runaway depth indicates a malformed structure we shouldn't echo back.
+ */
+function deepRedact(value: any, seen: WeakSet<object> = new WeakSet(), depth = 0): any {
+  if (depth > 50) return "[depth-limited]";
   if (typeof value === "string") return redactString(value);
-  if (Array.isArray(value)) return value.map(deepRedact);
+  if (Array.isArray(value)) {
+    if (seen.has(value)) return "[circular]";
+    seen.add(value);
+    return value.map(v => deepRedact(v, seen, depth + 1));
+  }
   if (value !== null && typeof value === "object") {
+    if (seen.has(value)) return "[circular]";
+    seen.add(value);
     const out: Record<string, any> = {};
     for (const [k, v] of Object.entries(value)) {
       if (REDACT_KEYS.has(k.toLowerCase())) {
         out[k] = "[redacted]";
       } else {
-        out[k] = deepRedact(v);
+        out[k] = deepRedact(v, seen, depth + 1);
       }
     }
     return out;

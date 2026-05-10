@@ -113,13 +113,18 @@ export const applyNodePromptFixTool: McpToolDefinition<typeof inputSchema> = {
       data: { agentStructure: updatedStructure },
     });
 
+    // Audit payload includes a length-bounded snapshot of both prompts so the
+    // audit table doesn't bloat from huge prompts. 4 KiB each = 8 KiB max per
+    // row for diff body; metadata is small.
+    const AUDIT_PROMPT_CAP = 4096;
+    const truncate = (s: string) =>
+      s.length <= AUDIT_PROMPT_CAP ? s : s.slice(0, AUDIT_PROMPT_CAP) + `…[truncated, full ${s.length} chars]`;
     await auditMcpWrite(ctx, "mcp.write.apply_node_prompt_fix", input.nodeId, {
       reason: input.reason,
       nodeLabel: node.label ?? null,
       diff: { oldLength: diff.oldLength, newLength: diff.newLength },
-      // Persist the full diff so a human can review what changed.
-      oldPrompt,
-      newPrompt,
+      oldPromptSnapshot: truncate(oldPrompt),
+      newPromptSnapshot: truncate(newPrompt),
     });
 
     return {

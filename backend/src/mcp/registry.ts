@@ -43,10 +43,43 @@ const DEBUG = process.env.MCP_DEBUG === "true";
  */
 const TOOL_RESULT_MAX_BYTES = parseInt(process.env.MCP_TOOL_RESULT_MAX_BYTES || "524288", 10); // 512 KiB
 
+/** Cap any error message before logging or returning to the agent. */
+const ERROR_MESSAGE_MAX_CHARS = 500;
+
 function tokenLogId(tokenId: string): string {
   // Log only the first 8 chars of the cuid; full id is privacy-adjacent and
   // appears unredacted in stdout logs which may be aggregated to third parties.
   return DEBUG ? tokenId : tokenId.slice(0, 8);
+}
+
+/**
+ * JSON.stringify wrapper that handles BigInt, circular refs, and other shapes
+ * that would otherwise throw inside the success path. Falls back to a marker
+ * string so the registry can return a proper error to the agent rather than
+ * crashing the whole request.
+ */
+function safeStringify(value: unknown): { ok: true; text: string } | { ok: false; reason: string } {
+  try {
+    const seen = new WeakSet<object>();
+    const text = JSON.stringify(value, (_key, v) => {
+      if (typeof v === "bigint") return v.toString();
+      if (v !== null && typeof v === "object") {
+        if (seen.has(v as object)) return "[circular]";
+        seen.add(v as object);
+      }
+      return v;
+    });
+    if (typeof text !== "string") return { ok: false, reason: "result is not serialisable to JSON" };
+    return { ok: true, text };
+  } catch (err) {
+    return { ok: false, reason: (err as Error).message ?? "stringify failed" };
+  }
+}
+
+/** Truncate any string to the configured cap with an ellipsis suffix. */
+function clampMessage(s: string, max = ERROR_MESSAGE_MAX_CHARS): string {
+  if (s.length <= max) return s;
+  return s.slice(0, max) + "…[truncated]";
 }
 
 /** Discriminated by whether a Zod input schema is supplied. */
@@ -124,23 +157,44 @@ function registerSingleTool(server: McpServer, ctx: McpContext, tool: AnyTool): 
   server.registerTool(tool.name, config as any, async (rawInput: unknown) => {
     const start = Date.now();
     const logToken = tokenLogId(ctx.tokenId);
+
+    // Race the handler against a timeout. CRITICAL: clear the timer on
+    // resolve OR reject — Promise.race on its own does not, leaking a
+    // pending setTimeout per call until 30 s elapses. With 1k req/min that
+    // would pile up tens of thousands of dangling timers.
+    let timeoutHandle: NodeJS.Timeout | undefined;
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      timeoutHandle = setTimeout(
+        () => reject(new McpToolError(`Tool ${tool.name} exceeded ${TOOL_TIMEOUT_MS}ms timeout`)),
+        TOOL_TIMEOUT_MS,
+      );
+    });
+
     try {
       // McpServer already validates inputs against the Zod schema, but we
       // re-validate defensively to ensure the SDK didn't pass through extras.
       const input = (tool.inputSchema
         ? z.object(tool.inputSchema).strict().parse(rawInput ?? {})
         : {}) as any;
-      // Race the handler against a timeout so a hung tool can't tie up a
-      // request slot indefinitely.
-      const result = await Promise.race([
-        tool.handler(ctx, input),
-        new Promise((_, reject) => setTimeout(
-          () => reject(new McpToolError(`Tool ${tool.name} exceeded ${TOOL_TIMEOUT_MS}ms timeout`)),
-          TOOL_TIMEOUT_MS,
-        )),
-      ]);
+      const result = await Promise.race([tool.handler(ctx, input), timeoutPromise]);
       const duration = Date.now() - start;
-      const text = JSON.stringify(result);
+
+      const stringifyResult = safeStringify(result);
+      if (!stringifyResult.ok) {
+        console.error(
+          `[Mcp] tool=${tool.name} project=${ctx.projectId} token=${logToken}` +
+          ` duration_ms=${duration} status=stringify_failed reason="${clampMessage(stringifyResult.reason).replace(/"/g, "'")}"`,
+        );
+        return {
+          isError: true,
+          content: [{
+            type: "text" as const,
+            text: "Tool error: result could not be serialised. This is a server bug — please report.",
+          }],
+        };
+      }
+      const text = stringifyResult.text;
+
       if (text.length > TOOL_RESULT_MAX_BYTES) {
         console.warn(
           `[Mcp] tool=${tool.name} project=${ctx.projectId} token=${logToken}` +
@@ -166,9 +220,7 @@ function registerSingleTool(server: McpServer, ctx: McpContext, tool: AnyTool): 
     } catch (err) {
       const duration = Date.now() - start;
       const isExposable = err instanceof McpToolError || err instanceof z.ZodError;
-      const internalMessage = (err as Error).message ?? "unknown";
-      // Agents only see safe, intentional messages. Everything else is
-      // generic, with the real message in server logs only.
+      const internalMessage = clampMessage((err as Error).message ?? "unknown");
       const agentMessage = isExposable
         ? (err instanceof z.ZodError
           ? `Invalid arguments: ${err.issues.map(i => i.message).join("; ")}`
@@ -181,8 +233,12 @@ function registerSingleTool(server: McpServer, ctx: McpContext, tool: AnyTool): 
       );
       return {
         isError: true,
-        content: [{ type: "text" as const, text: `Tool error: ${agentMessage}` }],
+        content: [{ type: "text" as const, text: `Tool error: ${clampMessage(agentMessage)}` }],
       };
+    } finally {
+      // Always clear the timer — on success, on McpToolError, on the timeout
+      // path itself (clearing an already-fired timer is a no-op).
+      if (timeoutHandle) clearTimeout(timeoutHandle);
     }
   });
 }

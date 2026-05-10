@@ -225,12 +225,16 @@ export const getRunTranscriptTool: McpToolDefinition<typeof getRunBreakdownInput
 };
 
 // ─── get_run_full ─────────────────────────────────────────────────────
+// Both heavy fields default to FALSE — the common case is "give me the
+// transcript and eval results" which already returns plenty. Agents that
+// genuinely need callLog or webhookData must opt in explicitly. This avoids
+// blowing the 512 KiB tool result cap on routine inspection.
 const getRunFullInput = {
   runId: z.string().min(1),
-  includeCallLog: z.boolean().optional().default(true)
-    .describe("Include the raw call log (node movements, tool calls, timestamps). Defaults true."),
+  includeCallLog: z.boolean().optional().default(false)
+    .describe("Include the raw call log (node movements, tool calls, timestamps). Large; opt-in."),
   includeWebhookData: z.boolean().optional().default(false)
-    .describe("Include full webhook payload (large, may include redundant data). Defaults false."),
+    .describe("Include full webhook payload (large, often redundant with transcript+outcome). Opt-in."),
 };
 
 export const getRunFullTool: McpToolDefinition<typeof getRunFullInput> = {
@@ -304,16 +308,25 @@ export const searchRunsTool: McpToolDefinition<typeof searchRunsInput> = {
   inputSchema: searchRunsInput,
   handler: async (ctx, input) => {
     const limit = clampLimit(input.limit, 50, 10);
-    // Sanitize: strip newlines and clamp length. Prisma escapes the param via
-    // parameterised query so SQLi isn't possible, but we still hard-limit
-    // length and characters to avoid pathological pattern matches.
-    const q = input.query.replace(/[\r\n\t]+/g, " ").trim().slice(0, 200);
-    if (q.length < 2) throw new McpToolError("Query must contain at least 2 visible characters");
+    // Sanitize: strip newlines and clamp length. Prisma parameterises the
+    // value, so SQLi isn't possible; the cleaning here is purely about
+    // intent — strip control chars and clamp length.
+    const cleaned = input.query.replace(/[\r\n\t]+/g, " ").trim().slice(0, 200);
+    if (cleaned.length < 2) throw new McpToolError("Query must contain at least 2 visible characters");
+
+    // Escape LIKE wildcards (`%`, `_`, and the escape char `\`) so a user
+    // passing "_" or "%" matches literal characters rather than turning the
+    // search into "match anything". We use the default backslash escape and
+    // declare it via ESCAPE.
+    const escaped = cleaned
+      .replace(/\\/g, "\\\\")
+      .replace(/%/g, "\\%")
+      .replace(/_/g, "\\_");
 
     // ::text cast lets us ILIKE the JSON columns without JSONB-specific
     // operators. Substring match is intentionally simple — agents often
     // chain to get_run_breakdown for deeper analysis anyway.
-    const pattern = `%${q}%`;
+    const pattern = `%${escaped}%`;
     const results = await prisma.$queryRaw<Array<{
       id: string;
       conversationId: string | null;
@@ -325,16 +338,16 @@ export const searchRunsTool: McpToolDefinition<typeof searchRunsInput> = {
       FROM "Run"
       WHERE "projectId" = ${ctx.projectId}
         AND (
-          "transcript"::text ILIKE ${pattern}
-          OR "outcomeResult"::text ILIKE ${pattern}
-          OR "callOutcome" ILIKE ${pattern}
+          "transcript"::text ILIKE ${pattern} ESCAPE '\\'
+          OR "outcomeResult"::text ILIKE ${pattern} ESCAPE '\\'
+          OR "callOutcome" ILIKE ${pattern} ESCAPE '\\'
         )
       ORDER BY "callDate" DESC NULLS LAST
       LIMIT ${limit}
     `);
 
     return {
-      query: q,
+      query: cleaned,
       count: results.length,
       results,
     };

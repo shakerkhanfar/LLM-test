@@ -59,7 +59,9 @@ export const reevaluateRunTool: McpToolDefinition<typeof inputSchema> = {
         currentStatus: run.status,
         callDate: run.callDate,
         callOutcome: run.callOutcome,
-        estimatedCostUsd: 0.20, // Rough; varies with model + transcript length
+        // Order-of-magnitude estimate. Actual cost depends on transcript
+        // length and model — see the run's evalCost field after completion.
+        estimatedCostUsdOrderOfMagnitude: 0.2,
       });
     }
 

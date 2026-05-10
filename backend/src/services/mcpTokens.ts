@@ -175,7 +175,20 @@ export async function authenticateToken(raw: string): Promise<{
 // We accept the trade-off that this is per-process (in a multi-instance
 // deployment, each replica writes once per minute per token). Cheap enough.
 const LAST_USED_DEBOUNCE_MS = 60_000;
+const LAST_USED_SWEEP_INTERVAL_MS = 5 * 60_000;
+const LAST_USED_STALE_THRESHOLD_MS = 30 * 60_000; // evict entries unused for 30 min
+
 const lastUsedWriteMap = new Map<string, number>();
+
+// Periodic sweep evicts stale entries so the map stays bounded over time.
+// unref() so this never holds the process open during shutdown.
+const lastUsedSweepHandle = setInterval(() => {
+  const cutoff = Date.now() - LAST_USED_STALE_THRESHOLD_MS;
+  for (const [k, v] of lastUsedWriteMap.entries()) {
+    if (v < cutoff) lastUsedWriteMap.delete(k);
+  }
+}, LAST_USED_SWEEP_INTERVAL_MS);
+lastUsedSweepHandle.unref();
 
 /**
  * Update lastUsedAt on a token. Debounced to once per LAST_USED_DEBOUNCE_MS
