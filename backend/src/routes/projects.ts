@@ -1499,6 +1499,156 @@ router.post("/:id/re-evaluate-runs", evalRateLimit, async (req: AuthRequest, res
 });
 
 /**
+ * POST /api/projects/:id/rehydrate-runs
+ *
+ * Batch rehydrate: re-fetch fresh callLog + transcript from Hamsa for each run,
+ * overwrite stale data, then trigger re-evaluation. Use this when Hamsa data
+ * has been updated since the last eval (e.g. agent changes, transcript fixes)
+ * — unlike /re-evaluate-runs which re-runs eval on existing local data.
+ *
+ * Flow:
+ *   1) Synchronously claim eligible runs (set to PENDING, clear stale eval results)
+ *      — this is fast and lets us return immediately.
+ *   2) Respond with `acceptedRunIds` so the frontend knows which runs to poll.
+ *   3) Process Hamsa fetches in the background (chunks of 4 in parallel).
+ *      Each successful fetch updates the run and triggers re-evaluation.
+ *      Failures mark the run as FAILED with errorLog populated.
+ *
+ * The synchronous response avoids edge-proxy timeouts on large batches and
+ * prevents the frontend from polling runs that aren't actually being processed.
+ */
+router.post("/:id/rehydrate-runs", evalRateLimit, async (req: AuthRequest, res) => {
+  const projectId = req.params.id;
+  const p = await prisma.project.findUnique({
+    where: { id: projectId },
+    select: { userId: true, hamsaApiKey: true },
+  });
+  if (!p) return res.status(404).json({ error: "Project not found" });
+  if (!await canAccess(p.userId, req)) return res.status(403).json({ error: "Access denied" });
+
+  const { runIds: rawRunIds } = req.body as { runIds?: unknown[] };
+  if (!Array.isArray(rawRunIds) || rawRunIds.length === 0) {
+    return res.status(400).json({ error: "runIds must be a non-empty array" });
+  }
+  if (rawRunIds.some(id => typeof id !== "string" || (id as string).trim() === "")) {
+    return res.status(400).json({ error: "Each runId must be a non-empty string" });
+  }
+  const runIds = [...new Set(rawRunIds as string[])];
+  if (runIds.length > 200) {
+    return res.status(400).json({ error: "Maximum 200 unique runs per rehydrate request" });
+  }
+
+  try {
+    // Load only runs that belong to this project AND aren't mid-flight
+    const runs = await prisma.run.findMany({
+      where: {
+        id: { in: runIds },
+        projectId,
+        status: { notIn: ["EVALUATING", "RUNNING"] },
+      },
+      select: { id: true, hamsaCallId: true, conversationId: true, status: true },
+    });
+
+    // Partition: runs with at least one Hamsa identifier are processable.
+    // Runs without identifiers cannot be rehydrated (we have no way to fetch from Hamsa).
+    const eligible = runs.filter(r => r.hamsaCallId || r.conversationId);
+    const skippedNoIdsCount = runs.length - eligible.length;
+    const notFoundCount = runIds.length - runs.length; // not in project, or mid-flight
+
+    if (eligible.length === 0) {
+      return res.json({
+        ok: true,
+        acceptedRunIds: [],
+        skippedNoIdsCount,
+        notFoundCount,
+      });
+    }
+
+    // Step 1: synchronously claim eligible runs — set to PENDING and clear stale
+    // eval results. After this commits, BullMQ recovery (if it runs) would only
+    // see PENDING runs with empty evalResults, which is the correct fresh state.
+    // The actual Hamsa fetches happen in the background loop below.
+    const eligibleIds = eligible.map(r => r.id);
+    await prisma.$transaction([
+      prisma.evalResult.deleteMany({ where: { runId: { in: eligibleIds } } }),
+      prisma.run.updateMany({
+        where: { id: { in: eligibleIds }, status: { notIn: ["EVALUATING", "RUNNING"] } },
+        data: { status: "PENDING", overallScore: null, evalCost: null, errorLog: null },
+      }),
+    ]);
+
+    // Step 2: respond immediately so the client doesn't time out
+    audit(req, "project.rehydrate_runs", projectId, {
+      requestedCount: runIds.length,
+      acceptedCount: eligibleIds.length,
+      skippedNoIdsCount,
+      notFoundCount,
+    });
+    res.json({
+      ok: true,
+      acceptedRunIds: eligibleIds,
+      skippedNoIdsCount,
+      notFoundCount,
+    });
+
+    // Step 3: process Hamsa fetches in the background. Errors here cannot
+    // affect the response, but they are logged and persisted to errorLog.
+    const apiKey = p.hamsaApiKey || undefined;
+    (async () => {
+      const { fetchCallLog, fetchConversation, extractTranscriptFromConversation } = await import("../services/hamsaApi");
+      const { runEvaluationCheck } = await import("../services/evaluationRunner");
+      const CHUNK_SIZE = 4;
+      for (let i = 0; i < eligible.length; i += CHUNK_SIZE) {
+        const chunk = eligible.slice(i, i + CHUNK_SIZE);
+        await Promise.all(chunk.map(async (run) => {
+          try {
+            const logJobId = run.conversationId || run.hamsaCallId!;
+            const freshCallLog = await fetchCallLog(logJobId, apiKey);
+
+            let freshWebhookData: any;
+            let freshTranscript: any[] | undefined;
+            try {
+              const conv = await fetchConversation(logJobId, apiKey);
+              freshWebhookData = conv;
+              const extracted = extractTranscriptFromConversation(conv);
+              if (extracted && extracted.length > 0) freshTranscript = extracted;
+            } catch {
+              // Conversation fetch is non-fatal — call log may carry the transcript
+            }
+
+            const updatePayload: Record<string, any> = { callLog: freshCallLog };
+            if (freshWebhookData !== undefined) updatePayload.webhookData = freshWebhookData;
+            if (freshTranscript !== undefined) updatePayload.transcript = freshTranscript;
+
+            // Update fresh data; only if the run is still PENDING (it could have been
+            // re-claimed by another process). updateMany with a status filter is safe.
+            await prisma.run.updateMany({
+              where: { id: run.id, status: "PENDING" },
+              data: updatePayload,
+            });
+
+            runEvaluationCheck(run.id).catch((err) =>
+              console.error(`[RehydrateBatch] Eval trigger failed for ${run.id}: ${(err as Error).message}`)
+            );
+          } catch (err) {
+            const msg = (err as Error).message;
+            console.error(`[RehydrateBatch] Hamsa fetch failed for ${run.id}: ${msg}`);
+            await prisma.run.updateMany({
+              where: { id: run.id, status: "PENDING" },
+              data: { status: "FAILED", errorLog: `Rehydrate failed: ${msg}` },
+            }).catch(() => { /* best effort */ });
+          }
+        }));
+      }
+    })().catch((err) => {
+      console.error(`[RehydrateBatch] Background loop crashed: ${(err as Error).message}`);
+    });
+  } catch (err) {
+    res.status(500).json({ error: (err as Error).message });
+  }
+});
+
+/**
  * POST /api/projects/:id/re-evaluate-failed
  *
  * Re-queues only FAILED runs for evaluation, preserving COMPLETE run results.

@@ -3,7 +3,7 @@ import {
   LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer,
   PieChart, Pie, Cell, BarChart, Bar,
 } from "recharts";
-import { getProjectDashboard, getRunsByIds, reEvaluateRuns } from "../api/client";
+import { getProjectDashboard, getRunsByIds, reEvaluateRuns, rehydrateRuns } from "../api/client";
 import T from "../theme";
 
 interface DashData {
@@ -273,53 +273,78 @@ export default function ProjectDashboard({ project, onDashLoaded, onLoadMore, ha
     });
   }
 
+  // Shared poll loop used by both re-evaluate and rehydrate. Closes over `pollIds`
+  // so a subsequent batch can't mutate what this poll is tracking.
+  function startEvalPoll(pollIds: string[]) {
+    let pollCount = 0;
+    const MAX_POLLS = Math.min(600, Math.max(200, pollIds.length * 10));
+    const TERMINAL = new Set(["COMPLETE", "FAILED", "ERROR"]);
+    reEvalPollRef.current = setInterval(async () => {
+      pollCount++;
+      try {
+        const runs = await getRunsByIds(project.id, pollIds);
+        const done = runs.filter((r: any) => TERMINAL.has(r.status)).length;
+        const failed = runs.filter((r: any) => r.status === "FAILED" || r.status === "ERROR").length;
+        setReEvalProgress({ total: pollIds.length, done, failed });
+
+        if (done >= pollIds.length || pollCount >= MAX_POLLS) {
+          clearInterval(reEvalPollRef.current!);
+          reEvalPollRef.current = null;
+          getProjectDashboard(project.id, dateFilter)
+            .then((data: DashData) => {
+              setDashData(data);
+              onDashLoadedRef.current?.({ totalRuns: data.totalRuns, totalEvalCost: data.totalEvalCost ?? 0, totalFailed: data.totalFailed ?? 0 });
+            })
+            .catch(() => { /* non-critical — table still works via fallback */ });
+          reEvalTimerRef.current = setTimeout(() => {
+            setReEvalProgress(null);
+            setReEvalStatus("idle");
+          }, 5000);
+        }
+      } catch { /* skip failed poll, retry next tick */ }
+    }, 3000);
+  }
+
   async function handleReEvaluateSelected() {
-    // Block if already submitting or if a poll is actively tracking a previous batch
     if (selectedRunIds.size === 0 || reEvalStatus === "loading" || reEvalProgress !== null) return;
-    // Cancel any residual timers from a previous completed poll
     if (reEvalPollRef.current) { clearInterval(reEvalPollRef.current); reEvalPollRef.current = null; }
     if (reEvalTimerRef.current) { clearTimeout(reEvalTimerRef.current); reEvalTimerRef.current = null; }
 
     setReEvalStatus("loading");
-    // Snapshot the IDs now — close over them in the poll callback so a future
-    // re-eval (if the guard ever misses) cannot overwrite what this poll tracks.
     const pollIds = Array.from(selectedRunIds);
     try {
       await reEvaluateRuns(project.id, pollIds);
       setReEvalStatus("done");
       setReEvalProgress({ total: pollIds.length, done: 0, failed: 0 });
+      startEvalPoll(pollIds);
+    } catch {
+      setReEvalStatus("error");
+      reEvalTimerRef.current = setTimeout(() => setReEvalStatus("idle"), 4000);
+    }
+  }
 
-      // Poll every 3 s to track evaluation progress.
-      // Scale ceiling with batch size: at least 10 min, +30 s per run, hard cap 30 min.
-      let pollCount = 0;
-      const MAX_POLLS = Math.min(600, Math.max(200, pollIds.length * 10));
-      const TERMINAL = new Set(["COMPLETE", "FAILED", "ERROR"]);
-      reEvalPollRef.current = setInterval(async () => {
-        pollCount++;
-        try {
-          const runs = await getRunsByIds(project.id, pollIds); // closed-over, never mutated
-          const done = runs.filter((r: any) => TERMINAL.has(r.status)).length;
-          const failed = runs.filter((r: any) => r.status === "FAILED" || r.status === "ERROR").length;
-          setReEvalProgress({ total: pollIds.length, done, failed });
+  async function handleRehydrateSelected() {
+    if (selectedRunIds.size === 0 || reEvalStatus === "loading" || reEvalProgress !== null) return;
+    if (reEvalPollRef.current) { clearInterval(reEvalPollRef.current); reEvalPollRef.current = null; }
+    if (reEvalTimerRef.current) { clearTimeout(reEvalTimerRef.current); reEvalTimerRef.current = null; }
 
-          if (done >= pollIds.length || pollCount >= MAX_POLLS) {
-            clearInterval(reEvalPollRef.current!);
-            reEvalPollRef.current = null;
-            // Refresh dashboard aggregates so Objective column reflects the new eval results
-            getProjectDashboard(project.id, dateFilter)
-              .then((data: DashData) => {
-                setDashData(data);
-                onDashLoadedRef.current?.({ totalRuns: data.totalRuns, totalEvalCost: data.totalEvalCost ?? 0, totalFailed: data.totalFailed ?? 0 });
-              })
-              .catch(() => { /* non-critical — table still works via fallback */ });
-            // Keep progress visible briefly then auto-dismiss
-            reEvalTimerRef.current = setTimeout(() => {
-              setReEvalProgress(null);
-              setReEvalStatus("idle");
-            }, 5000);
-          }
-        } catch { /* skip failed poll, retry next tick */ }
-      }, 3000);
+    setReEvalStatus("loading");
+    const submittedIds = Array.from(selectedRunIds);
+    try {
+      // Backend returns immediately after claiming runs; Hamsa fetches happen
+      // in the background. Only poll runs the backend actually accepted —
+      // skipped runs (no Hamsa IDs, mid-flight, or wrong project) won't change
+      // status, so polling them would never terminate.
+      const result = await rehydrateRuns(project.id, submittedIds);
+      const pollIds = result.acceptedRunIds;
+      if (pollIds.length === 0) {
+        setReEvalStatus("done");
+        reEvalTimerRef.current = setTimeout(() => setReEvalStatus("idle"), 4000);
+        return;
+      }
+      setReEvalStatus("done");
+      setReEvalProgress({ total: pollIds.length, done: 0, failed: 0 });
+      startEvalPoll(pollIds);
     } catch {
       setReEvalStatus("error");
       reEvalTimerRef.current = setTimeout(() => setReEvalStatus("idle"), 4000);
@@ -2094,6 +2119,20 @@ export default function ProjectDashboard({ project, onDashLoaded, onLoadMore, ha
                 style={{ background: "none", border: "none", fontSize: 12, color: "#6b7280", cursor: "pointer", padding: "3px 8px" }}
               >
                 Clear
+              </button>
+              <button
+                onClick={handleRehydrateSelected}
+                disabled={reEvalStatus === "loading" || reEvalProgress !== null}
+                title="Re-fetch fresh transcript and call log from Hamsa, then re-evaluate. Slower than Re-evaluate but uses the latest data from Hamsa."
+                style={{
+                  padding: "5px 14px", borderRadius: 5,
+                  border: "1px solid #1d4ed8", background: "transparent",
+                  color: "#1d4ed8", fontWeight: 600, fontSize: 12,
+                  cursor: (reEvalStatus === "loading" || reEvalProgress !== null) ? "default" : "pointer",
+                  opacity: (reEvalStatus === "loading" || reEvalProgress !== null) ? 0.6 : 1,
+                }}
+              >
+                Rehydrate selected
               </button>
               <button
                 onClick={handleReEvaluateSelected}

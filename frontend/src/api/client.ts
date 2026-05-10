@@ -332,6 +332,18 @@ export function reEvaluateRuns(projectId: string, runIds: string[]) {
   });
 }
 
+export function rehydrateRuns(projectId: string, runIds: string[]) {
+  return request<{
+    ok: boolean;
+    acceptedRunIds: string[];
+    skippedNoIdsCount: number;
+    notFoundCount: number;
+  }>(`/projects/${projectId}/rehydrate-runs`, {
+    method: "POST",
+    body: JSON.stringify({ runIds }),
+  });
+}
+
 export function reEvaluateFailedProject(projectId: string) {
   return request<{ ok: boolean; resetCount: number }>(`/projects/${projectId}/re-evaluate-failed`, { method: "POST" });
 }
