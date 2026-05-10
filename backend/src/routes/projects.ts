@@ -1,4 +1,5 @@
 import prisma from "../lib/prisma";
+import crypto from "crypto";
 import { Router } from "express";
 import { CriterionType, Prisma } from "@prisma/client";
 import { z } from "zod";
@@ -2151,6 +2152,89 @@ router.post("/:id/prompt-audit/apply", async (req: AuthRequest, res) => {
     console.error("[PromptAudit] Apply failed:", err);
     res.status(500).json({ error: (err as Error).message });
   }
+});
+
+// ─── MCP Access Tokens ───────────────────────────────────────────────
+// Per-project API tokens used by the MCP server to scope all read/write
+// operations to a single project. The raw token is shown ONCE on generation;
+// only its SHA-256 hash is persisted, and lookups in the MCP auth middleware
+// re-hash the incoming token to match.
+
+function hashMcpToken(raw: string): string {
+  return crypto.createHash("sha256").update(raw).digest("hex");
+}
+
+/**
+ * GET /api/projects/:id/mcp-token
+ * Returns whether this project has an active MCP token, but never the token itself.
+ */
+router.get("/:id/mcp-token", async (req: AuthRequest, res) => {
+  const project = await prisma.project.findUnique({
+    where: { id: req.params.id },
+    select: { userId: true, mcpTokenCreatedAt: true, mcpTokenHash: true },
+  });
+  if (!project) return res.status(404).json({ error: "Project not found" });
+  if (!await canAccess(project.userId, req)) return res.status(403).json({ error: "Access denied" });
+
+  res.json({
+    hasToken: !!project.mcpTokenHash,
+    createdAt: project.mcpTokenCreatedAt,
+  });
+});
+
+/**
+ * POST /api/projects/:id/mcp-token
+ * Generate a new MCP token. Replaces any existing token (rotation).
+ * The raw token is returned ONCE in the response — there is no way to retrieve
+ * it later. Clients must copy it immediately.
+ *
+ * Token format: mcp_proj_<32-byte base64url>
+ */
+router.post("/:id/mcp-token", async (req: AuthRequest, res) => {
+  const project = await prisma.project.findUnique({
+    where: { id: req.params.id },
+    select: { userId: true },
+  });
+  if (!project) return res.status(404).json({ error: "Project not found" });
+  if (!await canAccess(project.userId, req)) return res.status(403).json({ error: "Access denied" });
+
+  // 32 bytes = 256 bits of entropy; base64url-encoded for URL/header safety.
+  // The "mcp_proj_" prefix lets us identify token type by inspection.
+  const raw = `mcp_proj_${crypto.randomBytes(32).toString("base64url")}`;
+  const hash = hashMcpToken(raw);
+  const now = new Date();
+
+  await prisma.project.update({
+    where: { id: req.params.id },
+    data: { mcpTokenHash: hash, mcpTokenCreatedAt: now },
+  });
+
+  audit(req, "project.mcp_token.generate", req.params.id, { rotated: true });
+  // The raw token is returned exactly once. Persisting only the hash means
+  // a DB leak does not expose tokens — attackers would need the original raw
+  // value (or have to brute-force SHA-256 over a 256-bit space).
+  res.json({ token: raw, createdAt: now });
+});
+
+/**
+ * DELETE /api/projects/:id/mcp-token
+ * Revoke the project's MCP token immediately. Idempotent.
+ */
+router.delete("/:id/mcp-token", async (req: AuthRequest, res) => {
+  const project = await prisma.project.findUnique({
+    where: { id: req.params.id },
+    select: { userId: true },
+  });
+  if (!project) return res.status(404).json({ error: "Project not found" });
+  if (!await canAccess(project.userId, req)) return res.status(403).json({ error: "Access denied" });
+
+  await prisma.project.update({
+    where: { id: req.params.id },
+    data: { mcpTokenHash: null, mcpTokenCreatedAt: null },
+  });
+
+  audit(req, "project.mcp_token.revoke", req.params.id, {});
+  res.json({ ok: true });
 });
 
 export default router;

@@ -348,6 +348,17 @@ export function reEvaluateFailedProject(projectId: string) {
   return request<{ ok: boolean; resetCount: number }>(`/projects/${projectId}/re-evaluate-failed`, { method: "POST" });
 }
 
+// ─── MCP Access Tokens ───────────────────────────────────────────────
+export function getMcpTokenStatus(projectId: string) {
+  return request<{ hasToken: boolean; createdAt: string | null }>(`/projects/${projectId}/mcp-token`);
+}
+export function generateMcpToken(projectId: string) {
+  return request<{ token: string; createdAt: string }>(`/projects/${projectId}/mcp-token`, { method: "POST" });
+}
+export function revokeMcpToken(projectId: string) {
+  return request<{ ok: boolean }>(`/projects/${projectId}/mcp-token`, { method: "DELETE" });
+}
+
 export function reEvaluateErrorsProject(projectId: string) {
   return request<{ ok: boolean; resetCount: number }>(`/projects/${projectId}/re-evaluate-errors`, { method: "POST" });
 }

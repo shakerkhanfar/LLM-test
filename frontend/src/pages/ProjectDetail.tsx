@@ -10,6 +10,7 @@ import {
 } from "../api/client";
 import CallAgent from "../components/CallAgent";
 import ProjectDashboard from "../components/ProjectDashboard";
+import McpAccessPanel from "../components/McpAccessPanel";
 import T from "../theme";
 
 const AVAILABLE_MODELS = [
@@ -99,6 +100,7 @@ export default function ProjectDetail() {
   const [showUpload, setShowUpload] = useState<string | null>(null);
   const [callingRunId, setCallingRunId] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<"dashboard" | "evaluation" | "outcomes">("dashboard");
+  const [showMcpPanel, setShowMcpPanel] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const [channelFilter, setChannelFilter] = useState<string | null>(null);
 
@@ -369,6 +371,18 @@ export default function ProjectDetail() {
             {agentStruct.voice?.lang && <span>Lang: {agentStruct.voice.lang}</span>}
             {agentStruct.llm?.model && <span>LLM: {agentStruct.llm.model}</span>}
             <RefreshAgentButton projectId={project.id} onSuccess={load} />
+            <button
+              onClick={() => setShowMcpPanel(v => !v)}
+              style={{ marginLeft: "auto", background: "none", border: `1px solid ${T.border}`, padding: "3px 10px", borderRadius: 4, fontSize: 11, color: T.textSecondary, cursor: "pointer" }}
+              title="Generate an MCP access token to plug an AI agent into this project"
+            >
+              {showMcpPanel ? "Hide MCP access" : "MCP access"}
+            </button>
+          </div>
+        )}
+        {showMcpPanel && (
+          <div style={{ marginTop: 12 }}>
+            <McpAccessPanel projectId={project.id} />
           </div>
         )}
       </div>
