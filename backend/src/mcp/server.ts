@@ -46,6 +46,9 @@ import {
   searchRunsTool,
 } from "./tools/_read/runs";
 import { getAgentStructureTool, getNodePromptTool } from "./tools/_read/agentStructure";
+import { applyNodePromptFixTool } from "./tools/_write/applyNodePromptFix";
+import { reevaluateRunTool } from "./tools/_write/reevaluateRun";
+import { rehydrateRunTool } from "./tools/_write/rehydrateRun";
 
 if (process.env.MCP_ALLOW_QUERY_TOKEN === "true") {
   console.warn(
@@ -77,6 +80,10 @@ const ALL_TOOLS: AnyTool[] = [
   // Tier 4 — agent structure
   getAgentStructureTool,
   getNodePromptTool,
+  // Tier 5 — write (only available with read_write scope; see registry filter)
+  applyNodePromptFixTool,
+  reevaluateRunTool,
+  rehydrateRunTool,
 ];
 
 const SERVER_NAME = "hamsa-eval-mcp";

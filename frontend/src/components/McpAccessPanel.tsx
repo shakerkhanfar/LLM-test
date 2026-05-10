@@ -26,7 +26,7 @@ export default function McpAccessPanel({ projectId }: Props) {
 
   // Form state for issuing a new token
   const [newName, setNewName] = useState("");
-  const [newScope] = useState<"read" | "read_write">("read"); // write is not yet enabled server-side; UI hides this for now
+  const [newScope, setNewScope] = useState<"read" | "read_write">("read");
   const [newTtlDays, setNewTtlDays] = useState<number | null>(365);
 
   // Reveal modal — token shown exactly once
@@ -116,39 +116,61 @@ export default function McpAccessPanel({ projectId }: Props) {
       {/* Issue new token */}
       <div style={{
         background: T.cardAlt, padding: 12, borderRadius: 6,
-        display: "flex", gap: 8, alignItems: "flex-end", flexWrap: "wrap",
+        display: "flex", flexDirection: "column", gap: 10,
       }}>
-        <div style={{ flex: "1 1 200px", minWidth: 0 }}>
-          <label style={lbl}>Name (optional)</label>
-          <input
-            type="text"
-            value={newName}
-            onChange={(e) => setNewName(e.target.value.slice(0, 80))}
-            placeholder="e.g. Claude Desktop — laptop"
+        <div style={{ display: "flex", gap: 8, alignItems: "flex-end", flexWrap: "wrap" }}>
+          <div style={{ flex: "1 1 200px", minWidth: 0 }}>
+            <label style={lbl}>Name (optional)</label>
+            <input
+              type="text"
+              value={newName}
+              onChange={(e) => setNewName(e.target.value.slice(0, 80))}
+              placeholder="e.g. Claude Desktop — laptop"
+              disabled={busy}
+              style={input}
+            />
+          </div>
+          <div>
+            <label style={lbl}>Expires</label>
+            <select
+              value={newTtlDays === null ? "never" : String(newTtlDays)}
+              onChange={(e) => setNewTtlDays(e.target.value === "never" ? null : Number(e.target.value))}
+              disabled={busy}
+              style={input}
+            >
+              {TTL_OPTIONS.map(opt => (
+                <option key={opt.label} value={opt.days === null ? "never" : opt.days}>{opt.label}</option>
+              ))}
+            </select>
+          </div>
+          <div>
+            <label style={lbl}>Scope</label>
+            <select
+              value={newScope}
+              onChange={(e) => setNewScope(e.target.value as "read" | "read_write")}
+              disabled={busy}
+              style={input}
+            >
+              <option value="read">Read only</option>
+              <option value="read_write">Read + write</option>
+            </select>
+          </div>
+          <button
+            onClick={handleIssue}
             disabled={busy}
-            style={input}
-          />
-        </div>
-        <div>
-          <label style={lbl}>Expires</label>
-          <select
-            value={newTtlDays === null ? "never" : String(newTtlDays)}
-            onChange={(e) => setNewTtlDays(e.target.value === "never" ? null : Number(e.target.value))}
-            disabled={busy}
-            style={input}
+            style={{ ...primaryBtn, opacity: busy ? 0.6 : 1 }}
           >
-            {TTL_OPTIONS.map(opt => (
-              <option key={opt.label} value={opt.days === null ? "never" : opt.days}>{opt.label}</option>
-            ))}
-          </select>
+            {busy ? "Generating…" : "Issue token"}
+          </button>
         </div>
-        <button
-          onClick={handleIssue}
-          disabled={busy}
-          style={{ ...primaryBtn, opacity: busy ? 0.6 : 1 }}
-        >
-          {busy ? "Generating…" : "Issue token"}
-        </button>
+        {newScope === "read_write" && (
+          <div style={{
+            fontSize: 11, color: "#92400e", background: "#fef3c7",
+            border: "1px solid #fbbf24", borderRadius: 4, padding: "6px 10px",
+          }}>
+            <strong>⚠ Write access:</strong> agents using this token can rewrite workflow node prompts on the live Hamsa agent and trigger paid re-evaluations. Each write requires the agent to pass <code>confirm: true</code> and a written reason, both audit-logged. Issue write tokens only to trusted agents you can monitor.
+          </div>
+        )}
       </div>
 
       {/* Reveal box — single-shot copy UX */}
