@@ -142,6 +142,7 @@ export async function authenticateToken(raw: string): Promise<{
   tokenId: string;
   projectId: string;
   scope: string;
+  name: string | null;
 } | null> {
   if (typeof raw !== "string" || raw.length < TOKEN_PREFIX.length || !raw.startsWith(TOKEN_PREFIX)) {
     return null;
@@ -153,6 +154,7 @@ export async function authenticateToken(raw: string): Promise<{
       id: true,
       projectId: true,
       scope: true,
+      name: true,
       revokedAt: true,
       expiresAt: true,
       tokenHash: true,
@@ -166,7 +168,7 @@ export async function authenticateToken(raw: string): Promise<{
   if (row.revokedAt !== null) return null;
   if (row.expiresAt !== null && row.expiresAt.getTime() < Date.now()) return null;
   if (!row.projectId) return null; // org-scoped tokens not yet supported by callers
-  return { tokenId: row.id, projectId: row.projectId, scope: row.scope };
+  return { tokenId: row.id, projectId: row.projectId, scope: row.scope, name: row.name };
 }
 
 // In-memory debounce for lastUsedAt updates. Map token id → last write time.

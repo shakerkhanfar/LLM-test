@@ -17,6 +17,7 @@ import webhooksRouter from "./routes/webhooks";
 import historyRouter from "./routes/history";
 import authRouter from "./routes/auth";
 import usersRouter from "./routes/users";
+import mcpRouter from "./mcp/server";
 import { requireAuth } from "./middleware/auth";
 import { requestIdMiddleware } from "./middleware/requestId";
 import { errorHandler } from "./middleware/errorHandler";
@@ -44,12 +45,17 @@ app.use(cors({
 }));
 
 // ── Body parsing ──────────────────────────────────────────────────
+// MCP requests are tiny (kilobytes). Mount a stricter parser for /api/mcp
+// BEFORE the global 200mb parser so MCP doesn't share that ceiling.
+app.use("/api/mcp", express.json({ limit: "1mb" }));
 app.use(express.json({ limit: "200mb" }));   // project bundles can be large
 
 // ── Routes ───────────────────────────────────────────────────────
 app.use("/api/auth", authRouter);
 // Webhooks: no user auth but rate-limited per IP
 app.use("/api/webhooks", webhookRateLimit, webhooksRouter);
+// MCP server: token-authenticated (NOT JWT) — see backend/src/mcp/auth.ts
+app.use("/api/mcp", mcpRouter);
 // All other routes require a valid JWT
 app.use("/api/projects", requireAuth, projectsRouter);
 app.use("/api/runs", requireAuth, runsRouter);

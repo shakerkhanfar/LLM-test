@@ -71,3 +71,22 @@ export const webhookRateLimit = rateLimit({
   message: { error: "Webhook rate limit exceeded" },
   skip: () => process.env.NODE_ENV === "test",
 });
+
+/**
+ * MCP endpoint pre-auth rate limit: 60 requests per IP per minute.
+ * Cheap defence against brute-force token guessing — primary defense is the
+ * 256-bit token entropy, but limiting prevents observable DB load.
+ *
+ * Post-auth rate limiting (per-token) happens inside the MCP router itself,
+ * because rateLimit middleware can't see req.mcp.tokenId until auth runs.
+ */
+export const mcpPreAuthRateLimit = rateLimit({
+  windowMs: 60 * 1000,
+  max: 60,
+  keyGenerator: (req) => normalizeIp(req.ip),
+  standardHeaders: true,
+  legacyHeaders: false,
+  validate: noIpv6Warn,
+  message: { error: "Too many MCP requests" },
+  skip: () => process.env.NODE_ENV === "test",
+});

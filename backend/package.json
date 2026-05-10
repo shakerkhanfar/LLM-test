@@ -15,6 +15,7 @@
     "seed": "tsx prisma/seed.ts"
   },
   "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
     "@prisma/client": "^6.5.0",
     "@types/xlsx": "^0.0.35",
     "bcryptjs": "^3.0.3",
