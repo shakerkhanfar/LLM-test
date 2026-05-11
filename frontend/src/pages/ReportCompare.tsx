@@ -229,6 +229,103 @@ function SidePicker(props: {
 
 // ─── Comparison result ───────────────────────────────────────────────────────
 
+// CSV-quote a value: wrap in quotes and escape internal quotes.
+function csvQuote(v: any): string {
+  if (v == null) return "";
+  const s = typeof v === "string" ? v : String(v);
+  return `"${s.replace(/"/g, '""')}"`;
+}
+
+function downloadCsv(filename: string, rows: any[][]) {
+  const body = rows.map(r => r.map(csvQuote).join(",")).join("\n");
+  // BOM so Excel opens UTF-8 correctly (Arabic text in reasons / issues).
+  const blob = new Blob(["﻿" + body], { type: "text/csv;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
+function exportComparisonCsv(report: any) {
+  const leftName  = report.left?.projectName  ?? "A";
+  const rightName = report.right?.projectName ?? "B";
+  const lk = report.left?.kpis  ?? {};
+  const rk = report.right?.kpis ?? {};
+  const d  = report.deltas      ?? {};
+  const lf = report.left?.objectiveFailures  ?? { totalNotAchieved: 0, reasonGroups: [], failures: [] };
+  const rf = report.right?.objectiveFailures ?? { totalNotAchieved: 0, reasonGroups: [], failures: [] };
+
+  const rows: any[][] = [];
+  rows.push(["Comparison report"]);
+  rows.push(["Generated", new Date().toISOString()]);
+  rows.push(["A — project",  leftName,  "from", report.left?.window?.from  ?? "", "to", report.left?.window?.to  ?? ""]);
+  rows.push(["B — project",  rightName, "from", report.right?.window?.from ?? "", "to", report.right?.window?.to ?? ""]);
+  rows.push([]);
+  rows.push(["KPI", `A — ${leftName}`, `B — ${rightName}`, "Δ (B − A)"]);
+  const kpiRows: Array<[string, any, any, any]> = [
+    ["Total runs",            lk.totalRuns,             rk.totalRuns,             d.totalRuns],
+    ["Success rate (%)",      lk.successRate,           rk.successRate,           d.successRate],
+    ["Drop-off rate (%)",     lk.dropOffRate,           rk.dropOffRate,           d.dropOffRate],
+    ["Escalation rate (%)",   lk.escalationRate,        rk.escalationRate,        d.escalationRate],
+    ["Avg quality score (%)", lk.avgQualityScore,       rk.avgQualityScore,       d.avgQualityScore],
+    ["Overall pass rate (%)", lk.overallPassRate,       rk.overallPassRate,       d.overallPassRate],
+    ["Objective achieved (%)",lk.objectiveAchievedRate, rk.objectiveAchievedRate, d.objectiveAchievedRate],
+    ["Avg duration (s)",      lk.avgDurationSec,        rk.avgDurationSec,        d.avgDurationSec],
+    ["Avg turns/call",        lk.avgTurnsPerCall,       rk.avgTurnsPerCall,       d.avgTurnsPerCall],
+  ];
+  for (const r of kpiRows) rows.push(r);
+
+  rows.push([]);
+  rows.push(["Issues"]);
+  rows.push(["Bucket", "Status", "Source", "Severity", "Node", "Issue text", "Count A", "Count B", "A Run IDs", "B Run IDs"]);
+  const sections: Array<[string, any[]]> = [
+    ["Only on A", report.issueComparison?.onlyOnLeft  ?? []],
+    ["Only on B", report.issueComparison?.onlyOnRight ?? []],
+    ["Shared",    report.issueComparison?.shared      ?? []],
+  ];
+  for (const [bucket, items] of sections) {
+    for (const it of items as any[]) {
+      rows.push([
+        bucket,
+        it.status,
+        it.source,
+        it.severity ?? "",
+        it.nodeLabel ?? "",
+        it.text,
+        it.leftCount,
+        it.rightCount,
+        (it.leftOccurrences ?? []).map((o: any) => o.runId).join(";"),
+        (it.rightOccurrences ?? []).map((o: any) => o.runId).join(";"),
+      ]);
+    }
+  }
+
+  rows.push([]);
+  rows.push(["Objective NOT achieved — summary"]);
+  rows.push(["", `A — ${leftName}`, `B — ${rightName}`]);
+  rows.push(["Total evaluated",     lf.totalEvaluated,    rf.totalEvaluated]);
+  rows.push(["Total not achieved",  lf.totalNotAchieved,  rf.totalNotAchieved]);
+
+  rows.push([]);
+  rows.push(["Objective NOT achieved — reason groups"]);
+  rows.push(["Side", "Reason", "Count", "Run IDs"]);
+  for (const g of (lf.reasonGroups ?? [])) rows.push(["A", g.reason, g.count, (g.runIds ?? []).join(";")]);
+  for (const g of (rf.reasonGroups ?? [])) rows.push(["B", g.reason, g.count, (g.runIds ?? []).join(";")]);
+
+  rows.push([]);
+  rows.push(["Objective NOT achieved — per-call detail"]);
+  rows.push(["Side", "Run ID", "Conversation ID", "Call Date", "Outcome", "Reason source", "Reason"]);
+  for (const f of (lf.failures ?? [])) rows.push(["A", f.runId, f.conversationId ?? "", f.callDate ?? "", f.callOutcome ?? "", f.reasonSource, f.reason]);
+  for (const f of (rf.failures ?? [])) rows.push(["B", f.runId, f.conversationId ?? "", f.callDate ?? "", f.callOutcome ?? "", f.reasonSource, f.reason]);
+
+  const fname = `comparison_${leftName.replace(/\W+/g, "_")}_vs_${rightName.replace(/\W+/g, "_")}_${new Date().toISOString().slice(0,10)}.csv`;
+  downloadCsv(fname, rows);
+}
+
 function ComparisonResult({ report }: { report: any }) {
   const leftName  = report.left?.projectName  ?? "Left";
   const rightName = report.right?.projectName ?? "Right";
@@ -238,7 +335,18 @@ function ComparisonResult({ report }: { report: any }) {
 
   return (
     <div style={{ marginTop: 28 }}>
-      <h2 style={{ fontSize: 18, marginBottom: 12 }}>KPIs</h2>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12 }}>
+        <h2 style={{ fontSize: 18, margin: 0 }}>KPIs</h2>
+        <button
+          onClick={() => exportComparisonCsv(report)}
+          style={{
+            fontSize: 12, padding: "6px 12px", background: T.card,
+            border: `1px solid ${T.border}`, color: T.text, borderRadius: 6, cursor: "pointer",
+          }}
+        >
+          ⬇ Export CSV
+        </button>
+      </div>
       <div style={{ background: T.card, border: `1px solid ${T.border}`, borderRadius: 8, overflow: "hidden" }}>
         <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
           <thead>
@@ -254,12 +362,32 @@ function ComparisonResult({ report }: { report: any }) {
             {kpiRow("Success rate",          lk.successRate,           rk.successRate,           d.successRate, false, formatPct)}
             {kpiRow("Drop-off rate",         lk.dropOffRate,           rk.dropOffRate,           d.dropOffRate, true,  formatPct)}
             {kpiRow("Escalation rate",       lk.escalationRate,        rk.escalationRate,        d.escalationRate, true, formatPct)}
+            {kpiRow("Avg quality score",     lk.avgQualityScore,       rk.avgQualityScore,       d.avgQualityScore, false, formatPct)}
             {kpiRow("Overall pass rate",     lk.overallPassRate,       rk.overallPassRate,       d.overallPassRate, false, formatPct)}
             {kpiRow("Objective achieved",    lk.objectiveAchievedRate, rk.objectiveAchievedRate, d.objectiveAchievedRate, false, formatPct)}
             {kpiRow("Avg duration",          lk.avgDurationSec,        rk.avgDurationSec,        d.avgDurationSec, true,  formatDur)}
             {kpiRow("Avg turns/call",        lk.avgTurnsPerCall,       rk.avgTurnsPerCall,       d.avgTurnsPerCall, true,  (v: any) => v == null ? "—" : String(v))}
           </tbody>
         </table>
+      </div>
+
+      <h2 style={{ fontSize: 18, margin: "28px 0 12px" }}>
+        Objective not achieved
+        <span style={{ fontSize: 12, color: T.textMuted, fontWeight: 400, marginLeft: 8 }}>
+          (per side, with reasons)
+        </span>
+      </h2>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, marginBottom: 24 }}>
+        <ObjectiveFailuresPanel
+          label={`A — ${leftName}`}
+          summary={report.left?.objectiveFailures}
+          projectId={report.left?.window?.projectId}
+        />
+        <ObjectiveFailuresPanel
+          label={`B — ${rightName}`}
+          summary={report.right?.objectiveFailures}
+          projectId={report.right?.window?.projectId}
+        />
       </div>
 
       <h2 style={{ fontSize: 18, margin: "28px 0 12px" }}>
@@ -458,6 +586,94 @@ function OccList({ label, projectId, occurrences }: { label: string; projectId: 
           </Link>
         ))}
       </div>
+    </div>
+  );
+}
+
+function ObjectiveFailuresPanel({
+  label, summary, projectId,
+}: {
+  label: string;
+  summary: any;
+  projectId: string;
+}) {
+  const [showAll, setShowAll] = useState(false);
+
+  if (!summary) return <div style={{ background: T.card, border: `1px solid ${T.border}`, borderRadius: 8, padding: 14, fontSize: 12, color: T.textMuted }}>No data.</div>;
+
+  const total = summary.totalNotAchieved ?? 0;
+  const evaluated = summary.totalEvaluated ?? 0;
+  const reasonGroups: Array<{ reason: string; count: number; runIds: string[] }> = summary.reasonGroups ?? [];
+  const failures: Array<{ runId: string; conversationId: string | null; callDate: string | null; reason: string; reasonSource: string }> = summary.failures ?? [];
+
+  const failurePct = evaluated > 0 ? ((total / evaluated) * 100).toFixed(1) : null;
+  const visibleGroups = showAll ? reasonGroups : reasonGroups.slice(0, 5);
+
+  return (
+    <div style={{ background: T.card, border: `1px solid ${T.border}`, borderRadius: 8, padding: 14 }}>
+      <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: 0.5, textTransform: "uppercase", color: T.textMuted, marginBottom: 8 }}>
+        {label}
+      </div>
+      <div style={{ display: "flex", alignItems: "baseline", gap: 12, marginBottom: 12 }}>
+        <div style={{ fontSize: 28, fontWeight: 700, color: total > 0 ? "#ef4444" : "#22c55e" }}>{total}</div>
+        <div style={{ fontSize: 12, color: T.textSecondary }}>
+          out of {evaluated} evaluated{failurePct != null && <> · <strong>{failurePct}%</strong> failure rate</>}
+        </div>
+      </div>
+
+      {reasonGroups.length === 0 ? (
+        <div style={{ fontSize: 12, color: T.textMuted }}>No objective failures recorded.</div>
+      ) : (
+        <>
+          <div style={{ fontSize: 11, fontWeight: 600, color: T.textSecondary, marginBottom: 6 }}>Top reasons</div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+            {visibleGroups.map((g, i) => (
+              <div key={i} style={{ padding: "8px 10px", background: T.cardAlt, borderRadius: 6, fontSize: 12 }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 8 }}>
+                  <div style={{ flex: 1 }}>{g.reason.length > 200 ? `${g.reason.slice(0, 200)}…` : g.reason}</div>
+                  <strong style={{ color: T.text, whiteSpace: "nowrap" }}>{g.count}</strong>
+                </div>
+                <div style={{ marginTop: 6, display: "flex", flexWrap: "wrap", gap: 4 }}>
+                  {g.runIds.slice(0, 12).map(rid => (
+                    <Link
+                      key={rid}
+                      to={`/projects/${projectId}/runs/${rid}`}
+                      style={{
+                        fontSize: 10, padding: "2px 6px", borderRadius: 3,
+                        background: T.input, color: T.link, border: `1px solid ${T.border}`,
+                        textDecoration: "none", fontFamily: "monospace",
+                      }}
+                    >
+                      {rid.slice(0, 8)}
+                    </Link>
+                  ))}
+                  {g.runIds.length > 12 && (
+                    <span style={{ fontSize: 10, color: T.textMuted, alignSelf: "center" }}>
+                      +{g.runIds.length - 12} more
+                    </span>
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
+          {reasonGroups.length > 5 && (
+            <button
+              onClick={() => setShowAll(!showAll)}
+              style={{
+                marginTop: 8, fontSize: 11, padding: "4px 8px",
+                background: "none", border: "none", color: T.link, cursor: "pointer",
+              }}
+            >
+              {showAll ? "Show top 5" : `Show all ${reasonGroups.length} reasons`}
+            </button>
+          )}
+        </>
+      )}
+      {summary.failuresTruncated && (
+        <div style={{ fontSize: 10, color: T.textMuted, marginTop: 8 }}>
+          ({failures.length} of {total} per-call detail rows shown — capped for performance; CSV export has the full set)
+        </div>
+      )}
     </div>
   );
 }

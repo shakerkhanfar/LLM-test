@@ -78,6 +78,7 @@ export interface KpiSnapshot {
   dropOffRate: number;
   escalationRate: number;
   avgDurationSec: number | null;
+  avgQualityScore: number | null;     // % 0..100, AVG(Run.overallScore) * 100. Null when no scored runs.
   overallPassRate: number | null;     // %, runs with score >= 0.7 / scored runs
   overallPassRateScored: number;
   objectiveAchievedRate: number | null; // % of LAYERED runs where objectiveAchieved=true
@@ -113,6 +114,7 @@ export async function getKpisForRange(spec: WindowSpec): Promise<KpiSnapshot> {
     escalations: bigint;
     successes: bigint;
     avg_duration: number | null;
+    avg_score: number | null;
     scored: bigint;
     pass_score: bigint;
   }>>`
@@ -122,6 +124,7 @@ export async function getKpisForRange(spec: WindowSpec): Promise<KpiSnapshot> {
       SUM(CASE WHEN ${ESC_SQL}   THEN 1 ELSE 0 END)                 AS escalations,
       SUM(CASE WHEN ${SUCC_SQL}  THEN 1 ELSE 0 END)                 AS successes,
       AVG("callDuration")::double precision                          AS avg_duration,
+      AVG("overallScore")::double precision                          AS avg_score,
       COUNT(*) FILTER (WHERE "overallScore" IS NOT NULL)             AS scored,
       COUNT(*) FILTER (WHERE "overallScore" >= 0.7)                  AS pass_score
     FROM "Run"
@@ -145,8 +148,8 @@ export async function getKpisForRange(spec: WindowSpec): Promise<KpiSnapshot> {
     WHERE r."projectId" = ${spec.projectId}
       AND r.status = 'COMPLETE'
       AND c.type   = 'LAYERED_EVALUATION'
-      ${fromFilter ? Prisma.sql`AND r."callDate" >= ${fromDate}` : Prisma.empty}
-      ${toFilter   ? Prisma.sql`AND r."callDate" <= ${toDate}`   : Prisma.empty}
+      ${fromDate ? Prisma.sql`AND r."callDate" >= ${fromDate}` : Prisma.empty}
+      ${toDate   ? Prisma.sql`AND r."callDate" <= ${toDate}`   : Prisma.empty}
   `.catch(() => [{ obj_total: 0n, obj_achieved: 0n }] as Array<{ obj_total: bigint; obj_achieved: bigint }>);
 
   // Avg turns per call.
@@ -169,12 +172,19 @@ export async function getKpisForRange(spec: WindowSpec): Promise<KpiSnapshot> {
   const totalTurns  = turns?.total_turns != null ? n(turns.total_turns) : 0;
   const turnRuns    = n(turns?.run_count);
 
+  // AVG(overallScore) is 0..1. We surface it as 0..100% to align with the
+  // existing "Quality Score" label on the run detail page (which is also *100).
+  const avgQualityScore = overall?.avg_score != null
+    ? parseFloat((Number(overall.avg_score) * 100).toFixed(1))
+    : null;
+
   return {
     totalRuns:             total,
     successRate:           pct(n(overall?.successes),  total),
     dropOffRate:           pct(n(overall?.dropoffs),   total),
     escalationRate:        pct(n(overall?.escalations), total),
     avgDurationSec:        overall?.avg_duration != null ? Math.round(Number(overall.avg_duration)) : null,
+    avgQualityScore,
     overallPassRate:       scored > 0 ? pct(passed, scored) : null,
     overallPassRateScored: scored,
     objectiveAchievedRate: objTotal > 0 ? pct(objAchieved, objTotal) : null,
@@ -212,7 +222,37 @@ export interface Issue {
   lastSeen: string | null;
 }
 
+/**
+ * One run where the agent's Layer 4 evaluator concluded the call did NOT
+ * achieve its objective. Each entry carries enough context for the UI to
+ * link straight to the run and show the reason inline.
+ */
+export interface ObjectiveFailure {
+  runId: string;
+  conversationId: string | null;
+  callDate: string | null;
+  callOutcome: string | null;
+  /** Best human-readable reason, derived from summary / first critical issue / experience issue. */
+  reason: string;
+  /** Source bucket of the reason — useful for filtering. */
+  reasonSource: "summary" | "criticalIssue" | "experienceIssue" | "unknown";
+}
+
+/**
+ * Aggregate over a window: how many calls failed to achieve their objective,
+ * and what reasons cluster across them.
+ */
+export interface ObjectiveFailureSummary {
+  totalEvaluated: number;       // total runs that had an objectiveAchieved value (true or false)
+  totalNotAchieved: number;     // runs with objectiveAchieved=false
+  failures: ObjectiveFailure[];           // capped at MAX_OBJECTIVE_FAILURES_LIST
+  failuresTruncated: boolean;
+  /** Grouped reasons (normalized) with run IDs per group. */
+  reasonGroups: Array<{ reason: string; count: number; runIds: string[] }>;
+}
+
 const MAX_OCCURRENCES_PER_ISSUE = 50;
+const MAX_OBJECTIVE_FAILURES_LIST = 200;
 
 // Normalize text for cross-side issue matching. Keeps content but strips
 // formatting noise so "Agent stuck on ID." and "Agent stuck on ID" map to
@@ -358,6 +398,112 @@ export async function getIssuesForRange(spec: WindowSpec): Promise<Issue[]> {
   return issues;
 }
 
+/**
+ * Walk LAYERED_EVALUATION details in the window, surface every call where
+ * `objectiveAchieved === false` along with the most informative human-readable
+ * reason we can extract. Groups identical reasons so the UI can show "this
+ * happened to N calls because X".
+ *
+ * Reason preference (in order):
+ *   1. The first `criticalIssues[]` entry — usually the proximate cause.
+ *   2. The first `experienceIssues[]` entry — typically a system-side limitation.
+ *   3. The top-level `summary` if neither array has content.
+ */
+export async function getObjectiveFailuresForRange(spec: WindowSpec): Promise<ObjectiveFailureSummary> {
+  const fromDate = isValidIsoDate(spec.from) ? new Date(spec.from + "T00:00:00Z") : null;
+  const toDate   = isValidIsoDate(spec.to)   ? new Date(spec.to   + "T23:59:59.999Z") : null;
+
+  const runs = await prisma.run.findMany({
+    where: {
+      projectId: spec.projectId,
+      status: "COMPLETE",
+      ...(fromDate || toDate
+        ? { callDate: { ...(fromDate ? { gte: fromDate } : {}), ...(toDate ? { lte: toDate } : {}) } }
+        : {}),
+    },
+    orderBy: { callDate: "desc" },
+    select: {
+      id: true,
+      conversationId: true,
+      callDate: true,
+      callOutcome: true,
+      evalResults: {
+        where: { criterion: { type: "LAYERED_EVALUATION" } },
+        select: { detail: true },
+      },
+    },
+  });
+
+  let totalEvaluated  = 0;
+  let totalNotAchieved = 0;
+  const failures: ObjectiveFailure[] = [];
+
+  function pickReason(parsed: any): { reason: string; source: ObjectiveFailure["reasonSource"] } {
+    const ci = Array.isArray(parsed.criticalIssues) ? parsed.criticalIssues : [];
+    for (const item of ci) {
+      const txt = typeof item === "string" ? item : (item && typeof item === "object" ? item.text : null);
+      if (typeof txt === "string" && txt.trim()) return { reason: txt.trim(), source: "criticalIssue" };
+    }
+    const ei = Array.isArray(parsed.experienceIssues) ? parsed.experienceIssues : [];
+    for (const item of ei) {
+      const txt = typeof item === "string" ? item : (item && typeof item === "object" ? item.text : null);
+      if (typeof txt === "string" && txt.trim()) return { reason: txt.trim(), source: "experienceIssue" };
+    }
+    if (typeof parsed.summary === "string" && parsed.summary.trim()) {
+      return { reason: parsed.summary.trim(), source: "summary" };
+    }
+    return { reason: "(no reason recorded by evaluator)", source: "unknown" };
+  }
+
+  for (const run of runs) {
+    const detailStr = run.evalResults[0]?.detail;
+    if (!detailStr) continue;
+    let parsed: any;
+    try { parsed = typeof detailStr === "string" ? JSON.parse(detailStr) : detailStr; } catch { continue; }
+    const oa = parsed?.objectiveAchieved;
+    // Only count runs where Layer 4 actually rendered a verdict (true/false).
+    // Null / undefined / "indeterminate" cases are not "failures".
+    const isTrue  = oa === true  || oa === "true"  || oa === 1 || oa === "yes";
+    const isFalse = oa === false || oa === "false" || oa === 0 || oa === "no";
+    if (!isTrue && !isFalse) continue;
+    totalEvaluated++;
+    if (isTrue) continue;
+    totalNotAchieved++;
+
+    if (failures.length < MAX_OBJECTIVE_FAILURES_LIST) {
+      const { reason, source } = pickReason(parsed);
+      failures.push({
+        runId: run.id,
+        conversationId: run.conversationId,
+        callDate: run.callDate?.toISOString() ?? null,
+        callOutcome: run.callOutcome,
+        reason: reason.slice(0, 400),
+        reasonSource: source,
+      });
+    }
+  }
+
+  // Group identical (normalized) reasons.
+  const groupMap = new Map<string, { reason: string; runIds: string[] }>();
+  for (const f of failures) {
+    const key = normalizeIssueKey(f.reason);
+    let g = groupMap.get(key);
+    if (!g) { g = { reason: f.reason, runIds: [] }; groupMap.set(key, g); }
+    g.runIds.push(f.runId);
+  }
+  const reasonGroups = [...groupMap.values()]
+    .map(g => ({ reason: g.reason, count: g.runIds.length, runIds: g.runIds }))
+    .sort((a, b) => b.count - a.count);
+
+  return {
+    totalEvaluated,
+    totalNotAchieved,
+    failures,
+    failuresTruncated: totalNotAchieved > failures.length,
+    reasonGroups,
+  };
+}
+
 // ── Compare two windows ──────────────────────────────────────────────────────
 
 export interface IssueComparisonEntry {
@@ -374,13 +520,14 @@ export interface IssueComparisonEntry {
 }
 
 export interface ComparisonReport {
-  left:  { window: WindowSpec; kpis: KpiSnapshot; issues: Issue[] };
-  right: { window: WindowSpec; kpis: KpiSnapshot; issues: Issue[] };
+  left:  { window: WindowSpec; kpis: KpiSnapshot; issues: Issue[]; objectiveFailures: ObjectiveFailureSummary };
+  right: { window: WindowSpec; kpis: KpiSnapshot; issues: Issue[]; objectiveFailures: ObjectiveFailureSummary };
   deltas: {
     /** absolute change (right - left), positive = increased on right */
     successRate: number | null;
     dropOffRate: number | null;
     escalationRate: number | null;
+    avgQualityScore: number | null;
     overallPassRate: number | null;
     objectiveAchievedRate: number | null;
     avgDurationSec: number | null;
@@ -413,11 +560,13 @@ export async function compareReports(
   left: WindowSpec,
   right: WindowSpec,
 ): Promise<ComparisonReport> {
-  const [leftKpis, rightKpis, leftIssues, rightIssues] = await Promise.all([
+  const [leftKpis, rightKpis, leftIssues, rightIssues, leftFailures, rightFailures] = await Promise.all([
     getKpisForRange(left),
     getKpisForRange(right),
     getIssuesForRange(left),
     getIssuesForRange(right),
+    getObjectiveFailuresForRange(left),
+    getObjectiveFailuresForRange(right),
   ]);
 
   // Diff issues by normalized key.
@@ -472,12 +621,13 @@ export async function compareReports(
     l == null || r == null ? null : round1(r - l);
 
   return {
-    left:  { window: left,  kpis: leftKpis,  issues: leftIssues },
-    right: { window: right, kpis: rightKpis, issues: rightIssues },
+    left:  { window: left,  kpis: leftKpis,  issues: leftIssues,  objectiveFailures: leftFailures  },
+    right: { window: right, kpis: rightKpis, issues: rightIssues, objectiveFailures: rightFailures },
     deltas: {
       successRate:           round1(rightKpis.successRate - leftKpis.successRate),
       dropOffRate:           round1(rightKpis.dropOffRate - leftKpis.dropOffRate),
       escalationRate:        round1(rightKpis.escalationRate - leftKpis.escalationRate),
+      avgQualityScore:       deltaNullable(leftKpis.avgQualityScore, rightKpis.avgQualityScore),
       overallPassRate:       deltaNullable(leftKpis.overallPassRate, rightKpis.overallPassRate),
       objectiveAchievedRate: deltaNullable(leftKpis.objectiveAchievedRate, rightKpis.objectiveAchievedRate),
       avgDurationSec:        deltaNullable(leftKpis.avgDurationSec, rightKpis.avgDurationSec),

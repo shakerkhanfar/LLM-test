@@ -6,7 +6,7 @@ import { getAgent } from "../services/hamsaApi";
 import { generateAgentSummary } from "../services/llmJudge";
 import { analyzeProject, compareAnalyses } from "../services/projectAnalyzer";
 import { getProjectReport, generateIntelligenceReport } from "../services/reportingService";
-import { compareReports } from "../services/reportComparison";
+import { compareReports, getObjectiveFailuresForRange } from "../services/reportComparison";
 import { searchRuns } from "../services/runSearch";
 import { runEvaluationCheck } from "../services/evaluationRunner";
 import { auditAgentPrompts } from "../services/promptAuditor";
@@ -1016,6 +1016,30 @@ router.post("/:id/report/intelligence", llmRateLimit, async (req: AuthRequest, r
     }
     const statusCode = msg.startsWith("At least 3") ? 400 : 500;
     res.status(statusCode).json({ error: msg });
+  }
+});
+
+// ── Objective failures — breakdown of runs where Layer 4 said objective was
+// not achieved, with the reasons clustered. Used by the project dashboard
+// (and reused by the comparison endpoint for both sides).
+// GET /:id/objective-failures?from=YYYY-MM-DD&to=YYYY-MM-DD
+router.get("/:id/objective-failures", async (req: AuthRequest, res) => {
+  try {
+    const project = await prisma.project.findUnique({
+      where: { id: req.params.id },
+      select: { userId: true },
+    });
+    if (!project) return res.status(404).json({ error: "Project not found" });
+    if (!await canAccess(project.userId ?? null, req)) {
+      return res.status(403).json({ error: "Access denied" });
+    }
+
+    const { from, to } = req.query as { from?: string; to?: string };
+    const summary = await getObjectiveFailuresForRange({ projectId: req.params.id, from, to });
+    res.json(summary);
+  } catch (err) {
+    console.error("[Report] objective-failures error:", (err as Error).message);
+    res.status(500).json({ error: (err as Error).message });
   }
 });
 

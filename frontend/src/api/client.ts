@@ -481,6 +481,27 @@ export function generateIntelligenceReport(
   });
 }
 
+export function getObjectiveFailures(projectId: string, range?: { from?: string; to?: string }) {
+  const qs = new URLSearchParams();
+  if (range?.from) qs.set("from", range.from);
+  if (range?.to)   qs.set("to",   range.to);
+  const suffix = qs.toString() ? `?${qs.toString()}` : "";
+  return request<{
+    totalEvaluated: number;
+    totalNotAchieved: number;
+    failures: Array<{
+      runId: string;
+      conversationId: string | null;
+      callDate: string | null;
+      callOutcome: string | null;
+      reason: string;
+      reasonSource: "summary" | "criticalIssue" | "experienceIssue" | "unknown";
+    }>;
+    failuresTruncated: boolean;
+    reasonGroups: Array<{ reason: string; count: number; runIds: string[] }>;
+  }>(`/projects/${projectId}/objective-failures${suffix}`);
+}
+
 // ─── Comparison reports ───────────────────────────────────────────
 
 export interface ComparisonWindow {

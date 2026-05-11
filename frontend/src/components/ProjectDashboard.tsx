@@ -3,7 +3,8 @@ import {
   LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer,
   PieChart, Pie, Cell, BarChart, Bar,
 } from "recharts";
-import { getProjectDashboard, getRunsByIds, reEvaluateRuns, rehydrateRuns } from "../api/client";
+import { getProjectDashboard, getRunsByIds, reEvaluateRuns, rehydrateRuns, getObjectiveFailures } from "../api/client";
+import { Link as RouterLink } from "react-router-dom";
 import T from "../theme";
 
 interface DashData {
@@ -188,6 +189,21 @@ export default function ProjectDashboard({ project, onDashLoaded, onLoadMore, ha
   const [issuesModalSearch, setIssuesModalSearch] = useState("");
   const [issuesModalExpanded, setIssuesModalExpanded] = useState<number | null>(null);
   const [issuesModalTab, setIssuesModalTab] = useState<"common" | "all">("common");
+
+  // Objective-failures panel data (lazy-loaded; small payload, cached per project).
+  const [objFailures, setObjFailures] = useState<any>(null);
+  const [objFailuresLoading, setObjFailuresLoading] = useState(false);
+  const [objFailuresExpanded, setObjFailuresExpanded] = useState(false);
+  useEffect(() => {
+    let cancelled = false;
+    setObjFailures(null);
+    setObjFailuresLoading(true);
+    getObjectiveFailures(project.id)
+      .then((d) => { if (!cancelled) setObjFailures(d); })
+      .catch(() => { if (!cancelled) setObjFailures(null); })
+      .finally(() => { if (!cancelled) setObjFailuresLoading(false); });
+    return () => { cancelled = true; };
+  }, [project.id]);
 
   // Close issues modal on ESC + lock body scroll while open
   useEffect(() => {
@@ -1624,6 +1640,91 @@ export default function ProjectDashboard({ project, onDashLoaded, onLoadMore, ha
           )}
         </div>
       </div>
+
+      {/* Objective Not Achieved — breakdown of Layer 4 failures with reasons */}
+      {(() => {
+        if (objFailuresLoading) {
+          return (
+            <div style={CARD_STYLE}>
+              <div style={SECTION_LABEL_STYLE}>Objective Not Achieved</div>
+              <div style={{ color: T.textMuted, fontSize: 12 }}>Loading…</div>
+            </div>
+          );
+        }
+        if (!objFailures || objFailures.totalEvaluated === 0) return null;
+        const total = objFailures.totalNotAchieved ?? 0;
+        const evaluated = objFailures.totalEvaluated ?? 0;
+        const pct = evaluated > 0 ? ((total / evaluated) * 100).toFixed(1) : "0";
+        const groups: Array<{ reason: string; count: number; runIds: string[] }> = objFailures.reasonGroups ?? [];
+        const visible = objFailuresExpanded ? groups : groups.slice(0, 5);
+        return (
+          <div style={CARD_STYLE}>
+            <div style={{ ...SECTION_LABEL_STYLE, display: "flex", alignItems: "center", marginBottom: 12 }}>
+              Objective Not Achieved
+              <InfoTip text="Calls where Layer 4 concluded the objective was not met, grouped by the reason cited (critical issue → experience issue → summary)." />
+            </div>
+            <div style={{ display: "flex", alignItems: "baseline", gap: 12, marginBottom: 12 }}>
+              <div style={{ fontSize: 32, fontWeight: 700, color: total > 0 ? "#ef4444" : "#22c55e" }}>{total}</div>
+              <div style={{ fontSize: 13, color: T.textSecondary }}>
+                out of {evaluated} evaluated · <strong>{pct}%</strong> failure rate
+              </div>
+            </div>
+            {groups.length === 0 ? (
+              <div style={{ fontSize: 12, color: T.textMuted }}>No objective failures recorded.</div>
+            ) : (
+              <>
+                <div style={{ fontSize: 11, fontWeight: 600, color: T.textSecondary, marginBottom: 6 }}>Top reasons</div>
+                <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                  {visible.map((g, i) => (
+                    <div key={i} style={{ padding: "10px 12px", background: T.cardAlt, borderRadius: 6, fontSize: 12 }}>
+                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 8 }}>
+                        <div style={{ flex: 1, lineHeight: 1.5 }}>
+                          {g.reason.length > 280 ? `${g.reason.slice(0, 280)}…` : g.reason}
+                        </div>
+                        <strong style={{ color: T.text, whiteSpace: "nowrap" }}>{g.count} call{g.count !== 1 ? "s" : ""}</strong>
+                      </div>
+                      <div style={{ marginTop: 6, display: "flex", flexWrap: "wrap", gap: 4 }}>
+                        {g.runIds.slice(0, 12).map(rid => (
+                          <RouterLink
+                            key={rid}
+                            to={`/projects/${project.id}/runs/${rid}`}
+                            style={{
+                              fontSize: 10, padding: "2px 6px", borderRadius: 3,
+                              background: T.input, color: T.link, border: `1px solid ${T.border}`,
+                              textDecoration: "none", fontFamily: "monospace",
+                            }}
+                          >
+                            {rid.slice(0, 8)}
+                          </RouterLink>
+                        ))}
+                        {g.runIds.length > 12 && (
+                          <span style={{ fontSize: 10, color: T.textMuted, alignSelf: "center" }}>+{g.runIds.length - 12} more</span>
+                        )}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+                {groups.length > 5 && (
+                  <button
+                    onClick={() => setObjFailuresExpanded(!objFailuresExpanded)}
+                    style={{
+                      marginTop: 8, padding: "4px 0", background: "none", border: "none",
+                      color: T.primary, fontSize: 12, cursor: "pointer", textAlign: "left", fontWeight: 500,
+                    }}
+                  >
+                    {objFailuresExpanded ? "Show top 5 ↑" : `Show all ${groups.length} reasons ↓`}
+                  </button>
+                )}
+              </>
+            )}
+            {objFailures.failuresTruncated && (
+              <div style={{ fontSize: 10, color: T.textMuted, marginTop: 8 }}>
+                ({objFailures.failures.length} of {total} per-call details shown — capped for performance)
+              </div>
+            )}
+          </div>
+        );
+      })()}
 
       {/* Outcome → Issues Breakdown */}
       {dashData && (dashData.outcomeBreakdown?.length ?? 0) > 0 && (
