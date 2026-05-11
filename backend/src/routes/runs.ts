@@ -58,6 +58,11 @@ router.get("/:id", async (req: AuthRequest, res) => {
 
 // Fetch a fresh recording URL from Hamsa for a run whose CloudFront signed URL may have expired.
 // Calls fetchConversation() and extracts the mediaUrl from the response.
+//
+// Fallback chain: if the project's stored hamsaApiKey returns 403/401 (revoked
+// or wrong key), retry with the server-wide HAMSA_API_KEY from env. This keeps
+// recordings playable when a project's key goes stale, without forcing the
+// user to first re-enter the key from the UI.
 router.get("/:id/recording-url", async (req: AuthRequest, res) => {
   try {
     const run = await prisma.run.findUnique({
@@ -70,17 +75,46 @@ router.get("/:id/recording-url", async (req: AuthRequest, res) => {
     }
     if (!run.conversationId) return res.status(404).json({ error: "No conversationId on this run" });
 
-    const apiKey = (run.project as any)?.hamsaApiKey;
-    if (!apiKey) return res.status(400).json({ error: "Project has no Hamsa API key" });
+    const projectKey = (run.project as any)?.hamsaApiKey as string | null;
+    const envKey     = process.env.HAMSA_API_KEY || "";
+    if (!projectKey && !envKey) {
+      return res.status(400).json({ error: "No Hamsa API key configured (project or env)" });
+    }
 
-    const conv = await fetchConversation(run.conversationId, apiKey);
+    // Build the candidate-key list: project key first, env key as fallback.
+    // Dedupe so we don't double-try the same key.
+    const keys = [projectKey, envKey].filter((k): k is string => !!k);
+    const uniqKeys = [...new Set(keys)];
+
+    let conv: any = null;
+    let lastErr: Error | null = null;
+    let usedFallback = false;
+    for (let i = 0; i < uniqKeys.length; i++) {
+      try {
+        conv = await fetchConversation(run.conversationId, uniqKeys[i]);
+        usedFallback = i > 0;
+        break;
+      } catch (err) {
+        lastErr = err as Error;
+        // Only fall through to next key on auth failures; surface other errors immediately.
+        if (!/(^|\s)40[13](\s|$|—)/.test(lastErr.message)) break;
+      }
+    }
+    if (!conv) {
+      console.error("[Runs] GET /:id/recording-url error:", lastErr?.message);
+      // In dev, return the upstream Hamsa message so the user can see why
+      // (e.g. "Invalid API key!"). Strip it in prod to avoid info leakage.
+      const detail = process.env.NODE_ENV === "production" ? undefined : lastErr?.message;
+      return res.status(502).json({ error: "Failed to fetch recording URL", detail });
+    }
+
     const url = conv?.mediaUrl || conv?.data?.conversationRecording || conv?.data?.recordingUrl || null;
     if (!url) return res.status(404).json({ error: "No recording URL found in Hamsa response" });
 
-    res.json({ url });
+    res.json({ url, usedFallbackKey: usedFallback });
   } catch (err) {
     console.error("[Runs] GET /:id/recording-url error:", (err as Error).message);
-    res.status(500).json({ error: "Failed to fetch recording URL" });
+    res.status(500).json({ error: "Failed to fetch recording URL", detail: (err as Error).message });
   }
 });
 

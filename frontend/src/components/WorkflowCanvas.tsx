@@ -402,8 +402,10 @@ function WorkflowCanvasInner({
         message: n.message || "",
         transitions: n.transitions || [],
         tools: n.tools || [],
-        // Playback-mode highlighting
-        isActive: isPlaying && activeNodeId === n.id,
+        // Playback-mode highlighting — `isActive` reflects the audio cursor
+        // even while paused so the user can inspect the highlighted node.
+        // `isPlaying` only drives the "dim other nodes" effect.
+        isActive: activeNodeId === n.id,
         isPlaying: !!isPlaying,
       },
     }));

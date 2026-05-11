@@ -173,8 +173,10 @@ export default function RunDetail() {
   const [loading, setLoading] = useState(true);
   const [labelingWord, setLabelingWord] = useState<{ wordIndex: number; utteranceIndex: number; word: string; speaker: string } | null>(null);
   const [audioError, setAudioError] = useState(false);
+  const [audioErrorDetail, setAudioErrorDetail] = useState<string | null>(null);
   const [freshRecordingUrl, setFreshRecordingUrl] = useState<string | null>(null);
   const [recordingRefreshAttempted, setRecordingRefreshAttempted] = useState(false);
+  const [recordingRefreshing, setRecordingRefreshing] = useState(false);
   const audioRef = useRef<HTMLAudioElement>(null);
   const [audioTime, setAudioTime] = useState(0);
   const [isAudioPlaying, setIsAudioPlaying] = useState(false);
@@ -198,8 +200,10 @@ export default function RunDetail() {
     activeRunIdRef.current = runId!; // mark the new run; invalidates all old polls
     setLoading(true);
     setAudioError(false);
+    setAudioErrorDetail(null);
     setFreshRecordingUrl(null);
     setRecordingRefreshAttempted(false);
+    setRecordingRefreshing(false);
     setAudioTime(0);
     setIsAudioPlaying(false);
     setReEvaluating(false);
@@ -211,8 +215,16 @@ export default function RunDetail() {
   // ── Audio-sync: node movement timeline ─────────────────────────────
   // Computed here (before early returns) so hooks are always called in the same order.
   // Uses run?.callLog with optional chaining since run may be null while loading.
+  //
+  // Two extraction paths, mirroring FlowProgressionView:
+  //   1. Primary: `node_movement` category events with a node_id/nodeId field.
+  //   2. Fallback: when (1) yields nothing, attribute the first known timestamp
+  //      to each visited node by fuzzy-matching "Playing message" events against
+  //      node prompts. This handles calls where Hamsa logs movements without IDs.
   const nodeMovementsForSync = useMemo(() => {
     const cl = Array.isArray((run as any)?.callLog) ? (run as any).callLog : [];
+    const workflowNodes = (run as any)?.project?.agentStructure?.workflow?.nodes ?? [];
+
     const out: Array<{ nodeId: string; timestamp: string }> = [];
     for (const e of cl) {
       const nid = e.node_id || e.nodeId;
@@ -220,32 +232,166 @@ export default function RunDetail() {
         out.push({ nodeId: nid, timestamp: e.timestamp });
       }
     }
-    // Sort ascending by timestamp so the linear scan + `else break` is always correct,
-    // regardless of whether the backend delivers callLog events in order.
-    out.sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
-    return out;
-  }, [(run as any)?.callLog]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Absolute ms of the first known node movement — used as the recording start anchor.
-  // Guard against NaN from invalid ISO strings (new Date("bad").getTime() === NaN).
+    if (out.length === 0 && workflowNodes.length > 0) {
+      // Fallback: Hamsa prod logs sometimes emit `nodeId: null` on every event
+      // (we've seen this on the Noura agent). We derive movements from:
+      //   (a) "Playing message" → conversation/start nodes (match by prompt text)
+      //   (b) "Executing Tool" → tool nodes (match by agentStructure.tools toolId→nodeId)
+      //   (c) ROUTER events    → router nodes (best-effort, no per-event linkage)
+      //
+      // Whitespace must be normalized for (a): Hamsa replaces literal spaces in
+      // logged prompts with newlines (and other whitespace runs).
+      const norm = (s: string) =>
+        s.replace(/\{\{.*?\}\}/g, "")
+         .replace(/\s+/g, " ")
+         .trim();
+
+      // (a) Conversation/start nodes via prompt text
+      const prompts = cl.filter((e: any) => typeof e?.message === "string" && e.message.includes("Playing message"));
+      for (const p of prompts) {
+        const msg = norm(p.payload?.message || "");
+        if (!msg || !p.timestamp) continue;
+        const msgPrefix = msg.slice(0, 60);
+        for (const node of workflowNodes) {
+          if (!node.message) continue;
+          const nodeMsg = norm(String(node.message));
+          if (!nodeMsg) continue;
+          const nodePrefix = nodeMsg.slice(0, 60);
+          const probe = 30;
+          if (msgPrefix.includes(nodePrefix.slice(0, probe)) ||
+              nodePrefix.includes(msgPrefix.slice(0, probe))) {
+            out.push({ nodeId: node.id, timestamp: p.timestamp });
+            break;
+          }
+        }
+      }
+
+      // (b) Tool nodes via agentStructure.tools (nodeId↔toolId registry).
+      // A single Hamsa toolId is typically registered against MANY workflow
+      // nodes (every node that may call it), so a flat toolId→nodeId map
+      // picks the wrong node. Disambiguate by graph proximity, using
+      // `workflow.edges` as the source of truth (node.transitions[].targetNodeId
+      // is empty string in prod data — only the React-Flow edges array is
+      // populated with the real wiring).
+      const agentTools: Array<{ nodeId?: string; toolId?: string }> =
+        (run as any)?.project?.agentStructure?.tools ?? [];
+      const toolIdToNodeIds = new Map<string, string[]>();
+      for (const t of agentTools) {
+        if (!t.toolId || !t.nodeId) continue;
+        const key = String(t.toolId);
+        const arr = toolIdToNodeIds.get(key) ?? [];
+        arr.push(String(t.nodeId));
+        toolIdToNodeIds.set(key, arr);
+      }
+
+      // Build outgoing-edges map from workflow.edges (the real graph).
+      const wfEdges: any[] = (run as any)?.project?.agentStructure?.workflow?.edges ?? [];
+      const outgoingTargetsByNode = new Map<string, string[]>();
+      for (const e of wfEdges) {
+        const src = e?.source ?? e?.sourceNodeId;
+        const tgt = e?.target ?? e?.targetNodeId;
+        if (!src || !tgt) continue;
+        const arr = outgoingTargetsByNode.get(src) ?? [];
+        arr.push(tgt);
+        outgoingTargetsByNode.set(src, arr);
+      }
+
+      const toolEvents = cl.filter((e: any) => e?.category === "TOOLS" && e?.message === "Executing Tool");
+      for (const te of toolEvents) {
+        const tid = te.payload?.toolId;
+        const ts  = te.timestamp;
+        if (!tid || !ts) continue;
+        const candidates = toolIdToNodeIds.get(String(tid)) ?? [];
+        if (candidates.length === 0) continue;
+
+        // Find the most-recently-visited node before this tool's timestamp.
+        const tsMs = new Date(ts).getTime();
+        const priorMovements = out.filter(m => new Date(m.timestamp).getTime() <= tsMs);
+        priorMovements.sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
+        const lastPriorId = priorMovements[priorMovements.length - 1]?.nodeId;
+
+        // 1st choice: direct neighbour of the prior visited node that matches a candidate
+        let chosen: string | null = null;
+        if (lastPriorId) {
+          const neighbours = outgoingTargetsByNode.get(lastPriorId) ?? [];
+          for (const n of neighbours) {
+            if (candidates.includes(n)) { chosen = n; break; }
+          }
+        }
+        // 2nd choice: any candidate reachable 1 hop further (handles a
+        // conversation→router→tool pattern, common when a router gates the
+        // tool call from a shared conversation node).
+        if (!chosen && lastPriorId) {
+          const hop1 = outgoingTargetsByNode.get(lastPriorId) ?? [];
+          for (const mid of hop1) {
+            const hop2 = outgoingTargetsByNode.get(mid) ?? [];
+            const hit = hop2.find(n => candidates.includes(n));
+            if (hit) { chosen = hit; break; }
+          }
+        }
+        // Last resort: first registered candidate (deterministic, but
+        // potentially wrong if the prior-node signal is missing entirely).
+        if (!chosen) chosen = candidates[0];
+        out.push({ nodeId: chosen, timestamp: ts });
+      }
+
+      // (c) Router nodes — use the same edge-based graph lookup. Find router
+      // nodes that the prior visited node connects to (via workflow.edges).
+      const routerNodes = workflowNodes.filter((n: any) => n.type === "router");
+      const routerNodeIds = new Set(routerNodes.map((n: any) => n.id));
+      const routerEvents = cl.filter((e: any) => e?.category === "ROUTER" && e?.timestamp);
+      for (const re of routerEvents) {
+        const ts = re.timestamp;
+        let target: string | null = null;
+        if (out.length > 0) {
+          const sorted = [...out].sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
+          const prevId = sorted[sorted.length - 1].nodeId;
+          const neighbours = outgoingTargetsByNode.get(prevId) ?? [];
+          target = neighbours.find(n => routerNodeIds.has(n)) ?? null;
+        }
+        if (!target && routerNodes.length > 0) target = routerNodes[0].id;
+        if (target) out.push({ nodeId: target, timestamp: ts });
+      }
+    }
+
+    // Sort ascending by timestamp. Filter invalid first so sort comparator
+    // never produces NaN (undefined behavior in some engines).
+    return out
+      .filter(m => Number.isFinite(new Date(m.timestamp).getTime()))
+      .sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
+  }, [
+    (run as any)?.callLog,
+    (run as any)?.project?.agentStructure?.workflow?.nodes,
+    (run as any)?.project?.agentStructure?.workflow?.edges,
+    (run as any)?.project?.agentStructure?.tools,
+  ]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Absolute ms anchor for audioTime = 0. The recording starts when the call
+  // connects (ringing/lead-in), not when the agent says its first word. Prefer
+  // run.callDate as the anchor; only fall back to the first node movement
+  // timestamp if callDate is missing. Without this, every node highlight would
+  // appear ~3-5 seconds too early relative to what the user hears.
   const callStartMs = useMemo(() => {
+    const cd = (run as any)?.callDate;
+    if (cd) {
+      const ms = new Date(cd).getTime();
+      if (Number.isFinite(ms) && ms > 0) return ms;
+    }
     if (nodeMovementsForSync.length === 0) return null;
     const ms = new Date(nodeMovementsForSync[0].timestamp).getTime();
     return Number.isFinite(ms) && ms > 0 ? ms : null;
-  }, [nodeMovementsForSync]);
+  }, [(run as any)?.callDate, nodeMovementsForSync]);
 
   // The node the agent was on at the current audio playback position.
-  // Computed whenever audioTime > 0 (i.e. the user has started playback), not just while playing.
-  // This keeps the highlight visible when the user pauses to inspect the canvas.
-  // `isPlaying` is passed separately to WorkflowCanvas to control the dim-other-nodes effect.
+  // Computed whenever audioTime > 0, not just while playing — so the highlight
+  // persists when the user pauses to inspect the canvas.
   const activeNodeId = useMemo(() => {
     if (callStartMs == null || nodeMovementsForSync.length === 0 || audioTime === 0) return null;
     const absTimeMs = callStartMs + audioTime * 1000;
     let active: string | null = null;
     for (const m of nodeMovementsForSync) {
       const ms = new Date(m.timestamp).getTime();
-      // Skip movements with invalid timestamps rather than short-circuiting the whole loop
-      if (!Number.isFinite(ms)) continue;
       if (ms <= absTimeMs) active = m.nodeId;
       else break;
     }
@@ -1467,11 +1613,13 @@ export default function RunDetail() {
           visible while playback drives them. */}
       {recordingUrl && (
         <div style={{
-          position: "sticky", top: 0, zIndex: 5,
+          // NavBar at App.tsx is sticky with top:0 z-index:50, so this bar
+          // pins just below it (navbar is ~51px tall) with a lower z-index.
+          position: "sticky", top: 56, zIndex: 5,
           marginBottom: 20, background: T.card, border: `1px solid ${T.border}`,
           borderRadius: 8, padding: "10px 14px",
         }}>
-          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: audioError ? 0 : 8 }}>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: audioError ? 0 : 8, gap: 12, flexWrap: "wrap" }}>
             <span style={{ fontSize: 11, fontWeight: 600, color: T.textMuted, textTransform: "uppercase", letterSpacing: 0.5 }}>
               Call Recording
               {isAudioPlaying && (
@@ -1480,28 +1628,100 @@ export default function RunDetail() {
                 </span>
               )}
             </span>
+            {/* Now-at indicator: visible feedback for the audio↔node sync.
+                Shows the active node's label, or "no node tracking" if the
+                callLog has no usable timeline. */}
+            {audioTime > 0 && (() => {
+              const wfNodes = (run as any)?.project?.agentStructure?.workflow?.nodes ?? [];
+              if (nodeMovementsForSync.length === 0) {
+                return (
+                  <span style={{ fontSize: 11, color: T.textMuted, fontStyle: "italic" }}>
+                    No node timeline in callLog
+                  </span>
+                );
+              }
+              const node = activeNodeId ? wfNodes.find((n: any) => n.id === activeNodeId) : null;
+              const label = node?.label || node?.type || (activeNodeId ?? "—");
+              return (
+                <span style={{ fontSize: 12, color: T.text, fontWeight: 600 }}>
+                  Now at: <span style={{ color: T.primary }}>{label}</span>
+                </span>
+              );
+            })()}
             <a href={recordingUrl} target="_blank" rel="noopener noreferrer"
-              style={{ fontSize: 12, color: T.link, textDecoration: "none" }}>
+              style={{ fontSize: 12, color: T.link, textDecoration: "none", marginLeft: "auto" }}>
               Open directly ↗
             </a>
           </div>
           {audioError ? (
-            <div style={{ fontSize: 12, color: T.textSecondary }}>
-              Recording unavailable — URL may have expired. Use "Open directly" above.
+            <div style={{ fontSize: 12, color: T.textSecondary, display: "flex", flexDirection: "column", gap: 6 }}>
+              <div>
+                Recording unavailable.{" "}
+                {audioErrorDetail && <span style={{ color: "#ef4444" }}>({audioErrorDetail})</span>}
+              </div>
+              <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                <button
+                  type="button"
+                  disabled={recordingRefreshing}
+                  onClick={() => {
+                    setRecordingRefreshing(true);
+                    setAudioErrorDetail(null);
+                    getRecordingUrl(runId!)
+                      .then(({ url }) => {
+                        setFreshRecordingUrl(url);
+                        setAudioError(false);
+                        setRecordingRefreshAttempted(false); // allow another retry if new URL also fails
+                      })
+                      .catch((err) => {
+                        const msg = err instanceof Error ? err.message : String(err);
+                        setAudioErrorDetail(msg.slice(0, 200));
+                      })
+                      .finally(() => setRecordingRefreshing(false));
+                  }}
+                  style={{
+                    fontSize: 11, padding: "4px 10px", borderRadius: 4,
+                    background: T.card, color: T.text, border: `1px solid ${T.border}`,
+                    cursor: recordingRefreshing ? "default" : "pointer",
+                  }}
+                >
+                  {recordingRefreshing ? "Fetching…" : "Retry from Hamsa"}
+                </button>
+                <span style={{ fontSize: 11, color: T.textMuted }}>
+                  or use "Open directly" above
+                </span>
+              </div>
             </div>
           ) : (
             <audio
               ref={audioRef}
               controls
               src={recordingUrl}
-              onError={() => {
+              onError={(e) => {
+                // Capture browser-level detail so the user (and we) see WHY.
+                // MediaError codes: 1=aborted, 2=network, 3=decode, 4=src not supported.
+                const mediaErr = (e.currentTarget as HTMLAudioElement).error;
+                const codes: Record<number, string> = {
+                  1: "playback aborted",
+                  2: "network error",
+                  3: "decode error (codec unsupported?)",
+                  4: "format not supported by this browser",
+                };
+                const detail = mediaErr ? codes[mediaErr.code] || `media error ${mediaErr.code}` : "load failed";
                 if (!recordingRefreshAttempted) {
                   setRecordingRefreshAttempted(true);
+                  setRecordingRefreshing(true);
+                  setAudioErrorDetail(null);
                   getRecordingUrl(runId!)
                     .then(({ url }) => { setFreshRecordingUrl(url); setAudioError(false); })
-                    .catch(() => setAudioError(true));
+                    .catch((refreshErr) => {
+                      const msg = refreshErr instanceof Error ? refreshErr.message : String(refreshErr);
+                      setAudioError(true);
+                      setAudioErrorDetail(`refresh failed: ${msg.slice(0, 180)}`);
+                    })
+                    .finally(() => setRecordingRefreshing(false));
                 } else {
                   setAudioError(true);
+                  setAudioErrorDetail(detail);
                 }
               }}
               onTimeUpdate={() => setAudioTime(audioRef.current?.currentTime ?? 0)}
@@ -2008,7 +2228,8 @@ function FlowProgressionView({
     ? orderedNodes[lastReachedIdx]?.id
     : undefined;
 
-  const [flowExpanded, setFlowExpanded] = useState(false);
+  // Expanded by default so the audio→node sync is visible without an extra click.
+  const [flowExpanded, setFlowExpanded] = useState(true);
   const [viewMode, setViewMode] = useState<"graph" | "list">("graph");
 
   return (
