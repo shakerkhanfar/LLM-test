@@ -45,6 +45,7 @@ import {
   getRunFullTool,
   searchRunsTool,
 } from "./tools/_read/runs";
+import { getRunToolExecutionsTool } from "./tools/_read/runToolExecutions";
 import { getAgentStructureTool, getNodePromptTool } from "./tools/_read/agentStructure";
 import { applyNodePromptFixTool } from "./tools/_write/applyNodePromptFix";
 import { reevaluateRunTool } from "./tools/_write/reevaluateRun";
@@ -75,6 +76,7 @@ const ALL_TOOLS: AnyTool[] = [
   listRunsTool,
   getRunBreakdownTool,
   getRunTranscriptTool,
+  getRunToolExecutionsTool,
   getRunFullTool,
   searchRunsTool,
   // Tier 4 — agent structure

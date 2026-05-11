@@ -290,43 +290,83 @@ export const getRunFullTool: McpToolDefinition<typeof getRunFullInput> = {
 };
 
 // ─── search_runs ──────────────────────────────────────────────────────
+//
+// Three search scopes, all opt-in via flags:
+//   transcript      — what was actually said
+//   outcome         — Hamsa-extracted summary, intent, failure_reason, etc.
+//   eval            — Layer 4 summary, comments, improvements, critical/experience issues
+//
+// Defaults to all three so an agent can ask "find calls about X" without
+// having to think about WHERE the keyword might appear. Each scope can be
+// disabled when the agent wants narrower results.
 const searchRunsInput = {
   query: z.string().min(2).max(200)
-    .describe("Substring to look for. Case-insensitive. Searches transcripts, outcome summaries, and call_outcome."),
+    .describe("Substring to look for. Case-insensitive. ILIKE pattern; agents passing % or _ get literal matches."),
   limit: z.number().int().positive().max(50).optional()
     .describe("Max results (default 10, max 50)"),
+  searchTranscript: z.boolean().optional().default(true)
+    .describe("Search what was said in the conversation. Default true."),
+  searchOutcome: z.boolean().optional().default(true)
+    .describe("Search the Hamsa outcome summary (Sunnary, failure_reason, doctor_requested, etc.). Default true."),
+  searchEval: z.boolean().optional().default(true)
+    .describe("Search the layered eval detail: Layer 4 summary, comments, improvements, criticalIssues, experienceIssues. Default true."),
 };
 
 export const searchRunsTool: McpToolDefinition<typeof searchRunsInput> = {
   name: "search_runs",
-  title: "Search runs by transcript/summary",
+  title: "Search runs by transcript / outcome / eval text",
   description:
-    "Finds runs whose transcript text, outcome summary, or callOutcome contains the query. " +
-    "Substring match (case-insensitive). Use for hypothesis-driven investigation. " +
-    "Returns matching run IDs and a short excerpt; drill in with `get_run_breakdown`.",
+    "Finds runs whose conversation, outcome summary, OR layered evaluation analysis contains " +
+    "the query. Substring match (case-insensitive). Use for hypothesis-driven investigation " +
+    "such as: 'find calls flagged with a specific improvement', 'find calls where the agent " +
+    "couldn't find a doctor', 'find runs mentioning a particular issue'. " +
+    "Flags let you narrow which fields are searched. Drill in with `get_run_breakdown` for " +
+    "the matching context.",
   scope: "read",
   inputSchema: searchRunsInput,
   handler: async (ctx, input) => {
     const limit = clampLimit(input.limit, 50, 10);
-    // Sanitize: strip newlines and clamp length. Prisma parameterises the
-    // value, so SQLi isn't possible; the cleaning here is purely about
-    // intent — strip control chars and clamp length.
     const cleaned = input.query.replace(/[\r\n\t]+/g, " ").trim().slice(0, 200);
     if (cleaned.length < 2) throw new McpToolError("Query must contain at least 2 visible characters");
 
-    // Escape LIKE wildcards (`%`, `_`, and the escape char `\`) so a user
-    // passing "_" or "%" matches literal characters rather than turning the
-    // search into "match anything". We use the default backslash escape and
-    // declare it via ESCAPE.
+    const searchTranscript = input.searchTranscript !== false;
+    const searchOutcome = input.searchOutcome !== false;
+    const searchEval = input.searchEval !== false;
+    if (!searchTranscript && !searchOutcome && !searchEval) {
+      throw new McpToolError("At least one of searchTranscript / searchOutcome / searchEval must be true");
+    }
+
+    // Escape LIKE wildcards so user `%`/`_` match literal chars, not patterns.
     const escaped = cleaned
       .replace(/\\/g, "\\\\")
       .replace(/%/g, "\\%")
       .replace(/_/g, "\\_");
-
-    // ::text cast lets us ILIKE the JSON columns without JSONB-specific
-    // operators. Substring match is intentionally simple — agents often
-    // chain to get_run_breakdown for deeper analysis anyway.
     const pattern = `%${escaped}%`;
+
+    // Build the WHERE OR clauses based on which scopes are enabled. We use
+    // Prisma.sql template chunks so values stay parameterised.
+    const orClauses: any[] = [];
+    if (searchTranscript) {
+      orClauses.push(Prisma.sql`r."transcript"::text ILIKE ${pattern} ESCAPE '\\'`);
+    }
+    if (searchOutcome) {
+      orClauses.push(Prisma.sql`r."outcomeResult"::text ILIKE ${pattern} ESCAPE '\\'`);
+      orClauses.push(Prisma.sql`r."callOutcome" ILIKE ${pattern} ESCAPE '\\'`);
+    }
+    // Eval search joins EvalResult filtered to the LAYERED_EVALUATION criterion
+    // — that's the row whose detail field contains the summary/comments/issues
+    // an agent typically wants to find. EXISTS keeps the join cheap and avoids
+    // duplicate rows from the LEFT JOIN approach.
+    if (searchEval) {
+      orClauses.push(Prisma.sql`EXISTS (
+        SELECT 1 FROM "EvalResult" er
+        JOIN "Criterion" c ON c.id = er."criterionId" AND c.type = 'LAYERED_EVALUATION'
+        WHERE er."runId" = r.id AND er.detail ILIKE ${pattern} ESCAPE '\\'
+      )`);
+    }
+    // Manually join the OR clauses; Prisma.join is the supported helper.
+    const orSql = Prisma.join(orClauses, " OR ");
+
     const results = await prisma.$queryRaw<Array<{
       id: string;
       conversationId: string | null;
@@ -334,19 +374,16 @@ export const searchRunsTool: McpToolDefinition<typeof searchRunsInput> = {
       callOutcome: string | null;
       overallScore: number | null;
     }>>(Prisma.sql`
-      SELECT id, "conversationId", "callDate", "callOutcome", "overallScore"
-      FROM "Run"
-      WHERE "projectId" = ${ctx.projectId}
-        AND (
-          "transcript"::text ILIKE ${pattern} ESCAPE '\\'
-          OR "outcomeResult"::text ILIKE ${pattern} ESCAPE '\\'
-          OR "callOutcome" ILIKE ${pattern} ESCAPE '\\'
-        )
-      ORDER BY "callDate" DESC NULLS LAST
+      SELECT r.id, r."conversationId", r."callDate", r."callOutcome", r."overallScore"
+      FROM "Run" r
+      WHERE r."projectId" = ${ctx.projectId}
+        AND (${orSql})
+      ORDER BY r."callDate" DESC NULLS LAST
       LIMIT ${limit}
     `);
 
     return {
+      scope: { transcript: searchTranscript, outcome: searchOutcome, eval: searchEval },
       query: cleaned,
       count: results.length,
       results,
