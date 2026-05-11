@@ -138,10 +138,26 @@ export async function getKpisForRange(spec: WindowSpec): Promise<KpiSnapshot> {
     whole > 0 ? parseFloat(((part / whole) * 100).toFixed(1)) : 0;
 
   // Objective-achieved (Layer 4) — separate join.
+  //
+  // `jsonb_typeof(er.detail::jsonb) = 'object'` guards against runs whose
+  // detail is a non-JSON narrative string. Without it, a single bad row
+  // makes the cast throw and the whole aggregate becomes null. The error
+  // path now logs (instead of silently swallowing) so a real bug is visible
+  // in server logs rather than presenting as missing UI data.
   const [obj] = await prisma.$queryRaw<Array<{ obj_total: bigint; obj_achieved: bigint }>>`
     SELECT
-      COUNT(*) FILTER (WHERE er.detail IS NOT NULL AND er.detail::jsonb ? 'objectiveAchieved') AS obj_total,
-      COUNT(*) FILTER (WHERE er.detail IS NOT NULL AND lower(er.detail::jsonb->>'objectiveAchieved') IN ('true','1','yes')) AS obj_achieved
+      COUNT(*) FILTER (
+        WHERE er.detail IS NOT NULL
+          AND er.detail ~ '^\\s*\\{'
+          AND jsonb_typeof(er.detail::jsonb) = 'object'
+          AND er.detail::jsonb ? 'objectiveAchieved'
+      ) AS obj_total,
+      COUNT(*) FILTER (
+        WHERE er.detail IS NOT NULL
+          AND er.detail ~ '^\\s*\\{'
+          AND jsonb_typeof(er.detail::jsonb) = 'object'
+          AND lower(er.detail::jsonb->>'objectiveAchieved') IN ('true','1','yes')
+      ) AS obj_achieved
     FROM "EvalResult" er
     JOIN "Criterion" c ON er."criterionId" = c.id
     JOIN "Run"       r ON er."runId"       = r.id
@@ -150,9 +166,13 @@ export async function getKpisForRange(spec: WindowSpec): Promise<KpiSnapshot> {
       AND c.type   = 'LAYERED_EVALUATION'
       ${fromDate ? Prisma.sql`AND r."callDate" >= ${fromDate}` : Prisma.empty}
       ${toDate   ? Prisma.sql`AND r."callDate" <= ${toDate}`   : Prisma.empty}
-  `.catch(() => [{ obj_total: 0n, obj_achieved: 0n }] as Array<{ obj_total: bigint; obj_achieved: bigint }>);
+  `.catch((err: unknown) => {
+    console.error("[reportComparison] objective-achieved aggregate failed:", err instanceof Error ? err.message : err);
+    return [{ obj_total: 0n, obj_achieved: 0n }] as Array<{ obj_total: bigint; obj_achieved: bigint }>;
+  });
 
-  // Avg turns per call.
+  // Avg turns per call. The jsonb_typeof guard prevents a single non-array
+  // transcript from breaking the entire aggregate.
   const [turns] = await prisma.$queryRaw<Array<{ total_turns: bigint | null; run_count: bigint }>>`
     SELECT
       SUM(jsonb_array_length(transcript))::bigint AS total_turns,
@@ -163,7 +183,10 @@ export async function getKpisForRange(spec: WindowSpec): Promise<KpiSnapshot> {
       AND transcript IS NOT NULL
       AND jsonb_typeof(transcript) = 'array'
       ${fromFilter} ${toFilter}
-  `.catch(() => [{ total_turns: null, run_count: 0n }] as Array<{ total_turns: bigint | null; run_count: bigint }>);
+  `.catch((err: unknown) => {
+    console.error("[reportComparison] turn-count aggregate failed:", err instanceof Error ? err.message : err);
+    return [{ total_turns: null, run_count: 0n }] as Array<{ total_turns: bigint | null; run_count: bigint }>;
+  });
 
   const objTotal    = n(obj?.obj_total);
   const objAchieved = n(obj?.obj_achieved);
@@ -218,7 +241,9 @@ export interface Issue {
   occurrences: IssueOccurrence[];
   /** Total run count where this issue appeared (may exceed occurrences.length when capped). */
   occurrencesTruncated: boolean;
+  /** Earliest seen date across ALL occurrences (not just the truncated sample). */
   firstSeen: string | null;
+  /** Latest seen date across ALL occurrences. */
   lastSeen: string | null;
 }
 
@@ -241,18 +266,31 @@ export interface ObjectiveFailure {
 /**
  * Aggregate over a window: how many calls failed to achieve their objective,
  * and what reasons cluster across them.
+ *
+ * `reasonGroups` is computed across ALL failures (not the truncated detail
+ * list), so its counts are accurate even when `failuresTruncated` is true.
  */
 export interface ObjectiveFailureSummary {
   totalEvaluated: number;       // total runs that had an objectiveAchieved value (true or false)
   totalNotAchieved: number;     // runs with objectiveAchieved=false
   failures: ObjectiveFailure[];           // capped at MAX_OBJECTIVE_FAILURES_LIST
-  failuresTruncated: boolean;
-  /** Grouped reasons (normalized) with run IDs per group. */
+  failuresTruncated: boolean;             // true => `failures` is a sample of the full set
+  /** Grouped reasons (normalized) with run IDs per group. Counted across ALL failures. */
   reasonGroups: Array<{ reason: string; count: number; runIds: string[] }>;
+  /** True when more runs existed than the window allowed; aggregates are partial. */
+  windowTruncated: boolean;
+  runsScanned: number;          // how many runs were actually walked
 }
 
 const MAX_OCCURRENCES_PER_ISSUE = 50;
 const MAX_OBJECTIVE_FAILURES_LIST = 200;
+// Hard cap on runs scanned per window. Protects against OOM and event-loop
+// stalls when a project has 100k+ complete runs. Override via env if a host
+// has more memory headroom. Truncation is surfaced via `truncated` flags.
+const MAX_RUNS_PER_WINDOW = Math.max(
+  100,
+  parseInt(process.env.REPORT_MAX_RUNS_PER_WINDOW || "10000", 10) || 10000,
+);
 
 // Normalize text for cross-side issue matching. Keeps content but strips
 // formatting noise so "Agent stuck on ID." and "Agent stuck on ID" map to
@@ -267,16 +305,24 @@ function normalizeIssueKey(text: string): string {
 }
 
 /**
- * Pull all COMPLETE runs in the window with their layered eval detail and
- * walk the JSON to extract criticalIssues + per-node findings. Returns
- * one Issue row per unique normalized text, with the runs that hit it.
+ * Pull COMPLETE runs in the window with their layered eval detail and walk
+ * the JSON to extract criticalIssues + per-node findings.
+ *
+ * Bounded: scans at most MAX_RUNS_PER_WINDOW newest runs. The `truncated`
+ * flag on the result lets callers (and the UI) surface that aggregates are
+ * partial for very large projects. firstSeen/lastSeen are tracked during
+ * ingest so they remain correct even when per-issue occurrence lists hit
+ * MAX_OCCURRENCES_PER_ISSUE.
  */
-export async function getIssuesForRange(spec: WindowSpec): Promise<Issue[]> {
+export async function getIssuesForRange(
+  spec: WindowSpec,
+): Promise<{ issues: Issue[]; windowTruncated: boolean; runsScanned: number }> {
   const fromDate = isValidIsoDate(spec.from) ? new Date(spec.from + "T00:00:00Z") : null;
   const toDate   = isValidIsoDate(spec.to)   ? new Date(spec.to   + "T23:59:59.999Z") : null;
 
-  // Pull runs with their LAYERED_EVALUATION detail.
-  // We need: run id, conversationId, callDate, callOutcome, and the eval JSON.
+  // Take MAX+1 so we can detect overflow without a separate COUNT query.
+  // `desc` ordering: when truncating, prefer the most-recent runs (they're
+  // the ones the user will most likely want to inspect on the report page).
   const runs = await prisma.run.findMany({
     where: {
       projectId: spec.projectId,
@@ -285,7 +331,8 @@ export async function getIssuesForRange(spec: WindowSpec): Promise<Issue[]> {
         ? { callDate: { ...(fromDate ? { gte: fromDate } : {}), ...(toDate ? { lte: toDate } : {}) } }
         : {}),
     },
-    orderBy: { callDate: "asc" },
+    orderBy: { callDate: "desc" },
+    take: MAX_RUNS_PER_WINDOW + 1,
     select: {
       id: true,
       conversationId: true,
@@ -298,9 +345,9 @@ export async function getIssuesForRange(spec: WindowSpec): Promise<Issue[]> {
     },
   });
 
-  // Bucket by normalized text. Same text from different sources gets separate
-  // entries so the UI can distinguish ("Agent stuck" from L4 vs from L3 has
-  // different signal value).
+  const windowTruncated = runs.length > MAX_RUNS_PER_WINDOW;
+  const sample = windowTruncated ? runs.slice(0, MAX_RUNS_PER_WINDOW) : runs;
+
   type Bucket = {
     key: string;
     text: string;
@@ -309,6 +356,9 @@ export async function getIssuesForRange(spec: WindowSpec): Promise<Issue[]> {
     nodeLabel?: string;
     occurrences: IssueOccurrence[];
     totalCount: number;
+    /** min/max ms over ALL ingested occurrences, not just the capped sample. */
+    firstSeenMs: number | null;
+    lastSeenMs: number | null;
   };
   const buckets = new Map<string, Bucket>();
 
@@ -322,18 +372,31 @@ export async function getIssuesForRange(spec: WindowSpec): Promise<Issue[]> {
     if (!cleanText) return;
     const norm = normalizeIssueKey(cleanText);
     if (!norm) return;
-    // Source is part of the key so the same text from different layers stays separate.
     const fullKey = `${source}::${extras.nodeLabel ?? ""}::${norm}`;
     let b = buckets.get(fullKey);
     if (!b) {
-      b = { key: fullKey, text: cleanText, source, severity: extras.severity, nodeLabel: extras.nodeLabel, occurrences: [], totalCount: 0 };
+      b = {
+        key: fullKey, text: cleanText, source,
+        severity: extras.severity, nodeLabel: extras.nodeLabel,
+        occurrences: [], totalCount: 0,
+        firstSeenMs: null, lastSeenMs: null,
+      };
       buckets.set(fullKey, b);
     }
     b.totalCount++;
     if (b.occurrences.length < MAX_OCCURRENCES_PER_ISSUE) b.occurrences.push(occ);
+
+    // Track date extremes during ingest — independent of the occurrences cap.
+    if (occ.callDate) {
+      const ms = new Date(occ.callDate).getTime();
+      if (Number.isFinite(ms)) {
+        if (b.firstSeenMs === null || ms < b.firstSeenMs) b.firstSeenMs = ms;
+        if (b.lastSeenMs  === null || ms > b.lastSeenMs)  b.lastSeenMs  = ms;
+      }
+    }
   }
 
-  for (const run of runs) {
+  for (const run of sample) {
     const occ: IssueOccurrence = {
       runId: run.id,
       conversationId: run.conversationId,
@@ -377,10 +440,8 @@ export async function getIssuesForRange(spec: WindowSpec): Promise<Issue[]> {
     }
   }
 
-  // Convert buckets to Issue[]. Compute firstSeen / lastSeen from occurrences.
   const issues: Issue[] = [];
   for (const b of buckets.values()) {
-    const datesIso = b.occurrences.map(o => o.callDate).filter((d): d is string => !!d).sort();
     issues.push({
       text: b.text,
       source: b.source,
@@ -389,13 +450,13 @@ export async function getIssuesForRange(spec: WindowSpec): Promise<Issue[]> {
       count: b.totalCount,
       occurrences: b.occurrences,
       occurrencesTruncated: b.totalCount > b.occurrences.length,
-      firstSeen: datesIso[0] ?? null,
-      lastSeen:  datesIso[datesIso.length - 1] ?? null,
+      firstSeen: b.firstSeenMs != null ? new Date(b.firstSeenMs).toISOString() : null,
+      lastSeen:  b.lastSeenMs  != null ? new Date(b.lastSeenMs).toISOString()  : null,
     });
   }
   // Sort by count desc, then by recency.
   issues.sort((a, b) => b.count - a.count || (b.lastSeen ?? "").localeCompare(a.lastSeen ?? ""));
-  return issues;
+  return { issues, windowTruncated, runsScanned: sample.length };
 }
 
 /**
@@ -413,6 +474,9 @@ export async function getObjectiveFailuresForRange(spec: WindowSpec): Promise<Ob
   const fromDate = isValidIsoDate(spec.from) ? new Date(spec.from + "T00:00:00Z") : null;
   const toDate   = isValidIsoDate(spec.to)   ? new Date(spec.to   + "T23:59:59.999Z") : null;
 
+  // Bounded scan — same shape as getIssuesForRange. We can't compute exact
+  // totalEvaluated / totalNotAchieved over the full project when truncated,
+  // but the windowTruncated flag tells callers the aggregates are partial.
   const runs = await prisma.run.findMany({
     where: {
       projectId: spec.projectId,
@@ -422,6 +486,7 @@ export async function getObjectiveFailuresForRange(spec: WindowSpec): Promise<Ob
         : {}),
     },
     orderBy: { callDate: "desc" },
+    take: MAX_RUNS_PER_WINDOW + 1,
     select: {
       id: true,
       conversationId: true,
@@ -434,35 +499,41 @@ export async function getObjectiveFailuresForRange(spec: WindowSpec): Promise<Ob
     },
   });
 
+  const windowTruncated = runs.length > MAX_RUNS_PER_WINDOW;
+  const sample = windowTruncated ? runs.slice(0, MAX_RUNS_PER_WINDOW) : runs;
+
   let totalEvaluated  = 0;
   let totalNotAchieved = 0;
   const failures: ObjectiveFailure[] = [];
+  /** Group counts across ALL failures, even those beyond the detail cap. */
+  const groupMap = new Map<string, { reason: string; runIds: string[] }>();
 
   function pickReason(parsed: any): { reason: string; source: ObjectiveFailure["reasonSource"] } {
-    const ci = Array.isArray(parsed.criticalIssues) ? parsed.criticalIssues : [];
-    for (const item of ci) {
-      const txt = typeof item === "string" ? item : (item && typeof item === "object" ? item.text : null);
-      if (typeof txt === "string" && txt.trim()) return { reason: txt.trim(), source: "criticalIssue" };
-    }
-    const ei = Array.isArray(parsed.experienceIssues) ? parsed.experienceIssues : [];
-    for (const item of ei) {
-      const txt = typeof item === "string" ? item : (item && typeof item === "object" ? item.text : null);
-      if (typeof txt === "string" && txt.trim()) return { reason: txt.trim(), source: "experienceIssue" };
-    }
+    const arrPick = (arr: any[]): string | null => {
+      for (const item of arr) {
+        const txt = typeof item === "string"
+          ? item
+          : (item && typeof item === "object" && typeof item.text === "string" ? item.text : null);
+        if (typeof txt === "string" && txt.trim()) return txt.trim();
+      }
+      return null;
+    };
+    const ci = Array.isArray(parsed.criticalIssues) ? arrPick(parsed.criticalIssues) : null;
+    if (ci) return { reason: ci, source: "criticalIssue" };
+    const ei = Array.isArray(parsed.experienceIssues) ? arrPick(parsed.experienceIssues) : null;
+    if (ei) return { reason: ei, source: "experienceIssue" };
     if (typeof parsed.summary === "string" && parsed.summary.trim()) {
       return { reason: parsed.summary.trim(), source: "summary" };
     }
     return { reason: "(no reason recorded by evaluator)", source: "unknown" };
   }
 
-  for (const run of runs) {
+  for (const run of sample) {
     const detailStr = run.evalResults[0]?.detail;
     if (!detailStr) continue;
     let parsed: any;
     try { parsed = typeof detailStr === "string" ? JSON.parse(detailStr) : detailStr; } catch { continue; }
     const oa = parsed?.objectiveAchieved;
-    // Only count runs where Layer 4 actually rendered a verdict (true/false).
-    // Null / undefined / "indeterminate" cases are not "failures".
     const isTrue  = oa === true  || oa === "true"  || oa === 1 || oa === "yes";
     const isFalse = oa === false || oa === "false" || oa === 0 || oa === "no";
     if (!isTrue && !isFalse) continue;
@@ -470,27 +541,28 @@ export async function getObjectiveFailuresForRange(spec: WindowSpec): Promise<Ob
     if (isTrue) continue;
     totalNotAchieved++;
 
+    const { reason, source } = pickReason(parsed);
+    const trimmedReason = reason.slice(0, 400);
+
+    // Group ALL failures (not just the detail-list ones), so reasonGroups
+    // counts remain accurate after truncation.
+    const key = normalizeIssueKey(trimmedReason);
+    let g = groupMap.get(key);
+    if (!g) { g = { reason: trimmedReason, runIds: [] }; groupMap.set(key, g); }
+    g.runIds.push(run.id);
+
     if (failures.length < MAX_OBJECTIVE_FAILURES_LIST) {
-      const { reason, source } = pickReason(parsed);
       failures.push({
         runId: run.id,
         conversationId: run.conversationId,
         callDate: run.callDate?.toISOString() ?? null,
         callOutcome: run.callOutcome,
-        reason: reason.slice(0, 400),
+        reason: trimmedReason,
         reasonSource: source,
       });
     }
   }
 
-  // Group identical (normalized) reasons.
-  const groupMap = new Map<string, { reason: string; runIds: string[] }>();
-  for (const f of failures) {
-    const key = normalizeIssueKey(f.reason);
-    let g = groupMap.get(key);
-    if (!g) { g = { reason: f.reason, runIds: [] }; groupMap.set(key, g); }
-    g.runIds.push(f.runId);
-  }
   const reasonGroups = [...groupMap.values()]
     .map(g => ({ reason: g.reason, count: g.runIds.length, runIds: g.runIds }))
     .sort((a, b) => b.count - a.count);
@@ -501,6 +573,8 @@ export async function getObjectiveFailuresForRange(spec: WindowSpec): Promise<Ob
     failures,
     failuresTruncated: totalNotAchieved > failures.length,
     reasonGroups,
+    windowTruncated,
+    runsScanned: sample.length,
   };
 }
 
@@ -520,8 +594,8 @@ export interface IssueComparisonEntry {
 }
 
 export interface ComparisonReport {
-  left:  { window: WindowSpec; kpis: KpiSnapshot; issues: Issue[]; objectiveFailures: ObjectiveFailureSummary };
-  right: { window: WindowSpec; kpis: KpiSnapshot; issues: Issue[]; objectiveFailures: ObjectiveFailureSummary };
+  left:  { window: WindowSpec; kpis: KpiSnapshot; issues: Issue[]; objectiveFailures: ObjectiveFailureSummary; windowTruncated: boolean; runsScanned: number };
+  right: { window: WindowSpec; kpis: KpiSnapshot; issues: Issue[]; objectiveFailures: ObjectiveFailureSummary; windowTruncated: boolean; runsScanned: number };
   deltas: {
     /** absolute change (right - left), positive = increased on right */
     successRate: number | null;
@@ -560,7 +634,7 @@ export async function compareReports(
   left: WindowSpec,
   right: WindowSpec,
 ): Promise<ComparisonReport> {
-  const [leftKpis, rightKpis, leftIssues, rightIssues, leftFailures, rightFailures] = await Promise.all([
+  const [leftKpis, rightKpis, leftIssuesResult, rightIssuesResult, leftFailures, rightFailures] = await Promise.all([
     getKpisForRange(left),
     getKpisForRange(right),
     getIssuesForRange(left),
@@ -568,6 +642,8 @@ export async function compareReports(
     getObjectiveFailuresForRange(left),
     getObjectiveFailuresForRange(right),
   ]);
+  const leftIssues  = leftIssuesResult.issues;
+  const rightIssues = rightIssuesResult.issues;
 
   // Diff issues by normalized key.
   const leftByKey  = new Map<string, Issue>();
@@ -621,8 +697,18 @@ export async function compareReports(
     l == null || r == null ? null : round1(r - l);
 
   return {
-    left:  { window: left,  kpis: leftKpis,  issues: leftIssues,  objectiveFailures: leftFailures  },
-    right: { window: right, kpis: rightKpis, issues: rightIssues, objectiveFailures: rightFailures },
+    left:  {
+      window: left,  kpis: leftKpis,  issues: leftIssues,
+      objectiveFailures: leftFailures,
+      windowTruncated: leftIssuesResult.windowTruncated || leftFailures.windowTruncated,
+      runsScanned:    Math.max(leftIssuesResult.runsScanned, leftFailures.runsScanned),
+    },
+    right: {
+      window: right, kpis: rightKpis, issues: rightIssues,
+      objectiveFailures: rightFailures,
+      windowTruncated: rightIssuesResult.windowTruncated || rightFailures.windowTruncated,
+      runsScanned:    Math.max(rightIssuesResult.runsScanned, rightFailures.runsScanned),
+    },
     deltas: {
       successRate:           round1(rightKpis.successRate - leftKpis.successRate),
       dropOffRate:           round1(rightKpis.dropOffRate - leftKpis.dropOffRate),

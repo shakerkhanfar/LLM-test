@@ -105,12 +105,25 @@ export default function ReportCompare() {
       .finally(() => setLoading(false));
   }, []);
 
-  const canRun = leftProj && rightProj && !running;
+  // Returns an error string if a side's from > to, else null. Browser-native
+  // date inputs produce empty strings when blank, which we treat as "no filter".
+  function rangeError(side: string, from: string, to: string): string | null {
+    if (!from || !to) return null;
+    if (from > to) return `${side}: 'from' (${from}) must be on or before 'to' (${to}).`;
+    return null;
+  }
+  const sideAEqualsB = !!leftProj && leftProj === rightProj
+    && leftFrom === rightFrom && leftTo === rightTo;
+  const leftRangeErr  = rangeError("Side A", leftFrom, leftTo);
+  const rightRangeErr = rangeError("Side B", rightFrom, rightTo);
+  const inputError = leftRangeErr || rightRangeErr
+    || (sideAEqualsB ? "Side A and Side B are identical — comparison would be empty." : null);
+  const canRun = !!leftProj && !!rightProj && !running && !inputError;
 
   async function run() {
     setRunning(true);
     setError(null);
-    setReport(null);
+    setReport(null);  // clear stale result immediately so user sees the request is live
     try {
       const left:  ComparisonWindow = { projectId: leftProj,  from: leftFrom  || undefined, to: leftTo  || undefined };
       const right: ComparisonWindow = { projectId: rightProj, from: rightFrom || undefined, to: rightTo || undefined };
@@ -166,6 +179,7 @@ export default function ReportCompare() {
         <button
           onClick={run}
           disabled={!canRun}
+          title={inputError ?? ""}
           style={{
             background: canRun ? T.primary : T.card, color: canRun ? "#fff" : T.textMuted,
             border: "none", padding: "10px 18px", borderRadius: 6, fontSize: 14, fontWeight: 600,
@@ -174,6 +188,7 @@ export default function ReportCompare() {
         >
           {running ? "Comparing…" : "Generate comparison"}
         </button>
+        {inputError && !error && <span style={{ color: "#f59e0b", fontSize: 12 }}>{inputError}</span>}
         {error && <span style={{ color: "#ef4444", fontSize: 12 }}>{error}</span>}
       </div>
 
@@ -333,8 +348,25 @@ function ComparisonResult({ report }: { report: any }) {
   const rk = report.right?.kpis ?? {};
   const d  = report.deltas      ?? {};
 
+  // Truncation banner — surfaced when either side scanned MAX_RUNS_PER_WINDOW
+  // so users don't silently take partial aggregates as full-history truths.
+  const leftTrunc  = report.left?.windowTruncated;
+  const rightTrunc = report.right?.windowTruncated;
+  const truncationBanner = (leftTrunc || rightTrunc) ? (
+    <div style={{
+      background: "#fef3c7", border: "1px solid #fde68a", color: "#92400e",
+      fontSize: 12, padding: "8px 12px", borderRadius: 6, marginBottom: 16,
+    }}>
+      ⚠ Partial scan: {leftTrunc ? `A scanned ${report.left.runsScanned} most-recent runs` : ""}
+      {leftTrunc && rightTrunc ? "; " : ""}
+      {rightTrunc ? `B scanned ${report.right.runsScanned} most-recent runs` : ""}.
+      Aggregates and issue counts reflect only the scanned set. Narrow the date range for a complete view.
+    </div>
+  ) : null;
+
   return (
     <div style={{ marginTop: 28 }}>
+      {truncationBanner}
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12 }}>
         <h2 style={{ fontSize: 18, margin: 0 }}>KPIs</h2>
         <button
@@ -575,12 +607,14 @@ function OccList({ label, projectId, occurrences }: { label: string; projectId: 
           <Link
             key={o.runId}
             to={`/projects/${projectId}/runs/${o.runId}`}
+            target="_blank"
+            rel="noopener noreferrer"
             style={{
               fontSize: 11, padding: "3px 8px", borderRadius: 4,
               background: T.input, color: T.link, border: `1px solid ${T.border}`, textDecoration: "none",
               fontFamily: "monospace",
             }}
-            title={`${o.callDate ?? "no date"} · outcome=${o.callOutcome ?? "?"}`}
+            title={`${o.callDate ?? "no date"} · outcome=${o.callOutcome ?? "?"} — opens in new tab`}
           >
             {o.conversationId ? o.conversationId.slice(0, 8) : o.runId.slice(0, 8)}
           </Link>
@@ -638,6 +672,9 @@ function ObjectiveFailuresPanel({
                     <Link
                       key={rid}
                       to={`/projects/${projectId}/runs/${rid}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      title="Open run in new tab"
                       style={{
                         fontSize: 10, padding: "2px 6px", borderRadius: 3,
                         background: T.input, color: T.link, border: `1px solid ${T.border}`,

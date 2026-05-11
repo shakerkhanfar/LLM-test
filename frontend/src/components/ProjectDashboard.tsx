@@ -194,16 +194,25 @@ export default function ProjectDashboard({ project, onDashLoaded, onLoadMore, ha
   const [objFailures, setObjFailures] = useState<any>(null);
   const [objFailuresLoading, setObjFailuresLoading] = useState(false);
   const [objFailuresExpanded, setObjFailuresExpanded] = useState(false);
+  const [objFailuresError, setObjFailuresError] = useState<string | null>(null);
+  const [objFailuresReloadKey, setObjFailuresReloadKey] = useState(0);
   useEffect(() => {
     let cancelled = false;
     setObjFailures(null);
+    setObjFailuresError(null);
     setObjFailuresLoading(true);
     getObjectiveFailures(project.id)
       .then((d) => { if (!cancelled) setObjFailures(d); })
-      .catch(() => { if (!cancelled) setObjFailures(null); })
+      .catch((e) => {
+        if (!cancelled) {
+          const msg = e instanceof Error ? e.message : String(e);
+          setObjFailuresError(msg.slice(0, 200));
+          setObjFailures(null);
+        }
+      })
       .finally(() => { if (!cancelled) setObjFailuresLoading(false); });
     return () => { cancelled = true; };
-  }, [project.id]);
+  }, [project.id, objFailuresReloadKey]);
 
   // Close issues modal on ESC + lock body scroll while open
   useEffect(() => {
@@ -1651,6 +1660,25 @@ export default function ProjectDashboard({ project, onDashLoaded, onLoadMore, ha
             </div>
           );
         }
+        if (objFailuresError) {
+          return (
+            <div style={CARD_STYLE}>
+              <div style={SECTION_LABEL_STYLE}>Objective Not Achieved</div>
+              <div style={{ display: "flex", alignItems: "center", gap: 12, marginTop: 8 }}>
+                <span style={{ color: "#ef4444", fontSize: 12 }}>Failed to load: {objFailuresError}</span>
+                <button
+                  onClick={() => setObjFailuresReloadKey((k) => k + 1)}
+                  style={{
+                    fontSize: 11, padding: "4px 10px", borderRadius: 4, background: T.card,
+                    border: `1px solid ${T.border}`, color: T.text, cursor: "pointer",
+                  }}
+                >
+                  Retry
+                </button>
+              </div>
+            </div>
+          );
+        }
         if (!objFailures || objFailures.totalEvaluated === 0) return null;
         const total = objFailures.totalNotAchieved ?? 0;
         const evaluated = objFailures.totalEvaluated ?? 0;
@@ -1688,6 +1716,9 @@ export default function ProjectDashboard({ project, onDashLoaded, onLoadMore, ha
                           <RouterLink
                             key={rid}
                             to={`/projects/${project.id}/runs/${rid}`}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            title="Open run in new tab"
                             style={{
                               fontSize: 10, padding: "2px 6px", borderRadius: 3,
                               background: T.input, color: T.link, border: `1px solid ${T.border}`,
@@ -1717,9 +1748,13 @@ export default function ProjectDashboard({ project, onDashLoaded, onLoadMore, ha
                 )}
               </>
             )}
-            {objFailures.failuresTruncated && (
-              <div style={{ fontSize: 10, color: T.textMuted, marginTop: 8 }}>
-                ({objFailures.failures.length} of {total} per-call details shown — capped for performance)
+            {objFailures.windowTruncated && (
+              <div style={{
+                fontSize: 11, marginTop: 10, padding: "6px 10px",
+                background: "#fef3c7", border: "1px solid #fde68a", color: "#92400e", borderRadius: 4,
+              }}>
+                ⚠ Partial scan: only the {objFailures.runsScanned} most-recent runs were analyzed.
+                Counts reflect that sample, not the project's full history.
               </div>
             )}
           </div>

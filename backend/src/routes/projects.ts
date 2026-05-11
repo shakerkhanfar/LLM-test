@@ -1047,7 +1047,13 @@ router.get("/:id/objective-failures", async (req: AuthRequest, res) => {
 // POST /report/compare
 // Body: { left: { projectId, from?, to? }, right: { projectId, from?, to? } }
 // Returns a ComparisonReport (see reportComparison.ts).
-router.post("/report/compare", async (req: AuthRequest, res) => {
+//
+// Rate-limited (evalRateLimit) because each call scans up to MAX_RUNS_PER_WINDOW
+// runs per side with JSON.parse on each detail — capable of stalling the event
+// loop if hammered. 60s timeout: cold-Neon connections + large windows can be
+// slow, but anything past 60s is almost certainly stuck.
+const COMPARE_TIMEOUT_MS = 60_000;
+router.post("/report/compare", evalRateLimit, async (req: AuthRequest, res) => {
   try {
     const { left, right } = (req.body ?? {}) as {
       left?:  { projectId?: string; from?: string; to?: string };
@@ -1067,21 +1073,37 @@ router.post("/report/compare", async (req: AuthRequest, res) => {
     if (!await canAccess(lp.userId ?? null, req)) return res.status(403).json({ error: "Access denied to left project" });
     if (!await canAccess(rp.userId ?? null, req)) return res.status(403).json({ error: "Access denied to right project" });
 
-    const report = await compareReports(
-      { projectId: left.projectId,  from: left.from,  to: left.to  },
-      { projectId: right.projectId, from: right.from, to: right.to },
-    );
-
-    // Attach display names so the frontend can label sides without a second roundtrip.
-    res.json({
-      ...report,
-      left:  { ...report.left,  projectName: lp.name },
-      right: { ...report.right, projectName: rp.name },
+    // Promise.race timeout. The compare promise keeps running after the race —
+    // that's OK, it's bounded by MAX_RUNS_PER_WINDOW and will resolve eventually.
+    let timer: NodeJS.Timeout | undefined;
+    const timeoutPromise = new Promise<never>((_resolve, reject) => {
+      timer = setTimeout(
+        () => reject(new Error(`Comparison timed out after ${COMPARE_TIMEOUT_MS / 1000}s`)),
+        COMPARE_TIMEOUT_MS,
+      );
     });
+    try {
+      const report = await Promise.race([
+        compareReports(
+          { projectId: left.projectId,  from: left.from,  to: left.to  },
+          { projectId: right.projectId, from: right.from, to: right.to },
+        ),
+        timeoutPromise,
+      ]);
+      // Attach display names so the frontend can label sides without a second roundtrip.
+      res.json({
+        ...report,
+        left:  { ...report.left,  projectName: lp.name },
+        right: { ...report.right, projectName: rp.name },
+      });
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
   } catch (err) {
     const msg = (err as Error).message ?? "Unknown error";
     console.error("[Report] Compare error:", msg);
-    const statusCode = msg.includes("Invalid range") ? 400 : 500;
+    const statusCode = msg.includes("Invalid range") ? 400 :
+                       msg.includes("timed out")     ? 504 : 500;
     res.status(statusCode).json({ error: msg });
   }
 });
