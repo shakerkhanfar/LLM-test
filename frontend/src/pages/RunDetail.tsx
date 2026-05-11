@@ -530,54 +530,6 @@ export default function RunDetail() {
         </>)}
       </div>
 
-      {/* Call recording */}
-      {recordingUrl && (
-        <div style={{ marginBottom: 20, background: T.card, border: `1px solid ${T.border}`, borderRadius: 8, padding: "10px 14px" }}>
-          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: audioError ? 0 : 8 }}>
-            <span style={{ fontSize: 11, fontWeight: 600, color: T.textMuted, textTransform: "uppercase", letterSpacing: 0.5 }}>
-              Call Recording
-              {isAudioPlaying && (
-                <span style={{ marginLeft: 8, color: T.primary, fontWeight: 700 }}>
-                  ● LIVE
-                </span>
-              )}
-            </span>
-            <a href={recordingUrl} target="_blank" rel="noopener noreferrer"
-              style={{ fontSize: 12, color: T.link, textDecoration: "none" }}>
-              Open directly ↗
-            </a>
-          </div>
-          {audioError ? (
-            <div style={{ fontSize: 12, color: T.textSecondary }}>
-              Recording unavailable — URL may have expired. Use "Open directly" above.
-            </div>
-          ) : (
-            <audio
-              ref={audioRef}
-              controls
-              src={recordingUrl}
-              onError={() => {
-                // If the stored CloudFront URL expired, try fetching a fresh one from Hamsa
-                if (!recordingRefreshAttempted) {
-                  setRecordingRefreshAttempted(true);
-                  getRecordingUrl(runId!)
-                    .then(({ url }) => { setFreshRecordingUrl(url); setAudioError(false); })
-                    .catch(() => setAudioError(true));
-                } else {
-                  setAudioError(true);
-                }
-              }}
-              onTimeUpdate={() => setAudioTime(audioRef.current?.currentTime ?? 0)}
-              onSeeked={() => setAudioTime(audioRef.current?.currentTime ?? 0)}
-              onPlay={() => setIsAudioPlaying(true)}
-              onPause={() => setIsAudioPlaying(false)}
-              onEnded={() => { setIsAudioPlaying(false); setAudioTime(0); }}
-              style={{ width: "100%", accentColor: T.primary, display: "block" }}
-            />
-          )}
-        </div>
-      )}
-
       {/* Call outcome + score summary */}
       <div style={{ display: "flex", gap: 32, alignItems: "flex-start", marginBottom: 24, flexWrap: "wrap" }}>
         {run.overallScore != null && (
@@ -1508,6 +1460,59 @@ export default function RunDetail() {
           activeNodeId={activeNodeId}
           isPlaying={isAudioPlaying}
         />
+      )}
+
+      {/* Call recording — placed between Flow Progression and Transcript so both
+          the lighting-up nodes (above) and the live transcript (below) stay
+          visible while playback drives them. */}
+      {recordingUrl && (
+        <div style={{
+          position: "sticky", top: 0, zIndex: 5,
+          marginBottom: 20, background: T.card, border: `1px solid ${T.border}`,
+          borderRadius: 8, padding: "10px 14px",
+        }}>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: audioError ? 0 : 8 }}>
+            <span style={{ fontSize: 11, fontWeight: 600, color: T.textMuted, textTransform: "uppercase", letterSpacing: 0.5 }}>
+              Call Recording
+              {isAudioPlaying && (
+                <span style={{ marginLeft: 8, color: T.primary, fontWeight: 700 }}>
+                  ● LIVE
+                </span>
+              )}
+            </span>
+            <a href={recordingUrl} target="_blank" rel="noopener noreferrer"
+              style={{ fontSize: 12, color: T.link, textDecoration: "none" }}>
+              Open directly ↗
+            </a>
+          </div>
+          {audioError ? (
+            <div style={{ fontSize: 12, color: T.textSecondary }}>
+              Recording unavailable — URL may have expired. Use "Open directly" above.
+            </div>
+          ) : (
+            <audio
+              ref={audioRef}
+              controls
+              src={recordingUrl}
+              onError={() => {
+                if (!recordingRefreshAttempted) {
+                  setRecordingRefreshAttempted(true);
+                  getRecordingUrl(runId!)
+                    .then(({ url }) => { setFreshRecordingUrl(url); setAudioError(false); })
+                    .catch(() => setAudioError(true));
+                } else {
+                  setAudioError(true);
+                }
+              }}
+              onTimeUpdate={() => setAudioTime(audioRef.current?.currentTime ?? 0)}
+              onSeeked={() => setAudioTime(audioRef.current?.currentTime ?? 0)}
+              onPlay={() => setIsAudioPlaying(true)}
+              onPause={() => setIsAudioPlaying(false)}
+              onEnded={() => { setIsAudioPlaying(false); setAudioTime(0); }}
+              style={{ width: "100%", accentColor: T.primary, display: "block" }}
+            />
+          )}
+        </div>
       )}
 
       {/* Transcript with word labeling */}
