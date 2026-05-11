@@ -481,6 +481,36 @@ export function generateIntelligenceReport(
   });
 }
 
+// ─── Comparison reports ───────────────────────────────────────────
+
+export interface ComparisonWindow {
+  projectId: string;
+  from?: string;  // YYYY-MM-DD
+  to?: string;    // YYYY-MM-DD
+}
+
+export function compareReports(left: ComparisonWindow, right: ComparisonWindow) {
+  return request<any>(`/projects/report/compare`, {
+    method: "POST",
+    body: JSON.stringify({ left, right }),
+  });
+}
+
+export function explainComparisonResolution(payload: {
+  left: ComparisonWindow;
+  right: ComparisonWindow;
+  issueText: string;
+  issueSource: string;
+  nodeLabel?: string;
+  leftRunIds: string[];
+  rightRunIds?: string[];
+}) {
+  return request<{ explanation: string; confidence: "high" | "medium" | "low"; costUsd: number }>(
+    `/projects/report/compare/resolution`,
+    { method: "POST", body: JSON.stringify(payload) }
+  );
+}
+
 // ─── Users ────────────────────────────────────────────────────────
 
 export function listUsers() {

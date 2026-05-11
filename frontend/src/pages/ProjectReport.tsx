@@ -334,6 +334,16 @@ export default function ProjectReport() {
             >
               Export / Print
             </button>
+            <Link
+              to={`/report/compare?leftProj=${id}`}
+              style={{
+                padding: "6px 14px", background: T.primary,
+                border: `1px solid ${T.primary}`, color: "#fff",
+                borderRadius: T.radiusSm, fontSize: 13, textDecoration: "none",
+              }}
+            >
+              Compare reports →
+            </Link>
           </div>
         </div>
 

@@ -6,6 +6,7 @@ import { getAgent } from "../services/hamsaApi";
 import { generateAgentSummary } from "../services/llmJudge";
 import { analyzeProject, compareAnalyses } from "../services/projectAnalyzer";
 import { getProjectReport, generateIntelligenceReport } from "../services/reportingService";
+import { compareReports } from "../services/reportComparison";
 import { searchRuns } from "../services/runSearch";
 import { runEvaluationCheck } from "../services/evaluationRunner";
 import { auditAgentPrompts } from "../services/promptAuditor";
@@ -1015,6 +1016,185 @@ router.post("/:id/report/intelligence", llmRateLimit, async (req: AuthRequest, r
     }
     const statusCode = msg.startsWith("At least 3") ? 400 : 500;
     res.status(statusCode).json({ error: msg });
+  }
+});
+
+// ── Report comparison: KPIs + issues, two windows side-by-side ──────────────
+// POST /report/compare
+// Body: { left: { projectId, from?, to? }, right: { projectId, from?, to? } }
+// Returns a ComparisonReport (see reportComparison.ts).
+router.post("/report/compare", async (req: AuthRequest, res) => {
+  try {
+    const { left, right } = (req.body ?? {}) as {
+      left?:  { projectId?: string; from?: string; to?: string };
+      right?: { projectId?: string; from?: string; to?: string };
+    };
+    if (!left?.projectId || !right?.projectId) {
+      return res.status(400).json({ error: "left.projectId and right.projectId are required" });
+    }
+
+    // Auth: caller must have access to BOTH projects.
+    const [lp, rp] = await Promise.all([
+      prisma.project.findUnique({ where: { id: left.projectId  }, select: { userId: true, name: true } }),
+      prisma.project.findUnique({ where: { id: right.projectId }, select: { userId: true, name: true } }),
+    ]);
+    if (!lp) return res.status(404).json({ error: "left project not found" });
+    if (!rp) return res.status(404).json({ error: "right project not found" });
+    if (!await canAccess(lp.userId ?? null, req)) return res.status(403).json({ error: "Access denied to left project" });
+    if (!await canAccess(rp.userId ?? null, req)) return res.status(403).json({ error: "Access denied to right project" });
+
+    const report = await compareReports(
+      { projectId: left.projectId,  from: left.from,  to: left.to  },
+      { projectId: right.projectId, from: right.from, to: right.to },
+    );
+
+    // Attach display names so the frontend can label sides without a second roundtrip.
+    res.json({
+      ...report,
+      left:  { ...report.left,  projectName: lp.name },
+      right: { ...report.right, projectName: rp.name },
+    });
+  } catch (err) {
+    const msg = (err as Error).message ?? "Unknown error";
+    console.error("[Report] Compare error:", msg);
+    const statusCode = msg.includes("Invalid range") ? 400 : 500;
+    res.status(statusCode).json({ error: msg });
+  }
+});
+
+// ── Resolution narrative — LLM-driven explanation of why an issue may have
+// been resolved on one side vs the other. Bounded cost: single LLM call with
+// 2-3 sample transcripts per side, no full-corpus loading.
+// POST /report/compare/resolution
+// Body: {
+//   left:  { projectId, from?, to? },
+//   right: { projectId, from?, to? },
+//   issueText: string,                           // the canonical text of the issue
+//   issueSource: "L4_critical"|"L3_node"|"intel_failure",
+//   nodeLabel?: string,                          // optional, for L3 issues
+//   leftRunIds: string[],                        // sample runs that hit the issue on left
+//   rightRunIds?: string[],                      // optional — empty for "resolved" issues
+// }
+router.post("/report/compare/resolution", llmRateLimit, async (req: AuthRequest, res) => {
+  try {
+    const body = (req.body ?? {}) as {
+      left?:  { projectId?: string };
+      right?: { projectId?: string };
+      issueText?: string;
+      issueSource?: string;
+      nodeLabel?: string;
+      leftRunIds?: string[];
+      rightRunIds?: string[];
+    };
+    if (!body.left?.projectId || !body.right?.projectId || !body.issueText) {
+      return res.status(400).json({ error: "left.projectId, right.projectId and issueText are required" });
+    }
+
+    // Access check — same as comparison endpoint.
+    const [lp, rp] = await Promise.all([
+      prisma.project.findUnique({
+        where: { id: body.left.projectId },
+        select: { userId: true, name: true, agentSummary: true, agentStructure: true },
+      }),
+      prisma.project.findUnique({
+        where: { id: body.right.projectId },
+        select: { userId: true, name: true, agentSummary: true, agentStructure: true },
+      }),
+    ]);
+    if (!lp || !rp) return res.status(404).json({ error: "Project not found" });
+    if (!await canAccess(lp.userId ?? null, req)) return res.status(403).json({ error: "Access denied" });
+    if (!await canAccess(rp.userId ?? null, req)) return res.status(403).json({ error: "Access denied" });
+
+    // Pull up to 3 sample runs per side. We don't load full transcripts —
+    // just the conversation up to ~1500 chars per side total.
+    const leftIds  = (body.leftRunIds  ?? []).slice(0, 3);
+    const rightIds = (body.rightRunIds ?? []).slice(0, 3);
+
+    const [leftRuns, rightRuns] = await Promise.all([
+      leftIds.length > 0
+        ? prisma.run.findMany({
+            where: { id: { in: leftIds }, projectId: body.left.projectId },
+            select: { id: true, transcript: true, callOutcome: true },
+          })
+        : Promise.resolve([]),
+      rightIds.length > 0
+        ? prisma.run.findMany({
+            where: { id: { in: rightIds }, projectId: body.right.projectId },
+            select: { id: true, transcript: true, callOutcome: true },
+          })
+        : Promise.resolve([]),
+    ]);
+
+    function summarizeRun(run: { id: string; transcript: any; callOutcome: string | null }, maxChars: number): string {
+      const tr = Array.isArray(run.transcript) ? run.transcript : [];
+      const text = tr.slice(0, 12).map((t: any) => {
+        if (t?.Agent) return `Agent: ${String(t.Agent).slice(0, 160)}`;
+        if (t?.User)  return `User: ${String(t.User).slice(0, 120)}`;
+        return "";
+      }).filter(Boolean).join(" | ").slice(0, maxChars);
+      return `[run ${run.id.slice(0, 8)} | outcome=${run.callOutcome ?? "?"}] ${text}`;
+    }
+
+    const leftSamples  = leftRuns.map(r => summarizeRun(r, 500)).join("\n");
+    const rightSamples = rightRuns.map(r => summarizeRun(r, 500)).join("\n");
+
+    // For agent context, we use agentSummary (which is short and human-curated).
+    // We avoid sending the full agentStructure here — too big and high signal-to-noise penalty.
+    const leftCtx  = (lp.agentSummary ?? "").slice(0, 600);
+    const rightCtx = (rp.agentSummary ?? "").slice(0, 600);
+
+    const sameProject = body.left.projectId === body.right.projectId;
+    const status = rightRuns.length === 0 ? "resolved" : "reduced/changed";
+
+    const prompt = `You are comparing two AI voice agent setups (or two time windows of the same setup) to explain why a specific issue appears on one side but not (or less) on the other.
+
+ISSUE:
+${body.issueText.slice(0, 500)}
+${body.nodeLabel ? `Node: ${body.nodeLabel}` : ""}
+Source: ${body.issueSource ?? "unknown"}
+Status on right side: ${status}
+Same project: ${sameProject ? "yes (likely a prompt/config change between dates)" : "no (cross-project comparison)"}
+
+LEFT SIDE — ${lp.name}
+Agent summary: ${leftCtx || "(none)"}
+Sample calls where the issue occurred:
+${leftSamples || "(none)"}
+
+RIGHT SIDE — ${rp.name}
+Agent summary: ${rightCtx || "(none)"}
+${rightRuns.length > 0 ? `Sample calls where the issue STILL occurs (reduced):\n${rightSamples}` : "(no calls on the right exhibit this issue)"}
+
+Write a concise explanation (3-5 sentences max) of the MOST LIKELY reason the issue is absent or reduced on the right side. Cite specific differences in agent setup, prompt instructions, or interaction patterns when visible. If the data is insufficient to say, say so plainly — do not fabricate.
+
+Respond with JSON only:
+{"explanation": "...", "confidence": "high" | "medium" | "low"}`;
+
+    const OpenAI = (await import("openai")).default;
+    const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY, timeout: 30_000 });
+    const completion = await openai.chat.completions.create({
+      model:           "gpt-4.1-mini",
+      temperature:     0.2,
+      response_format: { type: "json_object" },
+      messages:        [{ role: "user", content: prompt }],
+      max_tokens:      400,
+    });
+    const raw = completion.choices[0]?.message?.content ?? "{}";
+    let parsed: any = {};
+    try { parsed = JSON.parse(raw); } catch {}
+    const explanation = typeof parsed.explanation === "string" ? parsed.explanation.slice(0, 1200) : "";
+    const confidence  = ["high", "medium", "low"].includes(parsed.confidence) ? parsed.confidence : "medium";
+
+    // Estimate cost (input + output @ gpt-4.1-mini rates).
+    const u = completion.usage;
+    const costUsd = u
+      ? (u.prompt_tokens / 1_000_000) * 0.4 + (u.completion_tokens / 1_000_000) * 1.6
+      : 0;
+
+    res.json({ explanation, confidence, costUsd: parseFloat(costUsd.toFixed(4)) });
+  } catch (err) {
+    const msg = (err as Error).message ?? "Unknown error";
+    console.error("[Report] Resolution error:", msg);
+    res.status(500).json({ error: msg });
   }
 });
 
