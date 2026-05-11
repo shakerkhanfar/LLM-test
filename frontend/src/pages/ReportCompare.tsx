@@ -8,7 +8,7 @@
  *      run IDs (linked to the run page) and a per-issue "Explain resolution"
  *      button that fires the LLM narrative endpoint on demand.
  */
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import {
   listProjects, compareReports, explainComparisonResolution,
