@@ -23,6 +23,7 @@
  */
 import { Prisma } from "@prisma/client";
 import prisma from "../lib/prisma";
+import { clusterAndMatchIssues, type ClusteredComparisonResult } from "./issueClusterer";
 
 // ── Shared SQL classification fragments (same as reportingService) ───────────
 
@@ -613,6 +614,13 @@ export interface ComparisonReport {
     onlyOnRight: IssueComparisonEntry[];
     shared:      IssueComparisonEntry[];
   };
+  /**
+   * Semantically clustered version of the issue comparison. Variants with the
+   * same underlying meaning are merged into one ClusteredIssue. Matching across
+   * sides uses embedding cosine similarity. Null when OpenAI key is unavailable
+   * or the embedding call fails — fall back to issueComparison in that case.
+   */
+  clusteredIssueComparison: ClusteredComparisonResult | null;
   /** Whether left.projectId === right.projectId — affects what "resolution" means. */
   sameProject: boolean;
 }
@@ -692,6 +700,14 @@ export async function compareReports(
   onlyOnRight.sort(byImpact);
   shared.sort(byImpact);
 
+  // Semantic clustering — runs in parallel with no extra DB cost.
+  // Returns null on missing key or API error; UI falls back gracefully.
+  const clusteredIssueComparison = await clusterAndMatchIssues(leftIssues, rightIssues)
+    .catch((err: unknown) => {
+      console.error("[compareReports] clustering failed:", err instanceof Error ? err.message : err);
+      return null;
+    });
+
   const round1 = (n: number) => parseFloat(n.toFixed(1));
   const deltaNullable = (l: number | null, r: number | null) =>
     l == null || r == null ? null : round1(r - l);
@@ -721,6 +737,7 @@ export async function compareReports(
       totalRuns:             rightKpis.totalRuns - leftKpis.totalRuns,
     },
     issueComparison: { onlyOnLeft, onlyOnRight, shared },
+    clusteredIssueComparison,
     sameProject: left.projectId === right.projectId,
   };
 }

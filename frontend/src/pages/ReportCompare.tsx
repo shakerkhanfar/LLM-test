@@ -21,6 +21,34 @@ import T from "../theme";
 type IssueSource = "L4_critical" | "L3_node" | "intel_failure";
 type IssueStatus = "only_left" | "only_right" | "resolved" | "reduced" | "worsened" | "unchanged";
 
+interface ClusteredVariant { text: string; count: number; nodeLabel?: string; source: IssueSource; }
+interface ClusteredIssue {
+  canonicalText: string;
+  variants: ClusteredVariant[];
+  totalCount: number;
+  source: IssueSource;
+  severity?: "critical" | "high" | "medium" | "low";
+  nodeLabels: string[];
+  occurrences: Occurrence[];
+  occurrencesTruncated: boolean;
+  firstSeen: string | null;
+  lastSeen: string | null;
+}
+interface ClusteredPair {
+  left: ClusteredIssue;
+  right: ClusteredIssue;
+  similarity: number;
+  countDelta: number;
+  deltaPercent: number | null;
+  status: "reduced" | "worsened" | "unchanged";
+}
+interface ClusteredComparison {
+  resolved: ClusteredIssue[];
+  newIssues: ClusteredIssue[];
+  persisting: ClusteredPair[];
+  stats: { resolvedClusters: number; newClusters: number; persistingClusters: number; leftClusterCount: number; rightClusterCount: number };
+}
+
 interface Occurrence { runId: string; conversationId: string | null; callDate: string | null; callOutcome: string | null; }
 
 interface IssueEntry {
@@ -422,10 +450,20 @@ function ComparisonResult({ report }: { report: any }) {
         />
       </div>
 
+      {/* ── Grouped Issues (semantic clustering) ── */}
+      {report.clusteredIssueComparison && (
+        <ClusteredIssuesSection
+          clustered={report.clusteredIssueComparison as ClusteredComparison}
+          leftName={leftName}
+          rightName={rightName}
+          report={report}
+        />
+      )}
+
       <h2 style={{ fontSize: 18, margin: "28px 0 12px" }}>
         Issues
         <span style={{ fontSize: 12, color: T.textMuted, fontWeight: 400, marginLeft: 8 }}>
-          (compared by normalized text + source + node)
+          (exact match by normalized text + source + node)
         </span>
       </h2>
 
@@ -709,6 +747,267 @@ function ObjectiveFailuresPanel({
       {summary.failuresTruncated && (
         <div style={{ fontSize: 10, color: T.textMuted, marginTop: 8 }}>
           ({failures.length} of {total} per-call detail rows shown — capped for performance; CSV export has the full set)
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── Clustered issue section ─────────────────────────────────────────────────
+
+function ClusteredIssuesSection({
+  clustered, leftName, rightName, report,
+}: {
+  clustered: ClusteredComparison;
+  leftName: string;
+  rightName: string;
+  report: any;
+}) {
+  const { stats } = clustered;
+  return (
+    <div style={{ marginBottom: 8 }}>
+      <h2 style={{ fontSize: 18, margin: "28px 0 4px" }}>
+        Grouped issues
+        <span style={{ fontSize: 12, color: T.textMuted, fontWeight: 400, marginLeft: 8 }}>
+          (semantically clustered · similar phrasing merged into one group)
+        </span>
+      </h2>
+      <div style={{ fontSize: 11, color: T.textMuted, marginBottom: 14 }}>
+        A → {stats.leftClusterCount} groups · B → {stats.rightClusterCount} groups ·{" "}
+        <span style={{ color: "#22c55e", fontWeight: 600 }}>{stats.resolvedClusters} resolved</span> ·{" "}
+        <span style={{ color: "#ef4444", fontWeight: 600 }}>{stats.newClusters} new</span> ·{" "}
+        <span style={{ color: T.textSecondary, fontWeight: 600 }}>{stats.persistingClusters} persisting</span>
+      </div>
+
+      <ClusteredSection
+        title={`Resolved — issue groups absent in B (${stats.resolvedClusters})`}
+        items={clustered.resolved.map(c => ({ type: "single" as const, cluster: c }))}
+        leftName={leftName} rightName={rightName} report={report}
+        emptyMsg="No resolved issue groups."
+        defaultExpanded
+      />
+      <ClusteredSection
+        title={`New — issue groups that appeared in B (${stats.newClusters})`}
+        items={clustered.newIssues.map(c => ({ type: "single" as const, cluster: c }))}
+        leftName={leftName} rightName={rightName} report={report}
+        emptyMsg="No new issue groups."
+        defaultExpanded={false}
+      />
+      <ClusteredSection
+        title={`Persisting — issue groups present in both (${stats.persistingClusters})`}
+        items={clustered.persisting.map(p => ({ type: "pair" as const, pair: p }))}
+        leftName={leftName} rightName={rightName} report={report}
+        emptyMsg="No shared issue groups."
+        defaultExpanded={false}
+      />
+    </div>
+  );
+}
+
+type ClusteredItem =
+  | { type: "single"; cluster: ClusteredIssue }
+  | { type: "pair"; pair: ClusteredPair };
+
+function ClusteredSection({
+  title, items, leftName, rightName, report, emptyMsg, defaultExpanded,
+}: {
+  title: string;
+  items: ClusteredItem[];
+  leftName: string;
+  rightName: string;
+  report: any;
+  emptyMsg: string;
+  defaultExpanded: boolean;
+}) {
+  const [expanded, setExpanded] = useState(defaultExpanded);
+  return (
+    <div style={{ marginBottom: 20 }}>
+      <h3
+        onClick={() => setExpanded(!expanded)}
+        style={{ fontSize: 14, marginBottom: 8, cursor: "pointer", display: "flex", alignItems: "center", gap: 8 }}
+      >
+        <span style={{ color: T.textSecondary, fontSize: 11 }}>{expanded ? "▼" : "▶"}</span>
+        {title}
+      </h3>
+      {expanded && (items.length === 0
+        ? <div style={{ fontSize: 12, color: T.textMuted, padding: "8px 0 8px" }}>{emptyMsg}</div>
+        : <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            {items.map((item, idx) =>
+              item.type === "single"
+                ? <ClusteredIssueRow key={idx} cluster={item.cluster} leftName={leftName} rightName={rightName} report={report} side="left" />
+                : <ClusteredPairRow  key={idx} pair={item.pair} leftName={leftName} rightName={rightName} report={report} />
+            )}
+          </div>
+      )}
+    </div>
+  );
+}
+
+function ClusteredIssueRow({
+  cluster, leftName, rightName, report, side,
+}: {
+  cluster: ClusteredIssue;
+  leftName: string;
+  rightName: string;
+  report: any;
+  side: "left" | "right";
+}) {
+  const [open, setOpen] = useState(false);
+  const sourceColor = SOURCE_COLOR[cluster.source];
+  const sevColor    = cluster.severity ? SEVERITY_COLOR[cluster.severity] : null;
+  const projectId   = side === "left" ? report.left.window.projectId : report.right.window.projectId;
+
+  return (
+    <div style={{ background: T.card, border: `1px solid ${T.border}`, borderRadius: 6, padding: "10px 12px" }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+        <button
+          onClick={() => setOpen(!open)}
+          style={{ background: "none", border: "none", color: T.textSecondary, cursor: "pointer", padding: 0, fontSize: 11 }}
+        >
+          {open ? "▼" : "▶"}
+        </button>
+        <span style={{ fontSize: 10, fontWeight: 700, color: sourceColor, padding: "2px 6px", background: `${sourceColor}22`, borderRadius: 4, textTransform: "uppercase" }}>
+          {SOURCE_LABEL[cluster.source]}
+        </span>
+        {sevColor && (
+          <span style={{ fontSize: 10, fontWeight: 700, color: sevColor, padding: "2px 6px", background: `${sevColor}22`, borderRadius: 4, textTransform: "uppercase" }}>
+            {cluster.severity}
+          </span>
+        )}
+        {cluster.nodeLabels.length > 0 && (
+          <span style={{ fontSize: 11, color: T.textMuted }}>{cluster.nodeLabels.slice(0, 2).join(", ")}{cluster.nodeLabels.length > 2 ? ` +${cluster.nodeLabels.length - 2}` : ""}</span>
+        )}
+        <span style={{ flex: 1, fontSize: 13 }}>{cluster.canonicalText}</span>
+        {cluster.variants.length > 1 && (
+          <span style={{ fontSize: 10, color: T.textMuted, padding: "2px 6px", background: T.cardAlt, borderRadius: 4 }}>
+            {cluster.variants.length} variants
+          </span>
+        )}
+        <span style={{ fontSize: 12, color: T.textMuted, whiteSpace: "nowrap" }}>
+          <strong style={{ color: T.text }}>{cluster.totalCount}</strong> occurrence{cluster.totalCount !== 1 ? "s" : ""}
+        </span>
+      </div>
+      {open && (
+        <div style={{ marginTop: 10, paddingLeft: 22 }}>
+          {cluster.variants.length > 1 && (
+            <div style={{ marginBottom: 10 }}>
+              <div style={{ fontSize: 11, fontWeight: 600, color: T.textSecondary, marginBottom: 4 }}>Variants merged into this group</div>
+              <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                {cluster.variants.map((v, i) => (
+                  <div key={i} style={{ fontSize: 12, color: T.text, padding: "4px 8px", background: T.cardAlt, borderRadius: 4, display: "flex", justifyContent: "space-between", gap: 8 }}>
+                    <span style={{ flex: 1 }}>{v.text}</span>
+                    <span style={{ color: T.textMuted, whiteSpace: "nowrap" }}>{v.count}×</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+          {cluster.occurrences.length > 0 && (
+            <OccList
+              label={`${side === "left" ? leftName : rightName} — ${cluster.totalCount} call(s)`}
+              projectId={projectId}
+              occurrences={cluster.occurrences}
+            />
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ClusteredPairRow({
+  pair, leftName, rightName, report,
+}: {
+  pair: ClusteredPair;
+  leftName: string;
+  rightName: string;
+  report: any;
+}) {
+  const [open, setOpen] = useState(false);
+  const cluster = pair.left;
+  const sourceColor = SOURCE_COLOR[cluster.source];
+  const sevColor    = cluster.severity ? SEVERITY_COLOR[cluster.severity] : null;
+
+  const STATUS_COLORS: Record<ClusteredPair["status"], { bg: string; fg: string }> = {
+    reduced:   { bg: "#d1fae5", fg: "#065f46" },
+    worsened:  { bg: "#fee2e2", fg: "#991b1b" },
+    unchanged: { bg: "#e5e7eb", fg: "#374151" },
+  };
+  const sc = STATUS_COLORS[pair.status];
+
+  return (
+    <div style={{ background: T.card, border: `1px solid ${T.border}`, borderRadius: 6, padding: "10px 12px" }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+        <button
+          onClick={() => setOpen(!open)}
+          style={{ background: "none", border: "none", color: T.textSecondary, cursor: "pointer", padding: 0, fontSize: 11 }}
+        >
+          {open ? "▼" : "▶"}
+        </button>
+        <span style={{ fontSize: 10, fontWeight: 700, color: sourceColor, padding: "2px 6px", background: `${sourceColor}22`, borderRadius: 4, textTransform: "uppercase" }}>
+          {SOURCE_LABEL[cluster.source]}
+        </span>
+        {sevColor && (
+          <span style={{ fontSize: 10, fontWeight: 700, color: sevColor, padding: "2px 6px", background: `${sevColor}22`, borderRadius: 4, textTransform: "uppercase" }}>
+            {cluster.severity}
+          </span>
+        )}
+        <span style={{ flex: 1, fontSize: 13 }}>{cluster.canonicalText}</span>
+        {(pair.left.variants.length > 1 || pair.right.variants.length > 1) && (
+          <span style={{ fontSize: 10, color: T.textMuted, padding: "2px 6px", background: T.cardAlt, borderRadius: 4 }}>
+            {Math.max(pair.left.variants.length, pair.right.variants.length)} variants
+          </span>
+        )}
+        <span style={{ fontSize: 12, color: T.textMuted, whiteSpace: "nowrap" }}>
+          A: <strong style={{ color: T.text }}>{pair.left.totalCount}</strong>
+          {" · "}
+          B: <strong style={{ color: T.text }}>{pair.right.totalCount}</strong>
+          {pair.deltaPercent != null && (
+            <span style={{ marginLeft: 6, color: pair.status === "reduced" ? "#22c55e" : pair.status === "worsened" ? "#ef4444" : T.textMuted, fontSize: 11 }}>
+              ({pair.deltaPercent > 0 ? "+" : ""}{pair.deltaPercent}%)
+            </span>
+          )}
+        </span>
+        <span style={{ fontSize: 10, fontWeight: 700, color: sc.fg, background: sc.bg, padding: "2px 6px", borderRadius: 4, textTransform: "uppercase" }}>
+          {pair.status}
+        </span>
+      </div>
+      {open && (
+        <div style={{ marginTop: 10, paddingLeft: 22 }}>
+          {/* Show variants side by side if they differ */}
+          {(pair.left.variants.length > 1 || pair.right.variants.length > 1) && (
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 10 }}>
+              <div>
+                <div style={{ fontSize: 11, fontWeight: 600, color: T.textSecondary, marginBottom: 4 }}>A variants</div>
+                {pair.left.variants.map((v, i) => (
+                  <div key={i} style={{ fontSize: 12, color: T.text, padding: "3px 6px", background: T.cardAlt, borderRadius: 4, marginBottom: 2, display: "flex", justifyContent: "space-between" }}>
+                    <span style={{ flex: 1 }}>{v.text.length > 120 ? `${v.text.slice(0, 120)}…` : v.text}</span>
+                    <span style={{ color: T.textMuted, marginLeft: 8 }}>{v.count}×</span>
+                  </div>
+                ))}
+              </div>
+              <div>
+                <div style={{ fontSize: 11, fontWeight: 600, color: T.textSecondary, marginBottom: 4 }}>B variants</div>
+                {pair.right.variants.map((v, i) => (
+                  <div key={i} style={{ fontSize: 12, color: T.text, padding: "3px 6px", background: T.cardAlt, borderRadius: 4, marginBottom: 2, display: "flex", justifyContent: "space-between" }}>
+                    <span style={{ flex: 1 }}>{v.text.length > 120 ? `${v.text.slice(0, 120)}…` : v.text}</span>
+                    <span style={{ color: T.textMuted, marginLeft: 8 }}>{v.count}×</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+            {pair.left.occurrences.length > 0 && (
+              <OccList label={`A — ${leftName}`} projectId={report.left.window.projectId} occurrences={pair.left.occurrences} />
+            )}
+            {pair.right.occurrences.length > 0 && (
+              <OccList label={`B — ${rightName}`} projectId={report.right.window.projectId} occurrences={pair.right.occurrences} />
+            )}
+          </div>
+          <div style={{ fontSize: 10, color: T.textMuted, marginTop: 6 }}>
+            Semantic similarity: {(pair.similarity * 100).toFixed(0)}%
+          </div>
         </div>
       )}
     </div>
