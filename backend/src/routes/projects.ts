@@ -277,6 +277,9 @@ router.post("/import-bundle", evalRateLimit, async (req: AuthRequest, res) => {
     if (bundles.length === 0) {
       return res.status(400).json({ error: "Invalid request: expected a bundle or { bundles: [...] }" });
     }
+    if (bundles.length > 20) {
+      return res.status(400).json({ error: "Too many bundles: maximum 20 bundles per merge" });
+    }
 
     for (let i = 0; i < bundles.length; i++) {
       const b = bundles[i];
@@ -336,6 +339,9 @@ router.post("/import-bundle", evalRateLimit, async (req: AuthRequest, res) => {
 
       let imported = 0;
       let totalRuns = 0;
+      // Criterion-rename notices collected here and returned from the transaction to avoid
+      // double-push if Prisma retries the transaction on a serialization conflict.
+      const criterionWarnings: string[] = [];
 
       for (const bundle of bundles) {
         totalRuns += bundle.runs.length;
@@ -348,8 +354,10 @@ router.post("/import-bundle", evalRateLimit, async (req: AuthRequest, res) => {
           const baseKey = String(c.key || c._exportId || `criterion_${criterionIndex}`);
           const signature = JSON.stringify([c.type, c.expectedValue ?? {}]);
 
-          // Search baseKey + suffixed variants. Reuse if an identical definition already exists;
-          // otherwise pick the next free numeric suffix.
+          // Search baseKey and its numeric variants (_2, _3, …) for an identical definition to
+          // reuse, or find the next free suffix if there's a conflict.
+          // IMPORTANT: only treat keys as "in this series" when the suffix is purely numeric —
+          // a key like `score_category` must not be confused with `score_2`.
           let reuseId: string | null = null;
           let baseKeyTaken = false;
           let maxSuffix = 0;
@@ -362,8 +370,10 @@ router.post("/import-bundle", evalRateLimit, async (req: AuthRequest, res) => {
               if (/^\d+$/.test(tail)) {
                 const n = parseInt(tail, 10);
                 if (n > maxSuffix) maxSuffix = n;
+                // Only match as a numeric variant — non-numeric suffixes (e.g. `score_v2`) are
+                // unrelated criteria and must never be reused or counted.
+                if (info.signature === signature && !reuseId) reuseId = info.id;
               }
-              if (info.signature === signature && !reuseId) reuseId = info.id;
             }
           }
 
@@ -388,7 +398,7 @@ router.post("/import-bundle", evalRateLimit, async (req: AuthRequest, res) => {
           existingCriteria.set(finalKey, { id: newC.id, signature });
           if (c._exportId) criterionIdMap[c._exportId] = newC.id;
           if (isMerge && finalKey !== baseKey) {
-            warnings.push(`Criterion "${baseKey}" from "${bundle.project.name.trim()}" had a different definition — imported as "${finalKey}".`);
+            criterionWarnings.push(`Criterion "${baseKey}" from "${bundle.project.name.trim()}" had a different definition — imported as "${finalKey}".`);
           }
           criterionIndex++;
         }
@@ -447,12 +457,15 @@ router.post("/import-bundle", evalRateLimit, async (req: AuthRequest, res) => {
         }
       }
 
-      return { projectId: newProject.id, name: newProject.name, imported, total: totalRuns };
+      return { projectId: newProject.id, name: newProject.name, imported, total: totalRuns, criterionWarnings };
     }, { timeout: 600_000 }); // 10 min timeout for large projects
 
+    // Assemble final warnings outside the transaction so retries can't double-push entries
     if (result.imported < result.total) {
       warnings.push(`Only ${result.imported} of ${result.total} runs imported`);
     }
+    warnings.push(...result.criterionWarnings);
+
     res.json({
       projectId: result.projectId,
       name: result.name,
@@ -644,13 +657,19 @@ router.get("/:id/dashboard", async (req: AuthRequest, res) => {
     }
 
     // ── Optional date range filter ──────────────────────────────────────
-    const dateFrom = req.query.from ? new Date(req.query.from as string) : null;
-    const dateTo = req.query.to ? (() => {
-      const d = new Date(req.query.to as string);
-      // If only a date string (YYYY-MM-DD), set to end of day so the full day is included
-      if ((req.query.to as string).length <= 10) d.setUTCHours(23, 59, 59, 999);
+    // Validate before passing to Prisma — new Date("garbage") produces an Invalid
+    // Date whose getTime() is NaN; Prisma then throws a 500 on the raw query.
+    const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}(T[\d:.Z+-]*)?$/;
+    const parseQueryDate = (raw: string | undefined, endOfDay = false): Date | null => {
+      if (!raw) return null;
+      if (!ISO_DATE_RE.test(raw)) return null;
+      const d = new Date(raw.length <= 10 ? raw + "T00:00:00Z" : raw);
+      if (!Number.isFinite(d.getTime())) return null;
+      if (endOfDay && raw.length <= 10) d.setUTCHours(23, 59, 59, 999);
       return d;
-    })() : null;
+    };
+    const dateFrom = parseQueryDate(req.query.from as string | undefined);
+    const dateTo   = parseQueryDate(req.query.to   as string | undefined, true);
     // Reusable SQL fragment — injected into every query that uses alias "r" for the Run table
     const dateClause = dateFrom && dateTo
       ? Prisma.sql`AND COALESCE(r."callDate", r."createdAt") >= ${dateFrom} AND COALESCE(r."callDate", r."createdAt") <= ${dateTo}`
@@ -841,8 +860,12 @@ router.get("/:id/dashboard", async (req: AuthRequest, res) => {
           ? JSON.parse(layered.detail)
           : layered.detail;   // Prisma may already parse JSON columns
       } catch {
-        // Plain-string detail means the eval was skipped (abandoned call, no transcript, etc.)
-        // These runs have nothing to aggregate — skip silently.
+        // Non-JSON detail = eval was skipped (abandoned call, no transcript, etc.).
+        // Log at debug level so corrupt detail strings are discoverable without
+        // flooding production logs on normal abandoned calls.
+        if (typeof layered.detail === "string" && layered.detail.trim().startsWith("{")) {
+          console.warn(`[Dashboard] Corrupt eval detail for run ${run.id}: parse failed`);
+        }
         continue;
       }
       // Explicitly skip notApplicable or error entries — no valid metrics to extract

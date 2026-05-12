@@ -107,6 +107,14 @@ async function embedTexts(texts: string[]): Promise<Map<string, number[]>> {
       model: "text-embedding-3-small",
       input: batch,
     });
+    // Guard: OpenAI must return exactly one embedding per input text.
+    // A shorter response (rate-limit partial batch) would cause undefined.embedding
+    // downstream; throw so the outer try-catch falls back to exact matching.
+    if (response.data.length !== batch.length) {
+      throw new Error(
+        `OpenAI returned ${response.data.length} embeddings for ${batch.length} inputs`
+      );
+    }
     for (let j = 0; j < batch.length; j++) {
       result.set(batch[j], response.data[j].embedding);
     }

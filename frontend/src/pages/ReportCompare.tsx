@@ -272,11 +272,12 @@ function SidePicker(props: {
 
 // ─── Comparison result ───────────────────────────────────────────────────────
 
-// CSV-quote a value: wrap in quotes and escape internal quotes.
+// CSV-quote a value: wrap in quotes, escape internal quotes, strip newlines.
+// Unescaped \n / \r break row structure in Excel even inside quoted fields.
 function csvQuote(v: any): string {
   if (v == null) return "";
   const s = typeof v === "string" ? v : String(v);
-  return `"${s.replace(/"/g, '""')}"`;
+  return `"${s.replace(/"/g, '""').replace(/[\r\n]+/g, " ")}"`;
 }
 
 function downloadCsv(filename: string, rows: any[][]) {

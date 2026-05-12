@@ -188,6 +188,13 @@ export default function RunDetail() {
   // runId will see a mismatch and stop — preventing stale data from being
   // applied to the new page.
   const activeRunIdRef = useRef<string | null>(null);
+  // Prevents setState calls on an unmounted component (e.g. user navigates away
+  // while a rehydrate/eval poll is in flight).
+  const mountedRef = useRef(true);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => { mountedRef.current = false; };
+  }, []);
 
   const load = () => {
     getRun(runId!)
@@ -533,9 +540,9 @@ export default function RunDetail() {
                 }
                 // Rehydrate triggers evaluation — poll until terminal state
                 const poll = () => {
-                  if (activeRunIdRef.current !== capturedRunId) return;
+                  if (!mountedRef.current || activeRunIdRef.current !== capturedRunId) return;
                   getRun(capturedRunId).then((updated) => {
-                    if (activeRunIdRef.current !== capturedRunId) return;
+                    if (!mountedRef.current || activeRunIdRef.current !== capturedRunId) return;
                     setRun(updated);
                     if (["EVALUATING", "PENDING", "RUNNING"].includes(updated.status)) {
                       setTimeout(poll, 2000);
@@ -546,7 +553,7 @@ export default function RunDetail() {
                       }
                     }
                   }).catch(() => {
-                    if (activeRunIdRef.current === capturedRunId) setRehydrating(false);
+                    if (mountedRef.current && activeRunIdRef.current === capturedRunId) setRehydrating(false);
                   });
                 };
                 setTimeout(poll, 1500);
@@ -576,9 +583,9 @@ export default function RunDetail() {
               }
             }
             const poll = () => {
-              if (activeRunIdRef.current !== capturedRunId) return; // navigated away
+              if (!mountedRef.current || activeRunIdRef.current !== capturedRunId) return;
               getRun(capturedRunId).then((r) => {
-                if (activeRunIdRef.current !== capturedRunId) return;
+                if (!mountedRef.current || activeRunIdRef.current !== capturedRunId) return;
                 setRun(r);
                 if (["EVALUATING", "PENDING", "RUNNING"].includes(r.status)) {
                   setTimeout(poll, 2000);
@@ -589,7 +596,7 @@ export default function RunDetail() {
                   }
                 }
               }).catch(() => {
-                if (activeRunIdRef.current === capturedRunId) setReEvaluating(false);
+                if (mountedRef.current && activeRunIdRef.current === capturedRunId) setReEvaluating(false);
               });
             };
             setTimeout(poll, 1500);
