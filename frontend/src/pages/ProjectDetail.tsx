@@ -1091,7 +1091,7 @@ export default function ProjectDetail() {
                   {askResult.examples?.length > 0 && (
                     <div>
                       <div style={{ fontSize: 11, color: T.textMuted, marginBottom: 6, fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.05em" }}>
-                        Example matches
+                        Example matches{askResult.count > askResult.examples.length ? ` (showing ${askResult.examples.length} of ${askResult.count})` : ""}
                       </div>
                       <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
                         {askResult.examples.map((ex: any) => (

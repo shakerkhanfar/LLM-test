@@ -222,35 +222,45 @@ Example counting: {"isCountingQuery": true, "keywords": ["doctor"], "limit": 50}
     if (filters.dateTo) where.callDate.lte = new Date(filters.dateTo + "T23:59:59.999Z");
   }
 
-  // Fetch candidate runs — cast a wide net, then filter by content
-  const candidateLimit = Math.min(Math.max(filters.limit * 3, 60), 200);
-  const candidates = await prisma.run.findMany({
-    where,
-    orderBy: [
-      { callDate: { sort: "desc", nulls: "last" } },
-      { createdAt: "desc" },
-    ],
-    take: candidateLimit,
-    select: {
-      id: true,
-      conversationId: true,
-      callDate: true,
-      callDuration: true,
-      callOutcome: true,
-      callStatus: true,
-      overallScore: true,
-      transcript: true,
-      outcomeResult: true,
-      evalResults: {
-        select: {
-          score: true,
-          passed: true,
-          detail: true,
-          criterion: { select: { key: true, label: true, type: true } },
+  // For counting queries we want to scan the full dataset, not just a capped sample.
+  // Fetch the true total count in parallel with the candidate rows so the UI can
+  // show "X out of N total calls" rather than "X out of 200 scanned".
+  const candidateLimit = filters.isCountingQuery
+    ? 1000
+    : Math.min(Math.max(filters.limit * 3, 60), 200);
+
+  const [candidates, trueTotalCount] = await Promise.all([
+    prisma.run.findMany({
+      where,
+      orderBy: [
+        { callDate: { sort: "desc", nulls: "last" } },
+        { createdAt: "desc" },
+      ],
+      take: candidateLimit,
+      select: {
+        id: true,
+        conversationId: true,
+        callDate: true,
+        callDuration: true,
+        callOutcome: true,
+        callStatus: true,
+        overallScore: true,
+        transcript: true,
+        outcomeResult: true,
+        evalResults: {
+          select: {
+            score: true,
+            passed: true,
+            detail: true,
+            criterion: { select: { key: true, label: true, type: true } },
+          },
         },
       },
-    },
-  });
+    }),
+    filters.isCountingQuery
+      ? prisma.run.count({ where: { projectId, status: "COMPLETE" } })
+      : Promise.resolve(null),
+  ]);
 
   if (candidates.length === 0) {
     return {
@@ -325,6 +335,10 @@ Example counting: {"isCountingQuery": true, "keywords": ["doctor"], "limit": 50}
           .join(", ")
       : "";
 
+    // Counting mode gets a longer transcript window — the relevant mention could be
+    // 10+ turns in, so 500 chars is too aggressive. Use 1500 for counting, 500 for issues.
+    const transcriptLimit = filters.isCountingQuery ? 1500 : 500;
+
     return {
       id: run.id,
       convId: run.conversationId,
@@ -334,7 +348,7 @@ Example counting: {"isCountingQuery": true, "keywords": ["doctor"], "limit": 50}
       score,
       overallScore: run.overallScore,
       transcriptPreview: transcriptText.slice(0, 500),
-      compact: `[${run.id.slice(0, 8)}] date:${run.callDate?.toISOString().split("T")[0] || "?"} outcome:${outcome} score:${score} dur:${run.callDuration || "?"}s\n${outcomeVars ? `Outcome variables: ${outcomeVars}\n` : ""}Transcript: ${transcriptText.slice(0, 500)}\n${layeredSummary ? `Layered Analysis: ${layeredSummary.slice(0, 600)}\n` : ""}Evals: ${evalSummaries.slice(0, 400)}`,
+      compact: `[${run.id.slice(0, 8)}] date:${run.callDate?.toISOString().split("T")[0] || "?"} outcome:${outcome} score:${score} dur:${run.callDuration || "?"}s\n${outcomeVars ? `Outcome variables: ${outcomeVars}\n` : ""}Transcript: ${transcriptText.slice(0, transcriptLimit)}\n${layeredSummary ? `Layered Analysis: ${layeredSummary.slice(0, 600)}\n` : ""}Evals: ${evalSummaries.slice(0, 400)}`,
     };
   });
 
@@ -343,7 +357,8 @@ Example counting: {"isCountingQuery": true, "keywords": ["doctor"], "limit": 50}
     || (filters.evalIssueTypes?.length || 0) > 0
     || filters.actionMismatch === true;
 
-  if (!needsContentSearch) {
+  // Counting mode always needs full scanning — never short-circuit to the filter-only path
+  if (!needsContentSearch && !filters.isCountingQuery) {
     const topResults = candidateSummaries.slice(0, filters.limit);
     return {
       issues: [],
@@ -364,32 +379,42 @@ Example counting: {"isCountingQuery": true, "keywords": ["doctor"], "limit": 50}
     };
   }
 
-  // ── Counting mode: scan ALL candidates in batches, count matches ──
+  // ── Counting mode: scan ALL candidates in batches (parallelized) ──
   if (filters.isCountingQuery) {
     const BATCH_SIZE = 30;
+    const batches: (typeof candidateSummaries)[] = [];
+    for (let i = 0; i < candidateSummaries.length; i += BATCH_SIZE) {
+      batches.push(candidateSummaries.slice(i, i + BATCH_SIZE));
+    }
+
+    const batchSystemPrompt = `You are analyzing voice call transcripts. For each call, determine if it matches the given condition exactly as stated — including any negative conditions (e.g. "without mentioning X" means the transcript must NOT contain X).
+Return JSON: {"matches": [{"index": 0, "reason": "one sentence why it matches"}]}
+Only include calls that DO match. Be strict about negative conditions. Use 0-based indices.`;
+
+    const batchResponses = await Promise.all(
+      batches.map((batch) =>
+        openai.chat.completions.create({
+          model: MODEL,
+          temperature: 0,
+          response_format: { type: "json_object" },
+          messages: [
+            { role: "system", content: batchSystemPrompt },
+            {
+              role: "user",
+              content: `Condition: ${sanitizedQuestion}\n\n${batch.map((c, idx) => `--- ${idx} ---\n${c.compact}`).join("\n\n")}`,
+            },
+          ],
+        })
+      )
+    );
+
     const allMatches: CountExample[] = [];
 
-    for (let i = 0; i < candidateSummaries.length; i += BATCH_SIZE) {
-      const batch = candidateSummaries.slice(i, i + BATCH_SIZE);
-      const batchResponse = await openai.chat.completions.create({
-        model: MODEL,
-        temperature: 0,
-        response_format: { type: "json_object" },
-        messages: [
-          {
-            role: "system",
-            content: `You are analyzing voice call transcripts. For each call, determine if it matches the given condition exactly as stated — including any negative conditions (e.g. "without mentioning X" means the transcript must NOT contain X).
-Return JSON: {"matches": [{"index": 0, "reason": "one sentence why it matches"}]}
-Only include calls that DO match. Be strict about negative conditions.`,
-          },
-          {
-            role: "user",
-            content: `Condition: ${sanitizedQuestion}\n\n${batch.map((c, idx) => `--- ${idx} ---\n${c.compact}`).join("\n\n")}`,
-          },
-        ],
-      });
+    for (let b = 0; b < batches.length; b++) {
+      const batch = batches[b];
+      const resp = batchResponses[b];
 
-      const batchTokens = batchResponse.usage;
+      const batchTokens = resp.usage;
       if (batchTokens) {
         const costs = MODEL_COSTS[MODEL]!;
         totalCost += (batchTokens.prompt_tokens / 1_000_000) * costs.input
@@ -397,12 +422,19 @@ Only include calls that DO match. Be strict about negative conditions.`,
       }
 
       const batchResult = parseLLMJson<{ matches: Array<{ index: number; reason: string }> }>(
-        batchResponse.choices[0].message.content,
+        resp.choices[0].message.content,
         { matches: [] }
       );
 
+      // Detect if LLM returned 1-based indices (same heuristic as issue mode)
+      const batchIndices = batchResult.matches.map((m) => m.index);
+      const likely1Based = batchIndices.some((i) => i === batch.length)
+        || (batchIndices.length > 0 && batchIndices.every((i) => i >= 1) && !batchIndices.includes(0));
+      const indexOffset = likely1Based ? 1 : 0;
+
       for (const m of batchResult.matches) {
-        const candidate = batch[m.index];
+        const idx = m.index - indexOffset;
+        const candidate = batch[idx];
         if (candidate) {
           allMatches.push({
             id: candidate.id,
@@ -417,9 +449,14 @@ Only include calls that DO match. Be strict about negative conditions.`,
     }
 
     const count = allMatches.length;
-    const total = candidateSummaries.length;
-    const percentage = total > 0 ? Math.round((count / total) * 100) : 0;
-    const summary = `${count} out of ${total} scanned calls matched: ${sanitizedQuestion}`;
+    const scanned = candidateSummaries.length;
+    // trueTotalCount is the true DB count; scanned may be less if the project has >1000 runs
+    const projectTotal = trueTotalCount ?? scanned;
+    const isTruncated = scanned < projectTotal;
+    const percentage = scanned > 0 ? Math.round((count / scanned) * 100) : 0;
+    const summary = isTruncated
+      ? `${count} out of ${scanned} most-recent calls matched (project has ${projectTotal} total — rerun with a date filter for full accuracy)`
+      : `${count} out of ${scanned} calls matched: ${sanitizedQuestion}`;
 
     return {
       mode: "count",
@@ -430,7 +467,7 @@ Only include calls that DO match. Be strict about negative conditions.`,
       filters,
       costUsd: totalCost,
       count,
-      total,
+      total: scanned,
       percentage,
       examples: allMatches.slice(0, 20),
     };
