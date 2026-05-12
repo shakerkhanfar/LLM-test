@@ -310,9 +310,9 @@ function exportComparisonCsv(report: any) {
   rows.push([]);
   rows.push(["KPI", `A — ${leftName}`, `B — ${rightName}`, "Δ (B − A)"]);
   const kpiRows: Array<[string, any, any, any]> = [
-    ["Total runs",            lk.totalRuns,             rk.totalRuns,             d.totalRuns],
-    ["Success rate (%)",      lk.successRate,           rk.successRate,           d.successRate],
-    ["Drop-off rate (%)",     lk.dropOffRate,           rk.dropOffRate,           d.dropOffRate],
+    ["Complete runs",                       lk.totalRuns,             rk.totalRuns,             d.totalRuns],
+    ["Connected & not escalated rate (%)",  lk.successRate,           rk.successRate,           d.successRate],
+    ["Drop-off rate (%)",                   lk.dropOffRate,           rk.dropOffRate,           d.dropOffRate],
     ["Escalation rate (%)",   lk.escalationRate,        rk.escalationRate,        d.escalationRate],
     ["Avg quality score (%)", lk.avgQualityScore,       rk.avgQualityScore,       d.avgQualityScore],
     ["Overall pass rate (%)", lk.overallPassRate,       rk.overallPassRate,       d.overallPassRate],
@@ -418,13 +418,13 @@ function ComparisonResult({ report }: { report: any }) {
             </tr>
           </thead>
           <tbody>
-            {kpiRow("Total runs",            lk.totalRuns, rk.totalRuns, d.totalRuns, false, (v: any) => v ?? 0)}
-            {kpiRow("Success rate",          lk.successRate,           rk.successRate,           d.successRate, false, formatPct)}
-            {kpiRow("Drop-off rate",         lk.dropOffRate,           rk.dropOffRate,           d.dropOffRate, true,  formatPct)}
-            {kpiRow("Escalation rate",       lk.escalationRate,        rk.escalationRate,        d.escalationRate, true, formatPct)}
-            {kpiRow("Avg quality score",     lk.avgQualityScore,       rk.avgQualityScore,       d.avgQualityScore, false, formatPct)}
-            {kpiRow("Overall pass rate",     lk.overallPassRate,       rk.overallPassRate,       d.overallPassRate, false, formatPct)}
-            {kpiRow("Objective achieved",    lk.objectiveAchievedRate, rk.objectiveAchievedRate, d.objectiveAchievedRate, false, formatPct)}
+            {kpiRow("Complete runs",         lk.totalRuns, rk.totalRuns, d.totalRuns, false, (v: any) => v ?? 0, "Runs with status=COMPLETE (excludes no-answer, busy, voicemail, failed)")}
+            {kpiRow("Connected & not escalated", lk.successRate, rk.successRate, d.successRate, false, formatPct, "Calls that technically connected (callStatus=COMPLETED) and were not transferred to a human. Does not indicate the agent achieved its goal — use Objective Achieved for that.")}
+            {kpiRow("Drop-off rate",         lk.dropOffRate,           rk.dropOffRate,           d.dropOffRate, true,  formatPct, "No-answer + busy + voicemail + failed short calls")}
+            {kpiRow("Escalation rate",       lk.escalationRate,        rk.escalationRate,        d.escalationRate, true, formatPct, "Calls transferred to a human agent")}
+            {kpiRow("Avg quality score",     lk.avgQualityScore,       rk.avgQualityScore,       d.avgQualityScore, false, formatPct, "Average LLM quality score (0–100%) across runs with ≥2 evaluated criteria. Matches dashboard quality metric.")}
+            {kpiRow("Overall pass rate",     lk.overallPassRate,       rk.overallPassRate,       d.overallPassRate, false, formatPct, "% of all complete runs scoring ≥70%. Denominator = all complete runs (including unscored). Matches dashboard pass rate.")}
+            {kpiRow("Objective achieved",    lk.objectiveAchievedRate, rk.objectiveAchievedRate, d.objectiveAchievedRate, false, formatPct, "% of Layer 4–evaluated runs where the agent achieved the caller's objective")}
             {kpiRow("Avg duration",          lk.avgDurationSec,        rk.avgDurationSec,        d.avgDurationSec, true,  formatDur)}
             {kpiRow("Avg turns/call",        lk.avgTurnsPerCall,       rk.avgTurnsPerCall,       d.avgTurnsPerCall, true,  (v: any) => v == null ? "—" : String(v))}
           </tbody>
@@ -495,10 +495,14 @@ function ComparisonResult({ report }: { report: any }) {
 const cellTH: React.CSSProperties = { textAlign: "left", padding: "8px 12px", fontWeight: 600, fontSize: 12, borderBottom: `1px solid ${T.border}` };
 const cellTD: React.CSSProperties = { padding: "8px 12px", borderBottom: `1px solid ${T.border}` };
 
-function kpiRow(label: string, l: any, r: any, delta: number | null | undefined, lowerIsBetter: boolean, fmt: (v: any) => string) {
+function kpiRow(label: string, l: any, r: any, delta: number | null | undefined, lowerIsBetter: boolean, fmt: (v: any) => string, tooltip?: string) {
   return (
     <tr key={label}>
-      <td style={{ ...cellTD, color: T.textSecondary }}>{label}</td>
+      <td style={{ ...cellTD, color: T.textSecondary }}>
+        {tooltip
+          ? <span title={tooltip} style={{ borderBottom: `1px dashed ${T.textMuted}`, cursor: "help" }}>{label}</span>
+          : label}
+      </td>
       <td style={cellTD}>{fmt(l)}</td>
       <td style={cellTD}>{fmt(r)}</td>
       <td style={cellTD}>{deltaBadge(delta ?? null, lowerIsBetter)}</td>

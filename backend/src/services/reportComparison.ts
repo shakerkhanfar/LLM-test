@@ -109,6 +109,14 @@ export async function getKpisForRange(spec: WindowSpec): Promise<KpiSnapshot> {
   const toFilter   = toDate   ? Prisma.sql`AND "callDate" <= ${toDate}`   : Prisma.empty;
 
   // Single query — all aggregates in one row.
+  //
+  // avg_score and pass_score mirror the dashboard definition exactly:
+  //   • Only runs where ≥2 criteria were actually evaluated (passed IS NOT NULL).
+  //     Trivially-scored calls (e.g. a single word-accuracy criterion) are excluded
+  //     so they don't inflate the quality average.
+  //   • pass_score denominator is `total` (all complete runs), not just scored ones,
+  //     matching the dashboard's passRate = passes / totalComplete.
+  const MIN_EVAL_CRITERIA = 2;
   const [overall] = await prisma.$queryRaw<Array<{
     total: bigint;
     dropoffs: bigint;
@@ -120,14 +128,26 @@ export async function getKpisForRange(spec: WindowSpec): Promise<KpiSnapshot> {
     pass_score: bigint;
   }>>`
     SELECT
-      COUNT(*)                                                      AS total,
-      SUM(CASE WHEN ${DROP_SQL}  THEN 1 ELSE 0 END)                 AS dropoffs,
-      SUM(CASE WHEN ${ESC_SQL}   THEN 1 ELSE 0 END)                 AS escalations,
-      SUM(CASE WHEN ${SUCC_SQL}  THEN 1 ELSE 0 END)                 AS successes,
-      AVG("callDuration")::double precision                          AS avg_duration,
-      AVG("overallScore")::double precision                          AS avg_score,
-      COUNT(*) FILTER (WHERE "overallScore" IS NOT NULL)             AS scored,
-      COUNT(*) FILTER (WHERE "overallScore" >= 0.7)                  AS pass_score
+      COUNT(*)                                                       AS total,
+      SUM(CASE WHEN ${DROP_SQL}  THEN 1 ELSE 0 END)                  AS dropoffs,
+      SUM(CASE WHEN ${ESC_SQL}   THEN 1 ELSE 0 END)                  AS escalations,
+      SUM(CASE WHEN ${SUCC_SQL}  THEN 1 ELSE 0 END)                  AS successes,
+      AVG("callDuration")::double precision                           AS avg_duration,
+      AVG("overallScore") FILTER (
+        WHERE "overallScore" IS NOT NULL
+          AND (
+            SELECT COUNT(*) FROM "EvalResult" er2
+            WHERE er2."runId" = "Run".id AND er2.passed IS NOT NULL
+          ) >= ${MIN_EVAL_CRITERIA}
+      )::double precision                                             AS avg_score,
+      COUNT(*) FILTER (WHERE "overallScore" IS NOT NULL)              AS scored,
+      COUNT(*) FILTER (
+        WHERE "overallScore" >= 0.7
+          AND (
+            SELECT COUNT(*) FROM "EvalResult" er2
+            WHERE er2."runId" = "Run".id AND er2.passed IS NOT NULL
+          ) >= ${MIN_EVAL_CRITERIA}
+      )                                                               AS pass_score
     FROM "Run"
     WHERE "projectId" = ${spec.projectId}
       AND status = 'COMPLETE'
@@ -209,7 +229,9 @@ export async function getKpisForRange(spec: WindowSpec): Promise<KpiSnapshot> {
     escalationRate:        pct(n(overall?.escalations), total),
     avgDurationSec:        overall?.avg_duration != null ? Math.round(Number(overall.avg_duration)) : null,
     avgQualityScore,
-    overallPassRate:       scored > 0 ? pct(passed, scored) : null,
+    // Denominator = all complete runs (mirrors dashboard passRate = passed / totalComplete).
+    // Using only scored runs as denominator would inflate the rate by excluding unscored calls.
+    overallPassRate:       total > 0 ? pct(passed, total) : null,
     overallPassRateScored: scored,
     objectiveAchievedRate: objTotal > 0 ? pct(objAchieved, objTotal) : null,
     objectiveAchievedTotal: objTotal,
