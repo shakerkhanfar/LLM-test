@@ -20,27 +20,40 @@ function n(v: bigint | number | string | null | undefined): number {
   return Number(v);
 }
 
-// ISO-week from the midpoint of a bucket — deterministic regardless of call time
-function getIsoWeek(date: Date): number {
-  const d = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()));
-  const dayNum = d.getUTCDay() || 7;
-  d.setUTCDate(d.getUTCDate() + 4 - dayNum);
-  const yearStart = new Date(Date.UTC(d.getUTCFullYear(), 0, 1));
-  return Math.ceil((((d.getTime() - yearStart.getTime()) / 86_400_000) + 1) / 7);
-}
+type Granularity = "day" | "hour";
+type Bucket = { label: string; start: Date; end: Date };
 
-// Buckets anchored to UTC midnight so labels and DB window edges are consistent
-function getWeekBuckets(weeksBack: number): Array<{ label: string; start: Date; end: Date }> {
+const SHORT_DAY = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+
+// Build N day buckets ending at (and including) the current UTC day.
+function getDayBuckets(daysBack: number): Bucket[] {
   const todayUTC = new Date();
   todayUTC.setUTCHours(0, 0, 0, 0);
-  const buckets: Array<{ label: string; start: Date; end: Date }> = [];
-  for (let i = weeksBack - 1; i >= 0; i--) {
-    const end = new Date(todayUTC);
-    end.setUTCDate(end.getUTCDate() - i * 7);
-    const start = new Date(end);
-    start.setUTCDate(start.getUTCDate() - 7);
-    const mid = new Date((start.getTime() + end.getTime()) / 2);
-    buckets.push({ label: `W${getIsoWeek(mid)}`, start, end });
+  const buckets: Bucket[] = [];
+  for (let i = daysBack - 1; i >= 0; i--) {
+    const start = new Date(todayUTC);
+    start.setUTCDate(start.getUTCDate() - i);
+    const end = new Date(start);
+    end.setUTCDate(end.getUTCDate() + 1);
+    // Label = short weekday for week-scale windows; falls back to MM-DD on hover/legend
+    buckets.push({ label: SHORT_DAY[start.getUTCDay()], start, end });
+  }
+  return buckets;
+}
+
+// Build N hour buckets ending at the current UTC hour.
+function getHourBuckets(hoursBack: number): Bucket[] {
+  const nowUTC = new Date();
+  nowUTC.setUTCMinutes(0, 0, 0);
+  const buckets: Bucket[] = [];
+  for (let i = hoursBack - 1; i >= 0; i--) {
+    const start = new Date(nowUTC);
+    start.setUTCHours(start.getUTCHours() - i);
+    const end = new Date(start);
+    end.setUTCHours(end.getUTCHours() + 1);
+    // 24h label so the timeline reads naturally for short windows
+    const h = start.getUTCHours();
+    buckets.push({ label: `${String(h).padStart(2, "0")}:00`, start, end });
   }
   return buckets;
 }
@@ -100,9 +113,10 @@ export interface KpiReport {
     dropOffRate:    { current: number; trend: number[] };
     escalationRate: { current: number; trend: number[] };
   };
-  weekLabels:   string[];
+  trendLabels:      string[];
+  trendGranularity: Granularity; // "day" (default) or "hour" (when daily view would be too sparse)
   totalRuns:    number;
-  nullDateRuns: number; // runs with no callDate — included in KPIs but not in weekly trend
+  nullDateRuns: number; // runs with no callDate — included in KPIs but excluded from the trend bars
   doc: {
     avgDurationSec:    number | null;
     avgTurnsPerCall:   number | null;
@@ -129,9 +143,12 @@ export interface KpiReport {
   }>;
 }
 
-export async function getProjectReport(projectId: string, weeksBack = 7): Promise<KpiReport> {
-  const buckets     = getWeekBuckets(weeksBack);
-  const windowStart = buckets[0].start;
+export async function getProjectReport(projectId: string, daysBack = 7): Promise<KpiReport> {
+  // Initial assumption: day-granularity over the requested window.
+  // We may downgrade to hourly below if the data is too concentrated.
+  let granularity: Granularity = "day";
+  let buckets: Bucket[] = getDayBuckets(daysBack);
+  let windowStart = buckets[0].start;
 
   // ── Run 7 queries in parallel — all aggregate at DB level, no row limits ──
   const [overallRows, dayRows, critRows, labelRows, turnRows, passRateRows, objRows] = await Promise.all([
@@ -269,22 +286,54 @@ export async function getProjectReport(projectId: string, weeksBack = 7): Promis
   const currentEscalation = pct(escs,   total);
   const avgDurationSec    = overall.avg_duration != null ? Math.round(Number(overall.avg_duration)) : null;
 
-  // ── Build weekly trend by assigning per-day rows to buckets ──────────────
-  // dayRows has at most ~365 entries — trivial JS loop
+  // ── Granularity decision: if the daily window has data on ≤1 distinct day,
+  //    the day-bucket view degenerates to a single spike. Re-query at hourly
+  //    granularity over the last 12 hours so the trend reads meaningfully.
+  type TrendRow = { period: Date; total: bigint; dropoffs: bigint; escalations: bigint; successes: bigint };
+  let trendRows: TrendRow[] = dayRows.map(r => ({
+    period: r.day, total: r.total, dropoffs: r.dropoffs, escalations: r.escalations, successes: r.successes,
+  }));
+  const distinctDaysWithData = dayRows.filter(r => n(r.total) > 0).length;
+  const runsInDayWindow = dayRows.reduce((acc, r) => acc + n(r.total), 0);
+
+  if (distinctDaysWithData <= 1 && runsInDayWindow > 0) {
+    // Switch to hour granularity. 12 hour buckets covers a typical workday
+    // without crowding the bar chart.
+    granularity   = "hour";
+    buckets       = getHourBuckets(12);
+    windowStart   = buckets[0].start;
+    trendRows = await prisma.$queryRaw<TrendRow[]>`
+      SELECT
+        DATE_TRUNC('hour', "callDate")                AS period,
+        COUNT(*)                                      AS total,
+        SUM(CASE WHEN ${DROP_SQL}  THEN 1 ELSE 0 END) AS dropoffs,
+        SUM(CASE WHEN ${ESC_SQL}   THEN 1 ELSE 0 END) AS escalations,
+        SUM(CASE WHEN ${SUCC_SQL}  THEN 1 ELSE 0 END) AS successes
+      FROM "Run"
+      WHERE "projectId" = ${projectId}
+        AND status = 'COMPLETE'
+        AND "callDate" >= ${windowStart}
+      GROUP BY DATE_TRUNC('hour', "callDate")
+      ORDER BY period
+    `;
+  }
+
+  // ── Build trend by assigning rows to buckets ─────────────────────────────
+  // trendRows is small (≤ 7 days × 1/day, or ≤ 12 hours × 1/hour).
   const successTrend:    number[] = [];
   const dropOffTrend:    number[] = [];
   const escalationTrend: number[] = [];
 
   for (const bucket of buckets) {
-    const days = dayRows.filter(r => r.day >= bucket.start && r.day < bucket.end);
-    if (days.length === 0) {
+    const slices = trendRows.filter(r => r.period >= bucket.start && r.period < bucket.end);
+    if (slices.length === 0) {
       successTrend.push(0);
       dropOffTrend.push(0);
       escalationTrend.push(0);
       continue;
     }
     let wTotal = 0, wDrop = 0, wEsc = 0, wSucc = 0;
-    for (const d of days) {
+    for (const d of slices) {
       wTotal += n(d.total);
       wDrop  += n(d.dropoffs);
       wEsc   += n(d.escalations);
@@ -343,7 +392,8 @@ export async function getProjectReport(projectId: string, weeksBack = 7): Promis
       dropOffRate:    { current: currentDropOff,    trend: dropOffTrend    },
       escalationRate: { current: currentEscalation, trend: escalationTrend },
     },
-    weekLabels:   buckets.map(b => b.label),
+    trendLabels:      buckets.map(b => b.label),
+    trendGranularity: granularity,
     totalRuns:    total,
     nullDateRuns: n(overall.null_dates),
     doc: {

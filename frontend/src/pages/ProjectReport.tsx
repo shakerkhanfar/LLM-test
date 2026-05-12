@@ -47,7 +47,7 @@ function KpiCard({
   value,
   subtitle,
   trend,
-  weekLabels,
+  trendLabels,
   barColor,
   valueColor,
 }: {
@@ -55,7 +55,7 @@ function KpiCard({
   value: string;
   subtitle: string;
   trend: number[];
-  weekLabels: string[];
+  trendLabels: string[];
   barColor: string;
   valueColor: string;
 }) {
@@ -81,7 +81,7 @@ function KpiCard({
       <div style={{ fontSize: 13, color: T.textSecondary, marginBottom: 16 }}>{subtitle}</div>
       {trend.length > 0 && (
         <div style={{ marginTop: "auto" }}>
-          <MiniBarChart values={trend} labels={weekLabels} color={barColor} />
+          <MiniBarChart values={trend} labels={trendLabels} color={barColor} />
         </div>
       )}
     </div>
@@ -171,10 +171,10 @@ export default function ProjectReport() {
   const [intelLoading, setIntelLoading] = useState(false);
   const [intelError,   setIntelError]   = useState<string | null>(null);
 
-  const [weeks, setWeeks] = useState(7);
+  const [days, setDays] = useState(7);
   const printRef = useRef<HTMLDivElement>(null);
 
-  // H1 fix: track latest report request to discard stale responses when weeks changes
+  // H1 fix: track latest report request to discard stale responses when days changes
   const reqRef = useRef(0);
   // H2 fix: track whether component is still mounted for intelligence request
   const mountedRef = useRef(true);
@@ -190,7 +190,7 @@ export default function ProjectReport() {
     setReportError(null);
     setReport(null);
     try {
-      const [proj, rep] = await Promise.all([getProject(id), getProjectReport(id, weeks)]);
+      const [proj, rep] = await Promise.all([getProject(id), getProjectReport(id, days)]);
       if (req !== reqRef.current) return; // stale — newer request superseded this
       setProject(proj);
       setReport(rep);
@@ -200,7 +200,7 @@ export default function ProjectReport() {
     } finally {
       if (req === reqRef.current) setReportLoading(false);
     }
-  }, [id, weeks]);
+  }, [id, days]);
 
   useEffect(() => { loadReport(); }, [loadReport]);
 
@@ -213,7 +213,7 @@ export default function ProjectReport() {
       // C2 fix: use UTC dates so window aligns with the backend's UTC-midnight bucketing
       const toDate   = new Date();
       const fromDate = new Date();
-      fromDate.setUTCDate(fromDate.getUTCDate() - weeks * 7);
+      fromDate.setUTCDate(fromDate.getUTCDate() - days);
       const fmt = (d: Date) => d.toISOString().slice(0, 10);
       const result = await generateIntelligenceReport(id, { from: fmt(fromDate), to: fmt(toDate) });
       if (!mountedRef.current) return; // H2 fix: ignore if unmounted
@@ -268,7 +268,7 @@ export default function ProjectReport() {
 
   const doc          = report?.doc  ?? {};
   const kpis         = report?.kpis ?? {};
-  const weekLabels: string[] = report?.weekLabels ?? [];
+  const trendLabels: string[] = report?.trendLabels ?? [];
   const criterionRows: any[] = report?.criterionRows ?? [];
 
   const successRate    = clampPct(kpis.successRate?.current    ?? 0);
@@ -306,9 +306,9 @@ export default function ProjectReport() {
           <div style={{ marginLeft: "auto", display: "flex", gap: 8, alignItems: "center" }}>
             {/* H1 fix: disable selector while loading to prevent race condition */}
             <select
-              value={weeks}
+              value={days}
               disabled={reportLoading}
-              onChange={(e) => setWeeks(Number(e.target.value))}
+              onChange={(e) => setDays(Number(e.target.value))}
               style={{
                 fontSize: 12, padding: "4px 8px",
                 border: `1px solid ${T.borderDark}`,
@@ -317,8 +317,8 @@ export default function ProjectReport() {
                 opacity: reportLoading ? 0.5 : 1,
               }}
             >
-              {[4, 7, 12, 26].map((w) => (
-                <option key={w} value={w}>Last {w} weeks</option>
+              {[7, 14, 30, 60, 90].map((d) => (
+                <option key={d} value={d}>Last {d} days</option>
               ))}
             </select>
             <button
@@ -377,7 +377,7 @@ export default function ProjectReport() {
                   value={successRate.toFixed(1)}
                   subtitle="Calls resolved without escalation or drop-off"
                   trend={kpis.successRate?.trend ?? []}
-                  weekLabels={weekLabels}
+                  trendLabels={trendLabels}
                   barColor={T.primary}
                   valueColor={T.text}
                 />
@@ -386,7 +386,7 @@ export default function ProjectReport() {
                   value={dropOffRate.toFixed(1)}
                   subtitle="Sessions abandoned before completion"
                   trend={kpis.dropOffRate?.trend ?? []}
-                  weekLabels={weekLabels}
+                  trendLabels={trendLabels}
                   barColor="#1e2d3a"
                   valueColor={T.text}
                 />
@@ -395,7 +395,7 @@ export default function ProjectReport() {
                   value={escalationRate.toFixed(1)}
                   subtitle="Transferred to human agents"
                   trend={kpis.escalationRate?.trend ?? []}
-                  weekLabels={weekLabels}
+                  trendLabels={trendLabels}
                   barColor="#b8d4b0"
                   valueColor={T.text}
                 />
@@ -407,7 +407,7 @@ export default function ProjectReport() {
                                       (kpis.escalationRate?.trend ?? []).some((v: number) => v > 0);
                 return !hasWindowData ? (
                   <div style={{ marginTop: 12, fontSize: 12, color: T.textMuted, fontStyle: "italic" }}>
-                    No calls with dates fall within the last {weeks} weeks — trend bars show no data. KPI totals above include all-time calls.
+                    No calls with dates fall within the last {days} days — trend bars show no data. KPI totals above include all-time calls.
                   </div>
                 ) : null;
               })()}

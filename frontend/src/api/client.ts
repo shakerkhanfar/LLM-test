@@ -277,16 +277,19 @@ export async function exportProjectBundle(projectId: string, projectName: string
   window.URL.revokeObjectURL(url);
 }
 
-export async function importProjectBundle(file: File, preloadedText?: string): Promise<{ projectId: string; name: string; imported: number; warning?: string }> {
+export async function importProjectBundle(
+  bundles: any[],
+): Promise<{ projectId: string; name: string; imported: number; warning?: string; warnings?: string[] }> {
   const token = getToken();
-  const text = preloadedText ?? await file.text();
+  // Single bundle = legacy shape; 2+ = merge mode wrapped in { bundles }
+  const body = bundles.length === 1 ? JSON.stringify(bundles[0]) : JSON.stringify({ bundles });
   const res = await fetch("/api/projects/import-bundle", {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
     },
-    body: text,
+    body,
   });
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
@@ -467,8 +470,8 @@ export function getRunsByIds(projectId: string, ids: string[]) {
   return request<any[]>(`/projects/${projectId}/runs-by-ids?ids=${ids.join(",")}`);
 }
 
-export function getProjectReport(projectId: string, weeks = 7) {
-  return request<any>(`/projects/${projectId}/report?weeks=${weeks}`);
+export function getProjectReport(projectId: string, days = 7) {
+  return request<any>(`/projects/${projectId}/report?days=${days}`);
 }
 
 export function generateIntelligenceReport(

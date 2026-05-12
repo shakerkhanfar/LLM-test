@@ -268,117 +268,199 @@ router.post("/import-bundle", evalRateLimit, async (req: AuthRequest, res) => {
     // Auth check before any processing
     if (!req.userId) return res.status(401).json({ error: "Unauthorized" });
 
-    const bundle = req.body;
-    if (!bundle?.project || !Array.isArray(bundle.criteria) || !Array.isArray(bundle.runs)) {
-      return res.status(400).json({ error: "Invalid bundle: missing project, criteria, or runs" });
+    // Accept either a single bundle (legacy) or { bundles: [...] } for merge mode
+    const body = req.body;
+    const bundles: any[] = Array.isArray(body?.bundles)
+      ? body.bundles
+      : (body?.project ? [body] : []);
+
+    if (bundles.length === 0) {
+      return res.status(400).json({ error: "Invalid request: expected a bundle or { bundles: [...] }" });
     }
-    if (typeof bundle.project.name !== "string" || !bundle.project.name.trim()) {
-      return res.status(400).json({ error: "Invalid bundle: project.name is required" });
+
+    for (let i = 0; i < bundles.length; i++) {
+      const b = bundles[i];
+      if (!b?.project || !Array.isArray(b.criteria) || !Array.isArray(b.runs)) {
+        return res.status(400).json({ error: `Invalid bundle at index ${i}: missing project, criteria, or runs` });
+      }
+      if (typeof b.project.name !== "string" || !b.project.name.trim()) {
+        return res.status(400).json({ error: `Invalid bundle at index ${i}: project.name is required` });
+      }
     }
+
+    const isMerge = bundles.length > 1;
+    const primary = bundles[0];
+
+    // Warn when bundles disagree on project-level metadata — primary's values are used
+    const warnings: string[] = [];
+    if (isMerge) {
+      const metaFields = ["agentId", "projectType", "evalContext", "agentStructure", "flowDefinition", "agentSummary", "hamsaApiKey"];
+      for (const field of metaFields) {
+        const distinct = new Set(bundles.map(b => JSON.stringify(b.project[field] ?? null)));
+        if (distinct.size > 1) {
+          warnings.push(`Bundles differ on \`${field}\` — using value from "${primary.project.name.trim()}".`);
+        }
+      }
+    }
+
+    const projectName = isMerge
+      ? `Merged: ${bundles.map(b => b.project.name.trim()).join(" + ")}`
+      : `${primary.project.name.trim()} (imported)`;
 
     // Wrap everything in a transaction so partial failures roll back cleanly
     // Timeout: 10 min — large projects with 1000s of runs can take time
     const result = await prisma.$transaction(async (tx) => {
-      // 1. Create project
+      // 1. Create project from primary bundle's metadata
       const newProject = await tx.project.create({
         data: {
-          name:           `${bundle.project.name.trim()} (imported)`,
-          description:    bundle.project.description    || undefined,
-          projectType:    VALID_PROJECT_TYPES.has(bundle.project.projectType) ? bundle.project.projectType : "HISTORY",
-          agentId:        bundle.project.agentId        || "",
-          hamsaApiKey:    bundle.project.hamsaApiKey    || undefined,
-          evalContext:    bundle.project.evalContext     || undefined,
-          agentStructure: bundle.project.agentStructure || undefined,
-          flowDefinition: bundle.project.flowDefinition || undefined,
-          agentSummary:   bundle.project.agentSummary   || undefined,
-          webhookSecret:  bundle.project.webhookSecret  || undefined,
-          historyStartDate: bundle.project.historyStartDate ? new Date(bundle.project.historyStartDate) : undefined,
-          historyEndDate:   bundle.project.historyEndDate   ? new Date(bundle.project.historyEndDate)   : undefined,
+          name:           projectName,
+          description:    primary.project.description    || undefined,
+          projectType:    VALID_PROJECT_TYPES.has(primary.project.projectType) ? primary.project.projectType : "HISTORY",
+          agentId:        primary.project.agentId        || "",
+          hamsaApiKey:    primary.project.hamsaApiKey    || undefined,
+          evalContext:    primary.project.evalContext     || undefined,
+          agentStructure: primary.project.agentStructure || undefined,
+          flowDefinition: primary.project.flowDefinition || undefined,
+          agentSummary:   primary.project.agentSummary   || undefined,
+          webhookSecret:  primary.project.webhookSecret  || undefined,
+          historyStartDate: primary.project.historyStartDate ? new Date(primary.project.historyStartDate) : undefined,
+          historyEndDate:   primary.project.historyEndDate   ? new Date(primary.project.historyEndDate)   : undefined,
           userId:         req.userId!,
         },
       });
 
-      // 2. Create criteria — build _exportId → new ID map
-      const criterionIdMap: Record<string, string> = {};
-      let criterionIndex = 0;
-      for (const c of bundle.criteria) {
-        if (!VALID_CRITERION_TYPES.has(c.type)) continue;
-        const newC = await tx.criterion.create({
-          data: {
-            projectId:     newProject.id,
-            // Ensure key uniqueness within the project even if source bundle has duplicates
-            key:           String(c.key || c._exportId || `criterion_${criterionIndex}`),
-            label:         c.label     || undefined,
-            type:          c.type      as any,
-            expectedValue: c.expectedValue ?? {},
-            weight:        typeof c.weight === "number" ? c.weight : 1.0,
-          },
-        });
-        if (c._exportId) criterionIdMap[c._exportId] = newC.id;
-        criterionIndex++;
-      }
+      // Tracks criteria already inserted into the merged project, keyed by their final `key`.
+      // signature = serialized (type, expectedValue) — used to detect "same key, same definition"
+      // (which we dedupe) vs. "same key, different definition" (which we rename with _2, _3, …).
+      const existingCriteria = new Map<string, { id: string; signature: string }>();
 
-      // 3. Create runs + eval results — sequential batches inside transaction
       let imported = 0;
-      const BATCH = 20;
-      for (let i = 0; i < bundle.runs.length; i += BATCH) {
-        await Promise.all(bundle.runs.slice(i, i + BATCH).map(async (run: any) => {
-          // Dedupe eval results: one per criterion (schema @@unique([runId, criterionId]))
-          const seenCriteria = new Set<string>();
-          const validEvals = (run.evalResults ?? []).filter((er: any) => {
-            const newCid = criterionIdMap[er._criterionExportId];
-            if (!newCid || seenCriteria.has(newCid)) return false;
-            seenCriteria.add(newCid);
-            return true;
-          });
+      let totalRuns = 0;
 
-          await tx.run.create({
+      for (const bundle of bundles) {
+        totalRuns += bundle.runs.length;
+        // Per-bundle map: this bundle's criterion _exportId → new criterion ID in the merged project
+        const criterionIdMap: Record<string, string> = {};
+        let criterionIndex = 0;
+
+        for (const c of bundle.criteria) {
+          if (!VALID_CRITERION_TYPES.has(c.type)) continue;
+          const baseKey = String(c.key || c._exportId || `criterion_${criterionIndex}`);
+          const signature = JSON.stringify([c.type, c.expectedValue ?? {}]);
+
+          // Search baseKey + suffixed variants. Reuse if an identical definition already exists;
+          // otherwise pick the next free numeric suffix.
+          let reuseId: string | null = null;
+          let baseKeyTaken = false;
+          let maxSuffix = 0;
+          for (const [k, info] of existingCriteria.entries()) {
+            if (k === baseKey) {
+              baseKeyTaken = true;
+              if (info.signature === signature && !reuseId) reuseId = info.id;
+            } else if (k.startsWith(`${baseKey}_`)) {
+              const tail = k.slice(baseKey.length + 1);
+              if (/^\d+$/.test(tail)) {
+                const n = parseInt(tail, 10);
+                if (n > maxSuffix) maxSuffix = n;
+              }
+              if (info.signature === signature && !reuseId) reuseId = info.id;
+            }
+          }
+
+          if (reuseId) {
+            if (c._exportId) criterionIdMap[c._exportId] = reuseId;
+            criterionIndex++;
+            continue;
+          }
+
+          const finalKey = !baseKeyTaken ? baseKey : `${baseKey}_${Math.max(maxSuffix + 1, 2)}`;
+
+          const newC = await tx.criterion.create({
             data: {
-              projectId:      newProject.id,
-              conversationId: run.conversationId  || undefined,
-              // Remap in-flight statuses: an EVALUATING/PENDING run from prod
-              // will never be picked up by a worker in the imported environment.
-              status:         (run.status === "EVALUATING" || run.status === "PENDING")
-                                ? "FAILED"
-                                : VALID_RUN_STATUSES.has(run.status) ? run.status : "COMPLETE",
-              overallScore:   run.overallScore    ?? undefined,
-              callDate:       run.callDate ? new Date(run.callDate) : undefined,
-              callDuration:   run.callDuration    ?? undefined,
-              callOutcome:    run.callOutcome      || undefined,
-              callStatus:     run.callStatus       || undefined,
-              evalCost:       run.evalCost         ?? undefined,
-              modelUsed:      run.modelUsed        || undefined,
-              source:         VALID_RUN_SOURCES.has(run.source) ? run.source : "HISTORY",
-              // hamsaCallId intentionally omitted — unique per project, would collide on re-import
-              errorLog:       run.errorLog         || undefined,
-              startedAt:      run.startedAt   ? new Date(run.startedAt)   : undefined,
-              completedAt:    run.completedAt ? new Date(run.completedAt) : undefined,
-              outcomeResult:  run.outcomeResult    ?? undefined,
-              webhookData:    run.webhookData      ?? undefined,
-              transcript:     run.transcript       ?? undefined,
-              callLog:        run.callLog          ?? undefined,
-              evalResults: {
-                create: validEvals.map((er: any) => ({
-                  criterionId: criterionIdMap[er._criterionExportId],
-                  score:       er.score    ?? undefined,
-                  passed:      er.passed   ?? undefined,
-                  detail:      er.detail   ?? undefined,
-                  metadata:    er.metadata ?? undefined,
-                })),
-              },
+              projectId:     newProject.id,
+              key:           finalKey,
+              label:         c.label     || undefined,
+              type:          c.type      as any,
+              expectedValue: c.expectedValue ?? {},
+              weight:        typeof c.weight === "number" ? c.weight : 1.0,
             },
           });
-          imported++;
-        }));
+          existingCriteria.set(finalKey, { id: newC.id, signature });
+          if (c._exportId) criterionIdMap[c._exportId] = newC.id;
+          if (isMerge && finalKey !== baseKey) {
+            warnings.push(`Criterion "${baseKey}" from "${bundle.project.name.trim()}" had a different definition — imported as "${finalKey}".`);
+          }
+          criterionIndex++;
+        }
+
+        // Runs + eval results — batched within each bundle
+        const BATCH = 20;
+        for (let i = 0; i < bundle.runs.length; i += BATCH) {
+          await Promise.all(bundle.runs.slice(i, i + BATCH).map(async (run: any) => {
+            // Dedupe eval results: one per criterion (schema @@unique([runId, criterionId]))
+            const seenCriteria = new Set<string>();
+            const validEvals = (run.evalResults ?? []).filter((er: any) => {
+              const newCid = criterionIdMap[er._criterionExportId];
+              if (!newCid || seenCriteria.has(newCid)) return false;
+              seenCriteria.add(newCid);
+              return true;
+            });
+
+            await tx.run.create({
+              data: {
+                projectId:      newProject.id,
+                conversationId: run.conversationId  || undefined,
+                // Remap in-flight statuses: an EVALUATING/PENDING run from prod
+                // will never be picked up by a worker in the imported environment.
+                status:         (run.status === "EVALUATING" || run.status === "PENDING")
+                                  ? "FAILED"
+                                  : VALID_RUN_STATUSES.has(run.status) ? run.status : "COMPLETE",
+                overallScore:   run.overallScore    ?? undefined,
+                callDate:       run.callDate ? new Date(run.callDate) : undefined,
+                callDuration:   run.callDuration    ?? undefined,
+                callOutcome:    run.callOutcome      || undefined,
+                callStatus:     run.callStatus       || undefined,
+                evalCost:       run.evalCost         ?? undefined,
+                modelUsed:      run.modelUsed        || undefined,
+                source:         VALID_RUN_SOURCES.has(run.source) ? run.source : "HISTORY",
+                // hamsaCallId intentionally omitted — unique per project, would collide on re-import
+                errorLog:       run.errorLog         || undefined,
+                startedAt:      run.startedAt   ? new Date(run.startedAt)   : undefined,
+                completedAt:    run.completedAt ? new Date(run.completedAt) : undefined,
+                outcomeResult:  run.outcomeResult    ?? undefined,
+                webhookData:    run.webhookData      ?? undefined,
+                transcript:     run.transcript       ?? undefined,
+                callLog:        run.callLog          ?? undefined,
+                evalResults: {
+                  create: validEvals.map((er: any) => ({
+                    criterionId: criterionIdMap[er._criterionExportId],
+                    score:       er.score    ?? undefined,
+                    passed:      er.passed   ?? undefined,
+                    detail:      er.detail   ?? undefined,
+                    metadata:    er.metadata ?? undefined,
+                  })),
+                },
+              },
+            });
+            imported++;
+          }));
+        }
       }
 
-      return { projectId: newProject.id, name: newProject.name, imported, total: bundle.runs.length };
+      return { projectId: newProject.id, name: newProject.name, imported, total: totalRuns };
     }, { timeout: 600_000 }); // 10 min timeout for large projects
 
-    const warning = result.imported < result.total
-      ? `Only ${result.imported} of ${result.total} runs imported`
-      : undefined;
-    res.json({ projectId: result.projectId, name: result.name, imported: result.imported, warning });
+    if (result.imported < result.total) {
+      warnings.push(`Only ${result.imported} of ${result.total} runs imported`);
+    }
+    res.json({
+      projectId: result.projectId,
+      name: result.name,
+      imported: result.imported,
+      // Legacy callers read `warning`; new callers can read the structured `warnings` array
+      warning: warnings.length ? warnings.join(" ") : undefined,
+      warnings: warnings.length ? warnings : undefined,
+    });
   } catch (err) {
     console.error("[Projects] import-bundle error:", (err as Error).message);
     const msg = (err as Error).message;
@@ -964,8 +1046,8 @@ router.get("/:id/dashboard", async (req: AuthRequest, res) => {
   }
 });
 
-// ── Report: KPI metrics + weekly trends ─────────────────────────────────────
-// GET /:id/report?weeks=7
+// ── Report: KPI metrics + daily/hourly trends ────────────────────────────────
+// GET /:id/report?days=7   (accepts legacy ?weeks= too, interpreted as days)
 // Pure DB aggregation — no LLM, no rate limit needed.
 router.get("/:id/report", async (req: AuthRequest, res) => {
   try {
@@ -978,8 +1060,9 @@ router.get("/:id/report", async (req: AuthRequest, res) => {
       return res.status(403).json({ error: "Access denied" });
     }
 
-    const weeks = Math.min(Math.max(parseInt(req.query.weeks as string) || 7, 1), 26);
-    const report = await getProjectReport(req.params.id, weeks);
+    const rawDays = parseInt((req.query.days ?? req.query.weeks) as string) || 7;
+    const days = Math.min(Math.max(rawDays, 1), 90);
+    const report = await getProjectReport(req.params.id, days);
     res.json(report);
   } catch (err) {
     console.error("[Report] KPI error:", (err as Error).message);
