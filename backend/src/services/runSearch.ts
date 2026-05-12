@@ -40,6 +40,7 @@ interface SearchFilters {
   dateFrom?: string;
   dateTo?: string;
   limit?: number;
+  isCountingQuery?: boolean;  // true = user wants a count/statistic, not issue analysis
 }
 
 interface SearchIssue {
@@ -55,7 +56,17 @@ interface SearchIssue {
   }>;
 }
 
+interface CountExample {
+  id: string;
+  conversationId: string | null;
+  callDate: string | null;
+  callOutcome: string | null;
+  overallScore: number | null;
+  reason: string;
+}
+
 interface SearchResult {
+  mode?: "issues" | "count";
   issues: SearchIssue[];
   runs: Array<{
     id: string;
@@ -71,6 +82,11 @@ interface SearchResult {
   totalMatched: number;
   filters: SearchFilters;
   costUsd: number;
+  // counting mode fields
+  count?: number;
+  total?: number;
+  percentage?: number;
+  examples?: CountExample[];
 }
 
 /**
@@ -137,9 +153,11 @@ Available filter fields:
 - actionMismatch: set to true when the user wants calls where the agent CLAIMED to perform an action (e.g., "I've booked", "I've cancelled", "I've confirmed") but the outcome variables show the action wasn't actually completed (e.g., objective_met=no, booking_confirmed=false)
 - dateFrom/dateTo: ISO date strings like "2026-04-01"
 - limit: max results (default 20, max 50)
+- isCountingQuery: set to true when the user wants a count, number, statistic, or percentage (e.g. "how many", "number of", "count of", "what percentage", "how often")
 
 Example: {"keywords": ["hospital location"], "evalIssueTypes": ["hallucination"], "limit": 20}
-Example actionMismatch: {"actionMismatch": true, "limit": 30}`,
+Example actionMismatch: {"actionMismatch": true, "limit": 30}
+Example counting: {"isCountingQuery": true, "keywords": ["doctor"], "limit": 50}`,
       },
       { role: "user", content: sanitizedQuestion },
     ],
@@ -343,6 +361,78 @@ Example actionMismatch: {"actionMismatch": true, "limit": 30}`,
       totalMatched: candidates.length,
       filters,
       costUsd: totalCost,
+    };
+  }
+
+  // ── Counting mode: scan ALL candidates in batches, count matches ──
+  if (filters.isCountingQuery) {
+    const BATCH_SIZE = 30;
+    const allMatches: CountExample[] = [];
+
+    for (let i = 0; i < candidateSummaries.length; i += BATCH_SIZE) {
+      const batch = candidateSummaries.slice(i, i + BATCH_SIZE);
+      const batchResponse = await openai.chat.completions.create({
+        model: MODEL,
+        temperature: 0,
+        response_format: { type: "json_object" },
+        messages: [
+          {
+            role: "system",
+            content: `You are analyzing voice call transcripts. For each call, determine if it matches the given condition exactly as stated — including any negative conditions (e.g. "without mentioning X" means the transcript must NOT contain X).
+Return JSON: {"matches": [{"index": 0, "reason": "one sentence why it matches"}]}
+Only include calls that DO match. Be strict about negative conditions.`,
+          },
+          {
+            role: "user",
+            content: `Condition: ${sanitizedQuestion}\n\n${batch.map((c, idx) => `--- ${idx} ---\n${c.compact}`).join("\n\n")}`,
+          },
+        ],
+      });
+
+      const batchTokens = batchResponse.usage;
+      if (batchTokens) {
+        const costs = MODEL_COSTS[MODEL]!;
+        totalCost += (batchTokens.prompt_tokens / 1_000_000) * costs.input
+          + (batchTokens.completion_tokens / 1_000_000) * costs.output;
+      }
+
+      const batchResult = parseLLMJson<{ matches: Array<{ index: number; reason: string }> }>(
+        batchResponse.choices[0].message.content,
+        { matches: [] }
+      );
+
+      for (const m of batchResult.matches) {
+        const candidate = batch[m.index];
+        if (candidate) {
+          allMatches.push({
+            id: candidate.id,
+            conversationId: candidate.convId,
+            callDate: candidate.date,
+            callOutcome: candidate.outcome,
+            overallScore: candidate.overallScore,
+            reason: m.reason || "Matched condition",
+          });
+        }
+      }
+    }
+
+    const count = allMatches.length;
+    const total = candidateSummaries.length;
+    const percentage = total > 0 ? Math.round((count / total) * 100) : 0;
+    const summary = `${count} out of ${total} scanned calls matched: ${sanitizedQuestion}`;
+
+    return {
+      mode: "count",
+      issues: [],
+      runs: [],
+      summary,
+      totalMatched: count,
+      filters,
+      costUsd: totalCost,
+      count,
+      total,
+      percentage,
+      examples: allMatches.slice(0, 20),
     };
   }
 

@@ -1068,6 +1068,81 @@ export default function ProjectDetail() {
 
           {askResult && (
             <div style={{ marginTop: 12 }}>
+              {/* Counting mode result */}
+              {askResult.mode === "count" ? (
+                <div>
+                  <div style={{
+                    padding: "16px 20px", background: T.card, border: `1px solid ${T.border}`,
+                    borderRadius: 8, marginBottom: 10, display: "flex", alignItems: "center", gap: 20,
+                  }}>
+                    <div style={{ textAlign: "center", minWidth: 80 }}>
+                      <div style={{ fontSize: 40, fontWeight: 700, color: T.text, lineHeight: 1 }}>{askResult.count}</div>
+                      <div style={{ fontSize: 11, color: T.textMuted, marginTop: 4 }}>
+                        {askResult.percentage}% of {askResult.total}
+                      </div>
+                    </div>
+                    <div style={{ flex: 1 }}>
+                      <div style={{ fontSize: 13, color: T.text, lineHeight: 1.5 }}>{askResult.summary}</div>
+                      {askResult.costUsd > 0 && (
+                        <div style={{ fontSize: 10, color: T.textMuted, marginTop: 4 }}>${askResult.costUsd.toFixed(4)}</div>
+                      )}
+                    </div>
+                  </div>
+                  {askResult.examples?.length > 0 && (
+                    <div>
+                      <div style={{ fontSize: 11, color: T.textMuted, marginBottom: 6, fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.05em" }}>
+                        Example matches
+                      </div>
+                      <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                        {askResult.examples.map((ex: any) => (
+                          <Link
+                            key={ex.id}
+                            to={`/projects/${project.id}/runs/${ex.id}`}
+                            style={{ textDecoration: "none", color: "inherit" }}
+                          >
+                            <div style={{
+                              display: "flex", alignItems: "center", gap: 10, padding: "8px 12px",
+                              background: T.bg, border: `1px solid ${T.border}`, borderRadius: 6, cursor: "pointer",
+                            }}
+                              onMouseEnter={(e) => (e.currentTarget.style.borderColor = T.borderDark)}
+                              onMouseLeave={(e) => (e.currentTarget.style.borderColor = T.border)}
+                            >
+                              <div style={{
+                                width: 32, height: 32, borderRadius: "50%", flexShrink: 0,
+                                display: "flex", alignItems: "center", justifyContent: "center",
+                                fontSize: 11, fontWeight: 700,
+                                background: ex.overallScore == null ? T.cardAlt
+                                  : ex.overallScore >= 0.8 ? T.successBg : ex.overallScore >= 0.5 ? T.warningBg : T.errorBg,
+                                color: ex.overallScore == null ? T.textMuted
+                                  : ex.overallScore >= 0.8 ? "#22c55e" : ex.overallScore >= 0.5 ? "#f59e0b" : "#ef4444",
+                              }}>
+                                {ex.overallScore != null ? `${(ex.overallScore * 100).toFixed(0)}%` : "?"}
+                              </div>
+                              <div style={{ flex: 1, minWidth: 0 }}>
+                                <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 2 }}>
+                                  <span style={{ fontSize: 11, color: T.textSecondary }}>{ex.callDate || "?"}</span>
+                                  {ex.callOutcome && (
+                                    <span style={{ fontSize: 10, padding: "1px 5px", borderRadius: 3, background: T.card, color: T.textSecondary, border: `1px solid ${T.border}` }}>
+                                      {ex.callOutcome}
+                                    </span>
+                                  )}
+                                  <span style={{ fontSize: 10, color: T.textMuted, fontFamily: "monospace" }}>
+                                    {ex.conversationId?.slice(0, 8) || ex.id.slice(0, 8)}
+                                  </span>
+                                </div>
+                                <div style={{ fontSize: 12, color: T.textSecondary, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                                  {ex.reason}
+                                </div>
+                              </div>
+                            </div>
+                          </Link>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              ) : (
+              <>
               {/* Summary */}
               <div style={{
                 padding: "10px 14px", background: T.card, border: `1px solid ${T.border}`,
@@ -1194,6 +1269,8 @@ export default function ProjectDetail() {
                     </Link>
                   ))}
                 </div>
+              )}
+              </>
               )}
             </div>
           )}
