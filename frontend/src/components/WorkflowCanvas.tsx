@@ -392,6 +392,22 @@ const CAT_COLORS: Record<string, string> = {
   FLOW: "#3b82f6",
 };
 
+function safeJson(value: unknown, maxLen = 2000): string {
+  try {
+    const s = typeof value === "string" ? value : JSON.stringify(value, null, 2);
+    return s.length > maxLen ? s.slice(0, maxLen) + "\n…" : s;
+  } catch {
+    return "[Cannot serialize]";
+  }
+}
+
+function statusColor(status: string): string {
+  const s = status.toLowerCase();
+  if (s === "success") return "#16a34a";
+  if (s === "pending" || s === "running" || s === "in_progress") return "#f59e0b";
+  return "#dc2626";
+}
+
 function LogEntry({ event }: { event: any }) {
   const [open, setOpen] = useState(false);
   const cat = event.category || "OTHER";
@@ -417,20 +433,20 @@ function LogEntry({ event }: { event: any }) {
           {event.message}
           {payload?.variable && <span style={{ color: "#7c3aed" }}> {payload.variable}={payload.new_value ?? payload.value}</span>}
           {payload?.toolName && <span style={{ color: "#ea580c" }}> [{payload.toolName}]</span>}
-          {payload?.status && <span style={{ color: payload.status === "SUCCESS" || payload.status === "success" ? "#16a34a" : "#dc2626" }}> {payload.status}</span>}
+          {payload?.status && <span style={{ color: statusColor(String(payload.status)) }}> {payload.status}</span>}
         </span>
         {hasPayload && <span style={{ fontSize: 9, color: "#9ca3af", flexShrink: 0 }}>{open ? "▲" : "▼"}</span>}
       </div>
 
       {open && hasPayload && (
         <div style={{ marginTop: 4, paddingLeft: 4 }}>
-          {isToolEvent && (request || response) ? (
+          {isToolEvent && (request != null || response != null) ? (
             <>
               {request != null && (
                 <div style={{ marginBottom: 6 }}>
                   <div style={{ fontSize: 9, fontWeight: 700, color: "#ea580c", marginBottom: 2, textTransform: "uppercase" }}>Request</div>
                   <pre style={{ margin: 0, fontSize: 9, lineHeight: 1.5, color: "#374151", background: "#fff7ed", border: "1px solid #fed7aa", borderRadius: 4, padding: "4px 6px", overflowX: "auto", whiteSpace: "pre-wrap", wordBreak: "break-all" }}>
-                    {typeof request === "string" ? request : JSON.stringify(request, null, 2)}
+                    {safeJson(request)}
                   </pre>
                 </div>
               )}
@@ -438,19 +454,19 @@ function LogEntry({ event }: { event: any }) {
                 <div>
                   <div style={{ fontSize: 9, fontWeight: 700, color: "#16a34a", marginBottom: 2, textTransform: "uppercase" }}>Response</div>
                   <pre style={{ margin: 0, fontSize: 9, lineHeight: 1.5, color: "#374151", background: "#f0fdf4", border: "1px solid #bbf7d0", borderRadius: 4, padding: "4px 6px", overflowX: "auto", whiteSpace: "pre-wrap", wordBreak: "break-all" }}>
-                    {typeof response === "string" ? response : JSON.stringify(response, null, 2)}
+                    {safeJson(response)}
                   </pre>
                 </div>
               )}
-              {!request && !response && (
+              {request == null && response == null && (
                 <pre style={{ margin: 0, fontSize: 9, lineHeight: 1.5, color: "#6b7280", background: "#f9fafb", border: "1px solid #f3f4f6", borderRadius: 4, padding: "4px 6px", overflowX: "auto", whiteSpace: "pre-wrap", wordBreak: "break-all" }}>
-                  {JSON.stringify(payload, null, 2)}
+                  {safeJson(payload)}
                 </pre>
               )}
             </>
           ) : (
             <pre style={{ margin: 0, fontSize: 9, lineHeight: 1.5, color: "#6b7280", background: "#f9fafb", border: "1px solid #f3f4f6", borderRadius: 4, padding: "4px 6px", overflowX: "auto", whiteSpace: "pre-wrap", wordBreak: "break-all" }}>
-              {JSON.stringify(payload, null, 2)}
+              {safeJson(payload)}
             </pre>
           )}
         </div>
@@ -489,6 +505,9 @@ function WorkflowCanvasInner({
   useEffect(() => {
     if (!activeNodeId) return;
     if (Date.now() - lastManualInteractionRef.current < 3000) return;
+    // Guard: skip if the node doesn't exist in the current workflow
+    // (can happen when a call log references a node deleted in a later agent version).
+    if (!workflowNodes.some((n: any) => n.id === activeNodeId)) return;
     const t = setTimeout(() => {
       fitView({
         nodes: [{ id: activeNodeId }],
@@ -499,7 +518,7 @@ function WorkflowCanvasInner({
       });
     }, 60);
     return () => clearTimeout(t);
-  }, [activeNodeId, fitView]);
+  }, [activeNodeId, fitView, workflowNodes]);
 
   const rfNodes: Node[] = useMemo(() => {
     return workflowNodes.map((n: any) => ({
@@ -583,30 +602,35 @@ function WorkflowCanvasInner({
   }, [selectedNode, toolCalls]);
 
   // Call log events scoped to the selected node.
-  // Primary: match by node_id field. Fallback: events in the time window
-  // between when this node became active and when the next node did.
+  // Primary: match by node_id field. Fallback: events in ALL time windows
+  // when this node was active (handles loops — same node visited multiple times).
   const selectedNodeLogs = useMemo(() => {
     if (!selectedNode || callLog.length === 0) return [];
 
-    // Primary: explicit node_id
+    // Primary: explicit node_id present on events (new Hamsa log format)
     const byId = callLog.filter(
       (e: any) => e.node_id === selectedNode.id || e.nodeId === selectedNode.id
     );
     if (byId.length > 0) return byId;
 
-    // Fallback: time window from nodeMovements
+    // Fallback: time windows from nodeMovements, covering every visit.
+    // Build a list of [fromMs, toMs) intervals for this node across all visits.
     const sorted = [...nodeMovements].sort(
       (a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()
     );
-    const idx = sorted.findIndex((m) => m.nodeId === selectedNode.id);
-    if (idx < 0) return [];
-    const fromMs = new Date(sorted[idx].timestamp).getTime();
-    const toMs = idx + 1 < sorted.length
-      ? new Date(sorted[idx + 1].timestamp).getTime()
-      : Infinity;
+    const windows: Array<{ from: number; to: number }> = [];
+    sorted.forEach((m, idx) => {
+      if (m.nodeId !== selectedNode.id) return;
+      const from = new Date(m.timestamp).getTime();
+      const to = idx + 1 < sorted.length
+        ? new Date(sorted[idx + 1].timestamp).getTime()
+        : Infinity;
+      if (Number.isFinite(from)) windows.push({ from, to });
+    });
+    if (windows.length === 0) return [];
     return callLog.filter((e: any) => {
       const ts = new Date(e.timestamp).getTime();
-      return Number.isFinite(ts) && ts >= fromMs && ts < toMs;
+      return Number.isFinite(ts) && windows.some(w => ts >= w.from && ts < w.to);
     });
   }, [selectedNode, callLog, nodeMovements]);
 
@@ -756,6 +780,20 @@ function WorkflowCanvasInner({
               </div>
             )}
 
+            {/* Node call logs — placed before static content so runtime data is immediately visible */}
+            {selectedNodeLogs.length > 0 && (
+              <div style={{ marginBottom: 12 }}>
+                <div style={{ fontSize: 10, color: "#6b7280", marginBottom: 6, fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.06em" }}>
+                  Call Logs ({selectedNodeLogs.length})
+                </div>
+                <div style={{ maxHeight: 260, overflow: "auto", background: "#f9fafb", border: "1px solid #f3f4f6", borderRadius: 6, padding: "6px 8px" }}>
+                  {selectedNodeLogs.map((e: any, i: number) => (
+                    <LogEntry key={`${e.timestamp ?? i}-${e.category}-${i}`} event={e} />
+                  ))}
+                </div>
+              </div>
+            )}
+
             {/* Full prompt */}
             {selectedNode.message && (
               <div style={{ marginBottom: 12 }}>
@@ -770,20 +808,6 @@ function WorkflowCanvasInner({
                 }}>
                   {(selectedNode.message as string).slice(0, 800)}
                   {(selectedNode.message as string).length > 800 ? "\n…" : ""}
-                </div>
-              </div>
-            )}
-
-            {/* Node call logs — events recorded while the agent was on this node */}
-            {selectedNodeLogs.length > 0 && (
-              <div>
-                <div style={{ fontSize: 10, color: "#6b7280", marginBottom: 6, fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.06em" }}>
-                  Call Logs ({selectedNodeLogs.length})
-                </div>
-                <div style={{ maxHeight: 260, overflow: "auto", background: "#f9fafb", border: "1px solid #f3f4f6", borderRadius: 6, padding: "6px 8px" }}>
-                  {selectedNodeLogs.map((e: any, i: number) => (
-                    <LogEntry key={i} event={e} />
-                  ))}
                 </div>
               </div>
             )}
