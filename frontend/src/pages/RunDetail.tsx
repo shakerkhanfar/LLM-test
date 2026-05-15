@@ -438,6 +438,39 @@ export default function RunDetail() {
     return active;
   }, [audioTime, callStartMs, nodeMovementsForSync]);
 
+  // Per-utterance audio offsets derived from CONVERSATION events in the call log.
+  // Agent turns are matched to "Playing message" events; user turns to STT/recognition events.
+  // Index matches transcript[i] — null when no timestamp can be derived.
+  const transcriptTimestamps = useMemo((): (number | null)[] => {
+    const tArr = Array.isArray((run as any)?.transcript) ? (run as any).transcript : [];
+    if (!callStartMs || tArr.length === 0) return tArr.map(() => null);
+    const cl = Array.isArray((run as any)?.callLog) ? (run as any).callLog : [];
+
+    const agentTimes: number[] = [];
+    const userTimes: number[] = [];
+
+    for (const e of cl) {
+      if (e.category !== "CONVERSATION" || !e.timestamp) continue;
+      const ts = new Date(e.timestamp).getTime();
+      if (!Number.isFinite(ts)) continue;
+      const role = e.payload?.role ? String(e.payload.role).toLowerCase() : null;
+      const msgLower = String(e.message ?? "").toLowerCase();
+      if (role === "agent" || msgLower.includes("playing message") || msgLower.includes("agent said") || msgLower.includes("agent response")) {
+        agentTimes.push(ts);
+      } else if (role === "user" || msgLower.includes("user said") || msgLower.includes("user input") || msgLower.includes("recognition") || msgLower.includes("stt")) {
+        userTimes.push(ts);
+      }
+    }
+
+    let ai = 0, ui = 0;
+    return tArr.map((utt: any) => {
+      const ts = utt.Agent ? agentTimes[ai++] : userTimes[ui++];
+      if (ts == null) return null;
+      const offset = (ts - callStartMs) / 1000;
+      return Number.isFinite(offset) && offset >= 0 ? offset : null;
+    });
+  }, [(run as any)?.transcript, (run as any)?.callLog, callStartMs]);
+
   if (loading) return <p>Loading...</p>;
   if (!run) return <p>Run not found</p>;
 
@@ -1792,10 +1825,35 @@ export default function RunDetail() {
               const speaker = isAgent ? "Agent" : "User";
               const gender = utt.metadata?.gender;
 
+              const turnOffset = transcriptTimestamps[ui];
+
               return (
                 <div key={ui} style={{ marginBottom: 12, direction: "rtl", textAlign: "right" }}>
-                  <span style={{ fontSize: 11, color: isAgent ? "#3b82f6" : "#22c55e", marginLeft: 8, direction: "ltr" }}>
-                    [{speaker}{gender && gender !== "unknown" ? ` - ${gender}` : ""}]
+                  <span style={{ display: "inline-flex", alignItems: "center", gap: 4, direction: "ltr", marginLeft: 8 }}>
+                    <span style={{ fontSize: 11, color: isAgent ? "#3b82f6" : "#22c55e" }}>
+                      [{speaker}{gender && gender !== "unknown" ? ` - ${gender}` : ""}]
+                    </span>
+                    {turnOffset != null && recordingUrl && (
+                      <button
+                        onClick={() => {
+                          const a = audioRef.current;
+                          if (!a) return;
+                          a.currentTime = Math.max(0, turnOffset - 0.2);
+                          a.play().catch(() => {});
+                        }}
+                        title={`Play from ${turnOffset.toFixed(1)}s`}
+                        style={{
+                          background: "none", border: "none", cursor: "pointer",
+                          padding: "1px 3px", borderRadius: 3, lineHeight: 1,
+                          color: isAgent ? "#3b82f6" : "#22c55e", fontSize: 10,
+                          opacity: 0.65,
+                        }}
+                        onMouseEnter={(e) => { (e.currentTarget as HTMLButtonElement).style.opacity = "1"; }}
+                        onMouseLeave={(e) => { (e.currentTarget as HTMLButtonElement).style.opacity = "0.65"; }}
+                      >
+                        ▶
+                      </button>
+                    )}
                   </span>
                   <div style={{ direction: "rtl", lineHeight: 2 }}>
                     {words.map((word: string, wi: number) => {
