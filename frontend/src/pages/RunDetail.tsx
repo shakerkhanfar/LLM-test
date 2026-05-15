@@ -215,16 +215,22 @@ export default function RunDetail() {
   // Proactively detect OGG recordings in browsers that can't play them (Safari).
   // This avoids the generic "Recording unavailable" error — we show a targeted
   // message with a download link before the audio element even tries to load.
+  // Note: recordingUrl is declared after the early returns so we re-derive it here
+  // from the same sources rather than referencing the post-early-return variable.
   useEffect(() => {
-    if (!recordingUrl) return;
-    if (!/\.ogg(\?|$)/i.test(recordingUrl)) return;
+    const w = (run as any)?.webhookData as any;
+    const url = freshRecordingUrl ||
+      w?.data?.conversationRecording || w?.mediaUrl || w?.data?.recordingUrl ||
+      w?.data?.recording_url || w?.caller_info?.recording_url || w?.recordingUrl || null;
+    if (!url) return;
+    if (!/\.ogg(\?|$)/i.test(url)) return;
     const probe = document.createElement("audio");
     const supported = probe.canPlayType("audio/ogg; codecs=\"vorbis\"") !== "";
     if (!supported) {
       setAudioError(true);
       setAudioErrorDetail("ogg-unsupported");
     }
-  }, [recordingUrl]);
+  }, [run, freshRecordingUrl]);
 
   // Reset per-run state when navigating between runs
   useEffect(() => {
