@@ -16,10 +16,13 @@ export interface AuthRequest extends Request<ParamsFlatDictionary> {
 
 export function requireAuth(req: AuthRequest, res: Response, next: NextFunction) {
   const auth = req.headers.authorization;
-  if (!auth?.startsWith("Bearer ")) {
+  // Browser media elements (audio/video src) cannot send Authorization headers,
+  // so also accept the token as a query param for streaming routes.
+  const queryToken = typeof req.query?.token === "string" ? req.query.token : null;
+  if (!auth?.startsWith("Bearer ") && !queryToken) {
     return res.status(401).json({ error: "Unauthorized" });
   }
-  const token = auth.slice(7);
+  const token = auth?.startsWith("Bearer ") ? auth.slice(7) : queryToken!;
   try {
     const payload = jwt.verify(token, JWT_SECRET);
     if (

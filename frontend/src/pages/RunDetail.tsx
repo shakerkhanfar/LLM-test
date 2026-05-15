@@ -520,7 +520,12 @@ export default function RunDetail() {
   // application/octet-stream which Chrome refuses to play (code 4 error).
   // The stream proxy URL. The ?v= cache-buster forces the audio element to reload
   // after a successful retry (browser won't re-fetch if the src string is unchanged).
-  const audioSrc: string | null = recordingUrl ? `/api/runs/${runId}/recording-stream?v=${audioSrcVersion}` : null;
+  // The token is appended as a query param because <audio> src requests are plain
+  // browser GETs that cannot include the Authorization header from localStorage.
+  const _authToken = localStorage.getItem("hamsa_eval_token") ?? "";
+  const audioSrc: string | null = recordingUrl
+    ? `/api/runs/${runId}/recording-stream?v=${audioSrcVersion}&token=${encodeURIComponent(_authToken)}`
+    : null;
   const wordLabels = (run.wordLabels || []) as any[];
 
   // Flatten words for labeling.
