@@ -1,4 +1,4 @@
-import { useMemo, useCallback, useState } from "react";
+import { useMemo, useCallback, useState, useEffect, useRef } from "react";
 import T from "../theme";
 import {
   ReactFlow,
@@ -12,6 +12,7 @@ import {
   Handle,
   Position,
   ReactFlowProvider,
+  useReactFlow,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 
@@ -28,6 +29,10 @@ interface WorkflowCanvasProps {
   activeNodeId?: string | null;
   /** True while the call recording is playing — triggers playback-mode highlighting. */
   isPlaying?: boolean;
+  /** Full call log for per-node log display in the detail panel. */
+  callLog?: any[];
+  /** Ordered node movements (nodeId + timestamp) used to compute per-node time windows. */
+  nodeMovements?: Array<{ nodeId: string; timestamp: string }>;
 }
 
 // ─── Node type config ───────────────────────────────────────────────
@@ -374,6 +379,86 @@ function AgentNode({ id: nodeId, data }: NodeProps) {
 
 const nodeTypes = { agentNode: AgentNode };
 
+// ─── Log entry row (expandable payload) ────────────────────────────
+
+const CAT_COLORS: Record<string, string> = {
+  TOOLS: "#f97316",
+  CONVERSATION: "#22c55e",
+  ROUTER: "#ec4899",
+  TRANSITION: "#ec4899",
+  VARIABLE_EXTRACTION: "#a855f7",
+  VARIABLE: "#a855f7",
+  node_movement: "#3b82f6",
+  FLOW: "#3b82f6",
+};
+
+function LogEntry({ event }: { event: any }) {
+  const [open, setOpen] = useState(false);
+  const cat = event.category || "OTHER";
+  const color = CAT_COLORS[cat] || "#6b7280";
+  const time = event.timestamp?.split("T")[1]?.slice(0, 8) ?? "";
+  const payload = event.payload;
+  const hasPayload = payload && Object.keys(payload).length > 0;
+
+  // Separate request / response fields for TOOLS events
+  const request  = payload?.request  ?? payload?.input  ?? payload?.parameters ?? null;
+  const response = payload?.response ?? payload?.output ?? payload?.result     ?? null;
+  const isToolEvent = cat === "TOOLS";
+
+  return (
+    <div style={{ borderBottom: "1px solid #f3f4f6", paddingBottom: 4, marginBottom: 4 }}>
+      <div
+        style={{ display: "flex", alignItems: "flex-start", gap: 5, cursor: hasPayload ? "pointer" : "default" }}
+        onClick={() => hasPayload && setOpen(o => !o)}
+      >
+        <span style={{ fontFamily: "monospace", fontSize: 9, color: "#9ca3af", flexShrink: 0, marginTop: 1 }}>{time}</span>
+        <span style={{ fontSize: 9, fontWeight: 700, color, flexShrink: 0, marginTop: 1 }}>{cat}</span>
+        <span style={{ fontSize: 10, color: "#374151", flex: 1, lineHeight: 1.4, wordBreak: "break-word" }}>
+          {event.message}
+          {payload?.variable && <span style={{ color: "#7c3aed" }}> {payload.variable}={payload.new_value ?? payload.value}</span>}
+          {payload?.toolName && <span style={{ color: "#ea580c" }}> [{payload.toolName}]</span>}
+          {payload?.status && <span style={{ color: payload.status === "SUCCESS" || payload.status === "success" ? "#16a34a" : "#dc2626" }}> {payload.status}</span>}
+        </span>
+        {hasPayload && <span style={{ fontSize: 9, color: "#9ca3af", flexShrink: 0 }}>{open ? "▲" : "▼"}</span>}
+      </div>
+
+      {open && hasPayload && (
+        <div style={{ marginTop: 4, paddingLeft: 4 }}>
+          {isToolEvent && (request || response) ? (
+            <>
+              {request != null && (
+                <div style={{ marginBottom: 6 }}>
+                  <div style={{ fontSize: 9, fontWeight: 700, color: "#ea580c", marginBottom: 2, textTransform: "uppercase" }}>Request</div>
+                  <pre style={{ margin: 0, fontSize: 9, lineHeight: 1.5, color: "#374151", background: "#fff7ed", border: "1px solid #fed7aa", borderRadius: 4, padding: "4px 6px", overflowX: "auto", whiteSpace: "pre-wrap", wordBreak: "break-all" }}>
+                    {typeof request === "string" ? request : JSON.stringify(request, null, 2)}
+                  </pre>
+                </div>
+              )}
+              {response != null && (
+                <div>
+                  <div style={{ fontSize: 9, fontWeight: 700, color: "#16a34a", marginBottom: 2, textTransform: "uppercase" }}>Response</div>
+                  <pre style={{ margin: 0, fontSize: 9, lineHeight: 1.5, color: "#374151", background: "#f0fdf4", border: "1px solid #bbf7d0", borderRadius: 4, padding: "4px 6px", overflowX: "auto", whiteSpace: "pre-wrap", wordBreak: "break-all" }}>
+                    {typeof response === "string" ? response : JSON.stringify(response, null, 2)}
+                  </pre>
+                </div>
+              )}
+              {!request && !response && (
+                <pre style={{ margin: 0, fontSize: 9, lineHeight: 1.5, color: "#6b7280", background: "#f9fafb", border: "1px solid #f3f4f6", borderRadius: 4, padding: "4px 6px", overflowX: "auto", whiteSpace: "pre-wrap", wordBreak: "break-all" }}>
+                  {JSON.stringify(payload, null, 2)}
+                </pre>
+              )}
+            </>
+          ) : (
+            <pre style={{ margin: 0, fontSize: 9, lineHeight: 1.5, color: "#6b7280", background: "#f9fafb", border: "1px solid #f3f4f6", borderRadius: 4, padding: "4px 6px", overflowX: "auto", whiteSpace: "pre-wrap", wordBreak: "break-all" }}>
+              {JSON.stringify(payload, null, 2)}
+            </pre>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ─── Inner component ──────────────────────────────────────────────
 
 function WorkflowCanvasInner({
@@ -385,8 +470,36 @@ function WorkflowCanvasInner({
   toolCalls,
   activeNodeId,
   isPlaying,
+  callLog = [],
+  nodeMovements = [],
 }: WorkflowCanvasProps) {
   const [selectedNode, setSelectedNode] = useState<any>(null);
+  const { fitView } = useReactFlow();
+
+  // Track the last time the user manually panned/zoomed so we can pause
+  // auto-zoom for 3 s after interaction (avoids fighting the user).
+  const lastManualInteractionRef = useRef(0);
+  const handleMoveStart = useCallback(() => {
+    lastManualInteractionRef.current = Date.now();
+  }, []);
+
+  // Auto-zoom to the active node whenever it changes (playback or seek).
+  // Uses a 60 ms delay so React Flow finishes applying the new node state
+  // before we ask it to fit the view.
+  useEffect(() => {
+    if (!activeNodeId) return;
+    if (Date.now() - lastManualInteractionRef.current < 3000) return;
+    const t = setTimeout(() => {
+      fitView({
+        nodes: [{ id: activeNodeId }],
+        duration: 350,
+        padding: 0.45,
+        maxZoom: 1.4,
+        minZoom: 0.1,
+      });
+    }, 60);
+    return () => clearTimeout(t);
+  }, [activeNodeId, fitView]);
 
   const rfNodes: Node[] = useMemo(() => {
     return workflowNodes.map((n: any) => ({
@@ -469,6 +582,34 @@ function WorkflowCanvasInner({
     return toolCalls.filter((t) => t.nodeId === selectedNode.id);
   }, [selectedNode, toolCalls]);
 
+  // Call log events scoped to the selected node.
+  // Primary: match by node_id field. Fallback: events in the time window
+  // between when this node became active and when the next node did.
+  const selectedNodeLogs = useMemo(() => {
+    if (!selectedNode || callLog.length === 0) return [];
+
+    // Primary: explicit node_id
+    const byId = callLog.filter(
+      (e: any) => e.node_id === selectedNode.id || e.nodeId === selectedNode.id
+    );
+    if (byId.length > 0) return byId;
+
+    // Fallback: time window from nodeMovements
+    const sorted = [...nodeMovements].sort(
+      (a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()
+    );
+    const idx = sorted.findIndex((m) => m.nodeId === selectedNode.id);
+    if (idx < 0) return [];
+    const fromMs = new Date(sorted[idx].timestamp).getTime();
+    const toMs = idx + 1 < sorted.length
+      ? new Date(sorted[idx + 1].timestamp).getTime()
+      : Infinity;
+    return callLog.filter((e: any) => {
+      const ts = new Date(e.timestamp).getTime();
+      return Number.isFinite(ts) && ts >= fromMs && ts < toMs;
+    });
+  }, [selectedNode, callLog, nodeMovements]);
+
   const panelCfg = selectedNode ? (NODE_CONFIG[selectedNode.type] ?? FALLBACK_CONFIG) : FALLBACK_CONFIG;
 
   return (
@@ -498,6 +639,7 @@ function WorkflowCanvasInner({
         nodeTypes={nodeTypes}
         onNodeClick={onNodeClick}
         onPaneClick={onPaneClick}
+        onMoveStart={handleMoveStart}
         fitView
         fitViewOptions={{ padding: 0.2 }}
         minZoom={0.02}
@@ -616,7 +758,7 @@ function WorkflowCanvasInner({
 
             {/* Full prompt */}
             {selectedNode.message && (
-              <div>
+              <div style={{ marginBottom: 12 }}>
                 <div style={{ fontSize: 10, color: "#6b7280", marginBottom: 6, fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.06em" }}>Prompt</div>
                 <div style={{
                   fontSize: 10, color: "#6b7280", lineHeight: 1.6,
@@ -628,6 +770,20 @@ function WorkflowCanvasInner({
                 }}>
                   {(selectedNode.message as string).slice(0, 800)}
                   {(selectedNode.message as string).length > 800 ? "\n…" : ""}
+                </div>
+              </div>
+            )}
+
+            {/* Node call logs — events recorded while the agent was on this node */}
+            {selectedNodeLogs.length > 0 && (
+              <div>
+                <div style={{ fontSize: 10, color: "#6b7280", marginBottom: 6, fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.06em" }}>
+                  Call Logs ({selectedNodeLogs.length})
+                </div>
+                <div style={{ maxHeight: 260, overflow: "auto", background: "#f9fafb", border: "1px solid #f3f4f6", borderRadius: 6, padding: "6px 8px" }}>
+                  {selectedNodeLogs.map((e: any, i: number) => (
+                    <LogEntry key={i} event={e} />
+                  ))}
                 </div>
               </div>
             )}

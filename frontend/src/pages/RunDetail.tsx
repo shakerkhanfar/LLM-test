@@ -2432,6 +2432,8 @@ function FlowProgressionView({
             toolCalls={toolCalls}
             activeNodeId={activeNodeId ?? null}
             isPlaying={isPlaying ?? false}
+            callLog={callLog}
+            nodeMovements={nodeMovements}
           />
         </Suspense>
       )}
