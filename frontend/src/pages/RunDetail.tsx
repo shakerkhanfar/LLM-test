@@ -212,25 +212,6 @@ export default function RunDetail() {
       .finally(() => setLoading(false));
   };
 
-  // Proactively detect OGG recordings in browsers that can't play them (Safari).
-  // This avoids the generic "Recording unavailable" error — we show a targeted
-  // message with a download link before the audio element even tries to load.
-  // Note: recordingUrl is declared after the early returns so we re-derive it here
-  // from the same sources rather than referencing the post-early-return variable.
-  useEffect(() => {
-    const w = (run as any)?.webhookData as any;
-    const url = freshRecordingUrl ||
-      w?.data?.conversationRecording || w?.mediaUrl || w?.data?.recordingUrl ||
-      w?.data?.recording_url || w?.caller_info?.recording_url || w?.recordingUrl || null;
-    if (!url) return;
-    if (!/\.ogg(\?|$)/i.test(url)) return;
-    const probe = document.createElement("audio");
-    const supported = probe.canPlayType("audio/ogg; codecs=\"vorbis\"") !== "";
-    if (!supported) {
-      setAudioError(true);
-      setAudioErrorDetail("ogg-unsupported");
-    }
-  }, [run, freshRecordingUrl]);
 
   // Reset per-run state when navigating between runs
   useEffect(() => {
@@ -1760,7 +1741,7 @@ export default function RunDetail() {
           </div>
           {audioError ? (
             <div style={{ fontSize: 12, color: T.textSecondary, display: "flex", flexDirection: "column", gap: 8 }}>
-              {audioErrorDetail === "ogg-unsupported" || audioErrorDetail === "format not supported by this browser" ? (
+              {audioErrorDetail === "ogg-unsupported" ? (
                 <>
                   <div style={{ color: T.text }}>
                     This recording is in <strong>OGG format</strong>, which Safari doesn't support.
@@ -1842,6 +1823,20 @@ export default function RunDetail() {
                     4: "format not supported by this browser",
                   };
                   const detail = mediaErr ? codes[mediaErr.code] || `media error ${mediaErr.code}` : "load failed";
+
+                  // Code 4 = format/codec not supported. Check whether this browser
+                  // genuinely can't play OGG (Safari returns "" for all OGG canPlayType
+                  // queries). If so, skip the retry — a fresh URL won't fix a codec gap.
+                  if (mediaErr?.code === 4) {
+                    const probe = document.createElement("audio");
+                    const canOgg = probe.canPlayType("audio/ogg") !== "" || probe.canPlayType("audio/ogg; codecs=\"vorbis\"") !== "";
+                    if (!canOgg) {
+                      setAudioError(true);
+                      setAudioErrorDetail("ogg-unsupported");
+                      return;
+                    }
+                  }
+
                   if (!recordingRefreshAttempted) {
                     setRecordingRefreshAttempted(true);
                     setRecordingRefreshing(true);
