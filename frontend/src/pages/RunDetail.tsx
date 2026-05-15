@@ -1951,7 +1951,12 @@ export default function RunDetail() {
                       .finally(() => setRecordingRefreshing(false));
                   } else {
                     setAudioError(true);
-                    setAudioErrorDetail(detail);
+                    // Code 4 after a successful URL refresh means the server-side stream
+                    // failed (expired URL, recording deleted) — not a browser codec issue.
+                    const finalDetail = mediaErr?.code === 4
+                      ? "recording unavailable on server"
+                      : detail;
+                    setAudioErrorDetail(finalDetail);
                   }
                 }}
                 onLoadedMetadata={() => { const d = audioRef.current?.duration ?? 0; setAudioDuration(Number.isFinite(d) ? d : 0); }}

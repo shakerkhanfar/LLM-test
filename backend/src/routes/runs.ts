@@ -374,9 +374,13 @@ router.post("/:id/rehydrate", evalRateLimit, async (req: AuthRequest, res) => {
 
     await prisma.run.update({ where: { id: run.id }, data: updatePayload });
 
-    // 4. Trigger re-evaluation with fresh data
+    // 4. Trigger re-evaluation in the background — respond immediately so
+    //    Replit's reverse proxy (30s timeout) never sees a timeout. The frontend
+    //    polls run.status until it reaches COMPLETE or FAILED.
     const { runEvaluationCheck } = await import("../services/evaluationRunner");
-    await runEvaluationCheck(run.id);
+    void runEvaluationCheck(run.id).catch((err) =>
+      console.error(`[Rehydrate] background eval failed for ${run.id}:`, err)
+    );
 
     res.json({
       ok: true,
