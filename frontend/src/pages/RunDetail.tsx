@@ -240,6 +240,39 @@ export default function RunDetail() {
       }
     }
 
+    // Path 2: TRANSITION/ROUTER payload.next_node — present in logs since mid-2025.
+    // These carry the real destination node ID so no fuzzy matching is needed.
+    // TRANSITION fires when the agent leaves a node; next_node is the destination.
+    // ROUTER fires at a decision point; next_node is the chosen branch.
+    if (out.length === 0) {
+      for (const e of cl) {
+        if (!e.timestamp) continue;
+        const nextNode = e.payload?.next_node;
+        if (!nextNode) continue;
+        if (e.category === "TRANSITION" || e.category === "ROUTER") {
+          out.push({ nodeId: String(nextNode), timestamp: e.timestamp });
+        }
+      }
+      // Deduplicate: ROUTER and TRANSITION can both fire for the same movement
+      // at the same instant, producing two identical (nodeId, timestamp) pairs.
+      const seenKeys = new Set<string>();
+      for (let i = out.length - 1; i >= 0; i--) {
+        const key = `${out[i].nodeId}|${out[i].timestamp}`;
+        if (seenKeys.has(key)) out.splice(i, 1);
+        else seenKeys.add(key);
+      }
+      // Prepend the start node: TRANSITION.next_node is always a destination, so
+      // the first node (greeting) is never emitted by any transition event.
+      // Without this, activeNodeId is null for the entire greeting segment.
+      if (out.length > 0) {
+        const startNode = workflowNodes.find((n: any) => n.type === "start");
+        const firstEventTs = cl.find((e: any) => e.timestamp)?.timestamp;
+        if (startNode && firstEventTs) {
+          out.unshift({ nodeId: String(startNode.id), timestamp: firstEventTs });
+        }
+      }
+    }
+
     if (out.length === 0 && workflowNodes.length > 0) {
       // Fallback: Hamsa prod logs sometimes emit `nodeId: null` on every event
       // (we've seen this on the Noura agent). We derive movements from:
@@ -2138,7 +2171,29 @@ function FlowProgressionView({
     }
   }
 
-  // If node_ids are null, match by conversation prompts and variables/tools
+  // If node_ids are null, try TRANSITION/ROUTER payload.next_node first (new log
+  // format, mid-2025+), then fall back to fuzzy text matching for older logs.
+  if (visitedNodeIds.size === 0) {
+    for (const e of callLog) {
+      const nextNode = e.payload?.next_node;
+      if (!nextNode) continue;
+      if (e.category === "TRANSITION" || e.category === "ROUTER") {
+        visitedNodeIds.add(String(nextNode));
+        if (e.timestamp) nodeMovements.push({ nodeId: String(nextNode), timestamp: e.timestamp });
+      }
+    }
+    // Prepend start node — TRANSITION.next_node never fires into the first node.
+    if (visitedNodeIds.size > 0) {
+      const startNode = workflowNodes.find((n: any) => n.type === "start");
+      const firstEventTs = callLog.find((e: any) => e.timestamp)?.timestamp;
+      if (startNode && firstEventTs && !visitedNodeIds.has(String(startNode.id))) {
+        visitedNodeIds.add(String(startNode.id));
+        nodeMovements.unshift({ nodeId: String(startNode.id), timestamp: firstEventTs });
+      }
+    }
+  }
+
+  // Fuzzy fallback for logs that predate the next_node fields.
   if (visitedNodeIds.size === 0) {
     // Match by prompt content (fuzzy — first 30 chars of the node message, ignoring template vars)
     const prompts = callLog.filter(
@@ -2173,7 +2228,8 @@ function FlowProgressionView({
       }
     }
 
-    // Match router nodes if we see ROUTER events
+    // Match router nodes if we see ROUTER events.
+    // Old logs have no next_node so we can't tell which router — mark all.
     const routerEvents = callLog.filter((e: any) => e.category === "ROUTER");
     if (routerEvents.length > 0) {
       for (const node of workflowNodes) {
