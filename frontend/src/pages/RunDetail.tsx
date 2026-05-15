@@ -427,7 +427,7 @@ export default function RunDetail() {
   // Computed whenever audioTime > 0, not just while playing — so the highlight
   // persists when the user pauses to inspect the canvas.
   const activeNodeId = useMemo(() => {
-    if (callStartMs == null || nodeMovementsForSync.length === 0 || audioTime === 0) return null;
+    if (callStartMs == null || nodeMovementsForSync.length === 0) return null;
     const absTimeMs = callStartMs + audioTime * 1000;
     let active: string | null = null;
     for (const m of nodeMovementsForSync) {
@@ -1798,6 +1798,7 @@ export default function RunDetail() {
                 }
               }}
               onTimeUpdate={() => setAudioTime(audioRef.current?.currentTime ?? 0)}
+              onSeeking={() => setAudioTime(audioRef.current?.currentTime ?? 0)}
               onSeeked={() => setAudioTime(audioRef.current?.currentTime ?? 0)}
               onPlay={() => setIsAudioPlaying(true)}
               onPause={() => setIsAudioPlaying(false)}
@@ -1838,7 +1839,9 @@ export default function RunDetail() {
                         onClick={() => {
                           const a = audioRef.current;
                           if (!a) return;
-                          a.currentTime = Math.max(0, turnOffset - 0.2);
+                          const seekTo = Math.max(0, turnOffset - 0.2);
+                          a.currentTime = seekTo;
+                          setAudioTime(seekTo); // update immediately — don't wait for async onSeeked
                           a.play().catch(() => {});
                         }}
                         title={`Play from ${turnOffset.toFixed(1)}s`}
