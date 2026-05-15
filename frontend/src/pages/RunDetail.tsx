@@ -511,6 +511,10 @@ export default function RunDetail() {
       null
     );
   })();
+  // Use our backend streaming proxy for the <audio> src so the browser always
+  // receives the correct Content-Type header. CloudFront serves OGG files as
+  // application/octet-stream which Chrome refuses to play (code 4 error).
+  const audioSrc: string | null = recordingUrl ? `/api/runs/${runId}/recording-stream` : null;
   const wordLabels = (run.wordLabels || []) as any[];
 
   // Flatten words for labeling.
@@ -1811,7 +1815,7 @@ export default function RunDetail() {
               <audio
                 ref={audioRef}
                 controls
-                src={recordingUrl}
+                src={audioSrc ?? undefined}
                 onError={(e) => {
                   // Capture browser-level detail so the user (and we) see WHY.
                   // MediaError codes: 1=aborted, 2=network, 3=decode, 4=src not supported.
