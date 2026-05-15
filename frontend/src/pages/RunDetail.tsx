@@ -212,6 +212,20 @@ export default function RunDetail() {
       .finally(() => setLoading(false));
   };
 
+  // Proactively detect OGG recordings in browsers that can't play them (Safari).
+  // This avoids the generic "Recording unavailable" error — we show a targeted
+  // message with a download link before the audio element even tries to load.
+  useEffect(() => {
+    if (!recordingUrl) return;
+    if (!/\.ogg(\?|$)/i.test(recordingUrl)) return;
+    const probe = document.createElement("audio");
+    const supported = probe.canPlayType("audio/ogg; codecs=\"vorbis\"") !== "";
+    if (!supported) {
+      setAudioError(true);
+      setAudioErrorDetail("ogg-unsupported");
+    }
+  }, [recordingUrl]);
+
   // Reset per-run state when navigating between runs
   useEffect(() => {
     activeRunIdRef.current = runId!; // mark the new run; invalidates all old polls
@@ -1739,42 +1753,70 @@ export default function RunDetail() {
             </a>
           </div>
           {audioError ? (
-            <div style={{ fontSize: 12, color: T.textSecondary, display: "flex", flexDirection: "column", gap: 6 }}>
-              <div>
-                Recording unavailable.{" "}
-                {audioErrorDetail && <span style={{ color: "#ef4444" }}>({audioErrorDetail})</span>}
-              </div>
-              <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-                <button
-                  type="button"
-                  disabled={recordingRefreshing}
-                  onClick={() => {
-                    setRecordingRefreshing(true);
-                    setAudioErrorDetail(null);
-                    getRecordingUrl(runId!)
-                      .then(({ url }) => {
-                        setFreshRecordingUrl(url);
-                        setAudioError(false);
-                        setRecordingRefreshAttempted(false); // allow another retry if new URL also fails
-                      })
-                      .catch((err) => {
-                        const msg = err instanceof Error ? err.message : String(err);
-                        setAudioErrorDetail(msg.slice(0, 200));
-                      })
-                      .finally(() => setRecordingRefreshing(false));
-                  }}
-                  style={{
-                    fontSize: 11, padding: "4px 10px", borderRadius: 4,
-                    background: T.card, color: T.text, border: `1px solid ${T.border}`,
-                    cursor: recordingRefreshing ? "default" : "pointer",
-                  }}
-                >
-                  {recordingRefreshing ? "Fetching…" : "Retry from Hamsa"}
-                </button>
-                <span style={{ fontSize: 11, color: T.textMuted }}>
-                  or use "Open directly" above
-                </span>
-              </div>
+            <div style={{ fontSize: 12, color: T.textSecondary, display: "flex", flexDirection: "column", gap: 8 }}>
+              {audioErrorDetail === "ogg-unsupported" || audioErrorDetail === "format not supported by this browser" ? (
+                <>
+                  <div style={{ color: T.text }}>
+                    This recording is in <strong>OGG format</strong>, which Safari doesn't support.
+                    Use <strong>Chrome or Firefox</strong> to play it here, or download it below.
+                  </div>
+                  <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+                    <a
+                      href={recordingUrl!}
+                      download
+                      style={{ fontSize: 11, padding: "4px 10px", borderRadius: 4, background: T.primary, color: "#fff", textDecoration: "none", border: "none" }}
+                    >
+                      Download recording ↓
+                    </a>
+                    <a
+                      href={recordingUrl!}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      style={{ fontSize: 11, color: T.link, textDecoration: "none" }}
+                    >
+                      Open in new tab ↗
+                    </a>
+                  </div>
+                </>
+              ) : (
+                <>
+                  <div>
+                    Recording unavailable.{" "}
+                    {audioErrorDetail && <span style={{ color: "#ef4444" }}>({audioErrorDetail})</span>}
+                  </div>
+                  <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                    <button
+                      type="button"
+                      disabled={recordingRefreshing}
+                      onClick={() => {
+                        setRecordingRefreshing(true);
+                        setAudioErrorDetail(null);
+                        getRecordingUrl(runId!)
+                          .then(({ url }) => {
+                            setFreshRecordingUrl(url);
+                            setAudioError(false);
+                            setRecordingRefreshAttempted(false);
+                          })
+                          .catch((err) => {
+                            const msg = err instanceof Error ? err.message : String(err);
+                            setAudioErrorDetail(msg.slice(0, 200));
+                          })
+                          .finally(() => setRecordingRefreshing(false));
+                      }}
+                      style={{
+                        fontSize: 11, padding: "4px 10px", borderRadius: 4,
+                        background: T.card, color: T.text, border: `1px solid ${T.border}`,
+                        cursor: recordingRefreshing ? "default" : "pointer",
+                      }}
+                    >
+                      {recordingRefreshing ? "Fetching…" : "Retry from Hamsa"}
+                    </button>
+                    <span style={{ fontSize: 11, color: T.textMuted }}>
+                      or use "Open directly" above
+                    </span>
+                  </div>
+                </>
+              )}
             </div>
           ) : (
             <>
