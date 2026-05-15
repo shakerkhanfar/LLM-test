@@ -167,88 +167,12 @@ const LABEL_COLORS: Record<string, string> = {
   ASR_ERROR: "#06b6d4",
 };
 
-// ─── Node Timeline Markers ─────────────────────────────────────────────────────
-// A thin strip rendered below the native <audio> control. One dot per node
-// transition. Clicking a dot seeks the audio to that moment.
-
-interface NodeTimelineMarkersProps {
-  nodeMovementsForSync: Array<{ nodeId: string; timestamp: string }>;
-  callStartMs: number;
-  audioDuration: number;
-  activeNodeId: string | null;
-  wfNodes: any[];
-  onSeek: (offsetSec: number) => void;
+function formatTime(sec: number): string {
+  if (!Number.isFinite(sec) || sec < 0) return "—";
+  const m = Math.floor(sec / 60);
+  const s = Math.floor(sec % 60);
+  return `${m}:${s.toString().padStart(2, "0")}`;
 }
-
-function NodeTimelineMarkers({
-  nodeMovementsForSync,
-  callStartMs,
-  audioDuration,
-  activeNodeId,
-  wfNodes,
-  onSeek,
-}: NodeTimelineMarkersProps) {
-  const [hoveredIdx, setHoveredIdx] = useState<number | null>(null);
-
-  const markers = nodeMovementsForSync.map((m) => {
-    const ms = new Date(m.timestamp).getTime();
-    const offsetSec = (ms - callStartMs) / 1000;
-    const pct = Math.min(100, Math.max(0, (offsetSec / audioDuration) * 100));
-    const node = wfNodes.find((n: any) => n.id === m.nodeId);
-    const label = node?.label || node?.type || m.nodeId;
-    return { nodeId: m.nodeId, offsetSec, pct, label };
-  });
-
-  return (
-    <div style={{ position: "relative", height: 20, marginTop: 4, userSelect: "none" }}>
-      {/* Track line */}
-      <div style={{
-        position: "absolute", top: "50%", left: 0, right: 0,
-        height: 2, background: T.border, borderRadius: 1,
-        transform: "translateY(-50%)",
-      }} />
-      {markers.map((m, i) => {
-        const isActive = m.nodeId === activeNodeId;
-        const isHovered = hoveredIdx === i;
-        return (
-          <div key={i} style={{ position: "absolute", left: `${m.pct}%`, top: "50%", transform: "translate(-50%, -50%)", zIndex: 2 }}>
-            {/* Tooltip */}
-            {isHovered && (
-              <div style={{
-                position: "absolute", bottom: "calc(100% + 6px)", left: "50%",
-                transform: "translateX(-50%)", whiteSpace: "nowrap",
-                background: T.card, border: `1px solid ${T.border}`,
-                borderRadius: 5, padding: "3px 7px", fontSize: 11,
-                color: T.text, boxShadow: T.shadow, pointerEvents: "none",
-                zIndex: 10,
-              }}>
-                {m.label}
-                <span style={{ color: T.textMuted, marginLeft: 5 }}>{m.offsetSec.toFixed(1)}s</span>
-              </div>
-            )}
-            <button
-              onClick={() => onSeek(m.offsetSec)}
-              onMouseEnter={() => setHoveredIdx(i)}
-              onMouseLeave={() => setHoveredIdx(null)}
-              title={`${m.label} — ${m.offsetSec.toFixed(1)}s`}
-              style={{
-                display: "block", width: isActive ? 12 : 8, height: isActive ? 12 : 8,
-                borderRadius: "50%",
-                background: isActive ? T.primary : (isHovered ? T.link : T.textSecondary),
-                border: isActive ? `2px solid ${T.primary}` : `1.5px solid ${isHovered ? T.link : T.border}`,
-                boxShadow: isActive ? `0 0 0 3px ${T.primary}33` : "none",
-                cursor: "pointer", padding: 0,
-                transition: "all 0.15s",
-              }}
-            />
-          </div>
-        );
-      })}
-    </div>
-  );
-}
-
-// ─── End Node Timeline Markers ─────────────────────────────────────────────────
 
 export default function RunDetail() {
   const { id, runId } = useParams();
@@ -261,9 +185,11 @@ export default function RunDetail() {
   const [recordingRefreshAttempted, setRecordingRefreshAttempted] = useState(false);
   const [recordingRefreshing, setRecordingRefreshing] = useState(false);
   const audioRef = useRef<HTMLAudioElement>(null);
+  const progressBarRef = useRef<HTMLDivElement>(null);
   const [audioTime, setAudioTime] = useState(0);
   const [audioDuration, setAudioDuration] = useState(0);
   const [isAudioPlaying, setIsAudioPlaying] = useState(false);
+  const [isMuted, setIsMuted] = useState(false);
   const [reEvaluating, setReEvaluating] = useState(false);
   const [rehydrating, setRehydrating] = useState(false);
   const [labeling, setLabeling] = useState(false);
@@ -296,7 +222,9 @@ export default function RunDetail() {
     setRecordingRefreshAttempted(false);
     setRecordingRefreshing(false);
     setAudioTime(0);
+    setAudioDuration(0);
     setIsAudioPlaying(false);
+    setIsMuted(false);
     setReEvaluating(false);
     setLabelingWord(null);
     load();
@@ -1849,69 +1777,140 @@ export default function RunDetail() {
               </div>
             </div>
           ) : (
-            <audio
-              ref={audioRef}
-              controls
-              src={recordingUrl}
-              onError={(e) => {
-                // Capture browser-level detail so the user (and we) see WHY.
-                // MediaError codes: 1=aborted, 2=network, 3=decode, 4=src not supported.
-                const mediaErr = (e.currentTarget as HTMLAudioElement).error;
-                const codes: Record<number, string> = {
-                  1: "playback aborted",
-                  2: "network error",
-                  3: "decode error (codec unsupported?)",
-                  4: "format not supported by this browser",
-                };
-                const detail = mediaErr ? codes[mediaErr.code] || `media error ${mediaErr.code}` : "load failed";
-                if (!recordingRefreshAttempted) {
-                  setRecordingRefreshAttempted(true);
-                  setRecordingRefreshing(true);
-                  setAudioErrorDetail(null);
-                  getRecordingUrl(runId!)
-                    .then(({ url }) => { setFreshRecordingUrl(url); setAudioError(false); })
-                    .catch((refreshErr) => {
-                      const msg = refreshErr instanceof Error ? refreshErr.message : String(refreshErr);
-                      setAudioError(true);
-                      setAudioErrorDetail(`refresh failed: ${msg.slice(0, 180)}`);
-                    })
-                    .finally(() => setRecordingRefreshing(false));
-                } else {
-                  setAudioError(true);
-                  setAudioErrorDetail(detail);
-                }
-              }}
-              onLoadedMetadata={() => setAudioDuration(audioRef.current?.duration ?? 0)}
-              onDurationChange={() => setAudioDuration(audioRef.current?.duration ?? 0)}
-              onTimeUpdate={() => setAudioTime(audioRef.current?.currentTime ?? 0)}
-              onSeeking={() => setAudioTime(audioRef.current?.currentTime ?? 0)}
-              onSeeked={() => setAudioTime(audioRef.current?.currentTime ?? 0)}
-              onPlay={() => setIsAudioPlaying(true)}
-              onPause={() => setIsAudioPlaying(false)}
-              onEnded={() => { setIsAudioPlaying(false); setAudioTime(0); }}
-              style={{ width: "100%", accentColor: T.primary, display: "block" }}
-            />
-          )}
-          {/* Node-transition timeline markers — rendered whenever we have duration
-              and at least one movement. Clicking a marker seeks audio to that point. */}
-          {audioDuration > 0 && callStartMs != null && nodeMovementsForSync.length > 0 && (() => {
-            const wfNodes = (run as any)?.project?.agentStructure?.workflow?.nodes ?? [];
-            return (
-              <NodeTimelineMarkers
-                nodeMovementsForSync={nodeMovementsForSync}
-                callStartMs={callStartMs}
-                audioDuration={audioDuration}
-                activeNodeId={activeNodeId}
-                wfNodes={wfNodes}
-                onSeek={(offsetSec) => {
-                  const a = audioRef.current;
-                  if (!a) return;
-                  a.currentTime = offsetSec;
-                  setAudioTime(offsetSec);
+            <>
+              {/* Native <audio> kept hidden — remove `style` override to revert to browser player */}
+              <audio
+                ref={audioRef}
+                controls
+                src={recordingUrl}
+                onError={(e) => {
+                  // Capture browser-level detail so the user (and we) see WHY.
+                  // MediaError codes: 1=aborted, 2=network, 3=decode, 4=src not supported.
+                  const mediaErr = (e.currentTarget as HTMLAudioElement).error;
+                  const codes: Record<number, string> = {
+                    1: "playback aborted",
+                    2: "network error",
+                    3: "decode error (codec unsupported?)",
+                    4: "format not supported by this browser",
+                  };
+                  const detail = mediaErr ? codes[mediaErr.code] || `media error ${mediaErr.code}` : "load failed";
+                  if (!recordingRefreshAttempted) {
+                    setRecordingRefreshAttempted(true);
+                    setRecordingRefreshing(true);
+                    setAudioErrorDetail(null);
+                    getRecordingUrl(runId!)
+                      .then(({ url }) => { setFreshRecordingUrl(url); setAudioError(false); })
+                      .catch((refreshErr) => {
+                        const msg = refreshErr instanceof Error ? refreshErr.message : String(refreshErr);
+                        setAudioError(true);
+                        setAudioErrorDetail(`refresh failed: ${msg.slice(0, 180)}`);
+                      })
+                      .finally(() => setRecordingRefreshing(false));
+                  } else {
+                    setAudioError(true);
+                    setAudioErrorDetail(detail);
+                  }
                 }}
+                onLoadedMetadata={() => { const d = audioRef.current?.duration ?? 0; setAudioDuration(Number.isFinite(d) ? d : 0); }}
+                onDurationChange={() => { const d = audioRef.current?.duration ?? 0; setAudioDuration(Number.isFinite(d) ? d : 0); }}
+                onTimeUpdate={() => setAudioTime(audioRef.current?.currentTime ?? 0)}
+                onSeeking={() => setAudioTime(audioRef.current?.currentTime ?? 0)}
+                onSeeked={() => setAudioTime(audioRef.current?.currentTime ?? 0)}
+                onPlay={() => setIsAudioPlaying(true)}
+                onPause={() => setIsAudioPlaying(false)}
+                onEnded={() => { setIsAudioPlaying(false); setAudioTime(0); }}
+                style={{ display: "none" }}
               />
-            );
-          })()}
+              {/* Custom player — same controls as the native player + node markers on the bar */}
+              <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "2px 0" }}>
+                {/* Play / Pause */}
+                <button
+                  onClick={() => {
+                    const a = audioRef.current;
+                    if (!a) return;
+                    isAudioPlaying ? a.pause() : a.play().catch(() => {});
+                  }}
+                  title={isAudioPlaying ? "Pause" : "Play"}
+                  style={{ background: "none", border: "none", cursor: "pointer", color: T.text, fontSize: 15, lineHeight: 1, padding: "4px 6px", borderRadius: 4, flexShrink: 0 }}
+                >
+                  {isAudioPlaying ? "⏸" : "▶"}
+                </button>
+                {/* Current / total time */}
+                <span style={{ fontSize: 12, color: T.textMuted, flexShrink: 0, minWidth: 82, fontVariantNumeric: "tabular-nums" }}>
+                  {formatTime(audioTime)} / {formatTime(audioDuration)}
+                </span>
+                {/* Progress bar — node markers sit on the same track */}
+                <div
+                  ref={progressBarRef}
+                  onMouseDown={(e: React.MouseEvent<HTMLDivElement>) => {
+                    e.preventDefault();
+                    const bar = progressBarRef.current;
+                    if (!bar || !audioDuration) return;
+                    const seek = (clientX: number) => {
+                      if (!mountedRef.current) return;
+                      const rect = bar.getBoundingClientRect();
+                      const frac = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
+                      const seekTo = frac * audioDuration;
+                      if (audioRef.current) { audioRef.current.currentTime = seekTo; setAudioTime(seekTo); }
+                    };
+                    seek(e.clientX);
+                    const onMove = (me: MouseEvent) => seek(me.clientX);
+                    const onUp = () => { document.removeEventListener("mousemove", onMove); document.removeEventListener("mouseup", onUp); };
+                    document.addEventListener("mousemove", onMove);
+                    document.addEventListener("mouseup", onUp);
+                  }}
+                  style={{ flex: 1, position: "relative", height: 28, cursor: "pointer", userSelect: "none" }}
+                >
+                  {/* Track */}
+                  <div style={{ position: "absolute", top: "50%", left: 0, right: 0, height: 3, background: T.border, borderRadius: 2, transform: "translateY(-50%)", pointerEvents: "none" }} />
+                  {/* Fill */}
+                  <div style={{ position: "absolute", top: "50%", left: 0, width: `${audioDuration > 0 ? (audioTime / audioDuration) * 100 : 0}%`, height: 3, background: T.primary, borderRadius: 2, transform: "translateY(-50%)", pointerEvents: "none" }} />
+                  {/* Node transition markers */}
+                  {audioDuration > 0 && callStartMs != null && (() => {
+                    const wfNodes = (run as any)?.project?.agentStructure?.workflow?.nodes ?? [];
+                    return nodeMovementsForSync
+                      .map((mov) => {
+                        const offsetSec = (new Date(mov.timestamp).getTime() - callStartMs) / 1000;
+                        return { mov, offsetSec };
+                      })
+                      .filter(({ offsetSec }) => offsetSec >= 0) // skip movements before recording start
+                      .map(({ mov, offsetSec }) => {
+                        const pct = Math.min(100, Math.max(0, (offsetSec / audioDuration) * 100));
+                        const node = wfNodes.find((n: any) => n.id === mov.nodeId);
+                        const label = node?.label || node?.type || mov.nodeId;
+                        const isActive = mov.nodeId === activeNodeId;
+                        return (
+                          <div
+                            key={`${mov.nodeId}-${mov.timestamp}`}
+                            title={`${label} — ${formatTime(offsetSec)}`}
+                            style={{
+                              position: "absolute", left: `${pct}%`, top: "50%",
+                              transform: "translate(-50%, -50%)",
+                              width: isActive ? 11 : 7, height: isActive ? 11 : 7,
+                              borderRadius: "50%",
+                              background: isActive ? T.primary : T.textSecondary,
+                              border: `2px solid ${isActive ? T.primary : T.border}`,
+                              boxShadow: isActive ? `0 0 0 3px ${T.primary}33` : "none",
+                              zIndex: 2, pointerEvents: "none", transition: "all 0.15s",
+                            }}
+                          />
+                        );
+                      });
+                  })()}
+                  {/* Playhead thumb */}
+                  <div style={{ position: "absolute", left: `${audioDuration > 0 ? (audioTime / audioDuration) * 100 : 0}%`, top: "50%", transform: "translate(-50%, -50%)", width: 13, height: 13, borderRadius: "50%", background: T.primary, zIndex: 3, pointerEvents: "none", boxShadow: "0 1px 3px rgba(0,0,0,0.3)" }} />
+                </div>
+                {/* Mute / Unmute */}
+                <button
+                  onClick={() => { const a = audioRef.current; if (!a) return; a.muted = !a.muted; setIsMuted(a.muted); }}
+                  title={isMuted ? "Unmute" : "Mute"}
+                  style={{ background: "none", border: "none", cursor: "pointer", color: T.text, fontSize: 15, lineHeight: 1, padding: "4px 6px", borderRadius: 4, flexShrink: 0 }}
+                >
+                  {isMuted ? "🔇" : "🔊"}
+                </button>
+              </div>
+            </>
+          )}
         </div>
       )}
 
