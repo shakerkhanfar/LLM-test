@@ -190,6 +190,9 @@ export default function RunDetail() {
   const [audioDuration, setAudioDuration] = useState(0);
   const [isAudioPlaying, setIsAudioPlaying] = useState(false);
   const [isMuted, setIsMuted] = useState(false);
+  // Incremented when the user retries after a failed load — forces the audio
+  // element to reload the stream (changing src is the only way to trigger a reload).
+  const [audioSrcVersion, setAudioSrcVersion] = useState(0);
   const [reEvaluating, setReEvaluating] = useState(false);
   const [rehydrating, setRehydrating] = useState(false);
   const [labeling, setLabeling] = useState(false);
@@ -226,6 +229,7 @@ export default function RunDetail() {
     setAudioDuration(0);
     setIsAudioPlaying(false);
     setIsMuted(false);
+    setAudioSrcVersion(0);
     setReEvaluating(false);
     setLabelingWord(null);
     load();
@@ -514,7 +518,9 @@ export default function RunDetail() {
   // Use our backend streaming proxy for the <audio> src so the browser always
   // receives the correct Content-Type header. CloudFront serves OGG files as
   // application/octet-stream which Chrome refuses to play (code 4 error).
-  const audioSrc: string | null = recordingUrl ? `/api/runs/${runId}/recording-stream` : null;
+  // The stream proxy URL. The ?v= cache-buster forces the audio element to reload
+  // after a successful retry (browser won't re-fetch if the src string is unchanged).
+  const audioSrc: string | null = recordingUrl ? `/api/runs/${runId}/recording-stream?v=${audioSrcVersion}` : null;
   const wordLabels = (run.wordLabels || []) as any[];
 
   // Flatten words for labeling.
@@ -1787,6 +1793,7 @@ export default function RunDetail() {
                             setFreshRecordingUrl(url);
                             setAudioError(false);
                             setRecordingRefreshAttempted(false);
+                            setAudioSrcVersion(v => v + 1); // force audio element to reload the stream
                           })
                           .catch((err) => {
                             const msg = err instanceof Error ? err.message : String(err);
@@ -1846,7 +1853,7 @@ export default function RunDetail() {
                     setRecordingRefreshing(true);
                     setAudioErrorDetail(null);
                     getRecordingUrl(runId!)
-                      .then(({ url }) => { setFreshRecordingUrl(url); setAudioError(false); })
+                      .then(({ url }) => { setFreshRecordingUrl(url); setAudioError(false); setAudioSrcVersion(v => v + 1); })
                       .catch((refreshErr) => {
                         const msg = refreshErr instanceof Error ? refreshErr.message : String(refreshErr);
                         setAudioError(true);

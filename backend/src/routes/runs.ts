@@ -1,5 +1,6 @@
 import prisma from "../lib/prisma";
 import { Router } from "express";
+import { Readable } from "stream";
 import { RunStatus } from "@prisma/client";
 import { updateAgentModel, fetchConversation } from "../services/hamsaApi";
 import { runEvaluationCheck } from "../services/evaluationRunner";
@@ -121,7 +122,7 @@ router.get("/:id/recording-url", async (req: AuthRequest, res) => {
 // Stream the recording through our backend so the browser receives a correct
 // Content-Type header. CloudFront often serves OGG files as application/octet-stream,
 // which Chrome refuses to play. We force audio/ogg here.
-// Passes Range headers through so audio seeking works correctly.
+// Passes Range headers through so audio seeking (partial content) works correctly.
 router.get("/:id/recording-stream", async (req: AuthRequest, res) => {
   try {
     const run = await prisma.run.findUnique({
@@ -133,46 +134,73 @@ router.get("/:id/recording-stream", async (req: AuthRequest, res) => {
       return res.status(403).json({ error: "Access denied" });
     }
 
-    // Resolve the recording URL from stored webhook data first (fast, no Hamsa call).
-    const wd = run.webhookData as any;
-    let recordingUrl: string | null =
-      wd?.data?.conversationRecording || wd?.mediaUrl || wd?.data?.recordingUrl ||
-      wd?.data?.recording_url || wd?.caller_info?.recording_url || wd?.recordingUrl || null;
-
-    // If not in webhook data, fetch from Hamsa API.
-    if (!recordingUrl && run.conversationId) {
+    // Helper: fetch the recording URL from Hamsa API using available keys.
+    const fetchFreshUrl = async (): Promise<string | null> => {
+      if (!run.conversationId) return null;
       const projectKey = (run.project as any)?.hamsaApiKey as string | null;
       const envKey = process.env.HAMSA_API_KEY || "";
       const keys = [...new Set([projectKey, envKey].filter((k): k is string => !!k))];
       for (const key of keys) {
         try {
           const conv = await fetchConversation(run.conversationId, key);
-          recordingUrl = conv?.mediaUrl || conv?.data?.conversationRecording || conv?.data?.recordingUrl || null;
-          if (recordingUrl) break;
+          const url = conv?.mediaUrl || conv?.data?.conversationRecording || conv?.data?.recordingUrl || null;
+          if (url) return url;
         } catch { /* try next key */ }
       }
-    }
+      return null;
+    };
 
+    // Resolve URL from stored webhook data first (fast path, no Hamsa call).
+    const wd = run.webhookData as any;
+    let recordingUrl: string | null =
+      wd?.data?.conversationRecording || wd?.mediaUrl || wd?.data?.recordingUrl ||
+      wd?.data?.recording_url || wd?.caller_info?.recording_url || wd?.recordingUrl || null;
+
+    // Fall through to Hamsa API if nothing in webhook data.
+    if (!recordingUrl) recordingUrl = await fetchFreshUrl();
     if (!recordingUrl) return res.status(404).json({ error: "No recording URL found" });
 
-    // Forward Range header for seek support (partial content).
+    // Forward Range header for seek support (partial content / audio scrubbing).
     const upstreamHeaders: Record<string, string> = {
       "User-Agent": "Mozilla/5.0 (compatible; hamsa-eval-proxy/1.0)",
     };
     if (req.headers.range) upstreamHeaders["Range"] = req.headers.range;
 
-    const upstream = await fetch(recordingUrl, { headers: upstreamHeaders });
+    // 30 s timeout — prevents a hung CloudFront connection from tying up a server slot.
+    let upstream = await fetch(recordingUrl, {
+      headers: upstreamHeaders,
+      signal: AbortSignal.timeout(30_000),
+    });
 
-    // Determine the correct audio Content-Type.
+    // CloudFront signed URLs expire. If we get 403/401, fetch a fresh URL from Hamsa
+    // and retry once before giving up.
+    if (upstream.status === 403 || upstream.status === 401) {
+      const freshUrl = await fetchFreshUrl();
+      if (freshUrl && freshUrl !== recordingUrl) {
+        recordingUrl = freshUrl;
+        upstream = await fetch(recordingUrl, {
+          headers: upstreamHeaders,
+          signal: AbortSignal.timeout(30_000),
+        });
+      }
+    }
+
+    // Surface upstream errors cleanly rather than piping error XML as audio.
+    if (!upstream.ok && upstream.status !== 206) {
+      const status = upstream.status >= 500 ? 502 : upstream.status === 404 ? 404 : 502;
+      return res.status(status).json({ error: `Upstream returned ${upstream.status}` });
+    }
+
+    // Determine the correct audio Content-Type based on file extension.
     const isOgg = /\.ogg(\?|$)/i.test(recordingUrl);
     const isMp3 = /\.mp3(\?|$)/i.test(recordingUrl);
     const isWav = /\.wav(\?|$)/i.test(recordingUrl);
     const serverType = upstream.headers.get("content-type") || "";
-    let contentType =
+    const contentType =
       isOgg ? "audio/ogg" :
       isMp3 ? "audio/mpeg" :
       isWav ? "audio/wav" :
-      serverType.startsWith("audio/") ? serverType : "audio/ogg"; // default to ogg (Hamsa's format)
+      serverType.startsWith("audio/") ? serverType : "audio/ogg";
 
     res.status(upstream.status === 206 ? 206 : 200);
     res.setHeader("Content-Type", contentType);
@@ -186,13 +214,18 @@ router.get("/:id/recording-stream", async (req: AuthRequest, res) => {
 
     if (!upstream.body) return res.end();
 
-    // Stream the response body — avoids loading the entire file into memory.
-    const { Readable } = await import("stream");
     const readable = Readable.fromWeb(upstream.body as any);
+
+    // If the client disconnects mid-stream, destroy the upstream to free the
+    // CloudFront connection and stop wasting bandwidth.
+    res.on("close", () => readable.destroy());
+
     readable.on("error", (e) => {
       console.error("[Runs] recording-stream pipe error:", e.message);
-      if (!res.headersSent) res.status(502).end();
+      // Headers already sent — can only close the connection.
+      res.end();
     });
+
     readable.pipe(res);
   } catch (err) {
     console.error("[Runs] GET /:id/recording-stream error:", (err as Error).message);
