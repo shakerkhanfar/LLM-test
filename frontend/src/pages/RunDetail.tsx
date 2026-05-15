@@ -418,6 +418,59 @@ export default function RunDetail() {
       }
     }
 
+    // Gap-fill: some node visits have a node_movement event but no corresponding
+    // loggable prompt (e.g., call ended before the node's message was delivered,
+    // or Hamsa's single_llm_turn optimisation skips the "Playing message" log).
+    // For each unmatched node_movement timestamp, infer the next node from the
+    // workflow graph by walking outgoing edges from the last known node.
+    // Timestamps are compared with a 2-second window because "Playing message"
+    // and "node_movement" events for the same transition differ by 1-2 ms.
+    if (out.length > 0) {
+      const nmTimestamps = cl
+        .filter((e: any) => e.category === "node_movement" && e.timestamp)
+        .map((e: any) => e.timestamp as string);
+
+      const matchedMs = out.map(m => new Date(m.timestamp).getTime());
+      const unmatchedTs = nmTimestamps.filter(ts => {
+        const ms = new Date(ts).getTime();
+        return Number.isFinite(ms) && !matchedMs.some(mMs => Math.abs(mMs - ms) <= 2000);
+      });
+
+      if (unmatchedTs.length > 0) {
+        const wfEdges2: any[] = workflowNodes.length > 0
+          ? ((run as any)?.project?.agentStructure?.workflow?.edges ?? [])
+          : [];
+        const outgoing = new Map<string, string[]>();
+        for (const e of wfEdges2) {
+          const src = e?.source ?? e?.sourceNodeId;
+          const tgt = e?.target ?? e?.targetNodeId;
+          if (!src || !tgt) continue;
+          const arr = outgoing.get(src) ?? [];
+          if (!arr.includes(tgt)) arr.push(tgt);
+          outgoing.set(src, arr);
+        }
+
+        const sortedSoFar = [...out].sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
+
+        for (const ts of [...unmatchedTs].sort()) {
+          const tsMs = new Date(ts).getTime();
+          const prior = sortedSoFar.filter(m => new Date(m.timestamp).getTime() <= tsMs);
+          const lastKnown = prior[prior.length - 1];
+          if (!lastKnown) continue;
+
+          const nexts = outgoing.get(lastKnown.nodeId) ?? [];
+          if (nexts.length === 0) continue;
+
+          const visitedIds = new Set(sortedSoFar.map(m => m.nodeId));
+          const chosen = nexts.find(n => !visitedIds.has(n)) ?? nexts[0];
+
+          out.push({ nodeId: chosen, timestamp: ts });
+          sortedSoFar.push({ nodeId: chosen, timestamp: ts });
+          sortedSoFar.sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
+        }
+      }
+    }
+
     // Sort ascending by timestamp. Filter invalid first so sort comparator
     // never produces NaN (undefined behavior in some engines).
     return out
