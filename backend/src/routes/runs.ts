@@ -150,9 +150,17 @@ router.get("/:id/recording-stream", async (req: AuthRequest, res) => {
       return null;
     };
 
-    // Resolve URL from stored webhook data first (fast path, no Hamsa call).
+    // The frontend may have already fetched a fresh URL via /recording-url and
+    // can pass it here as ?hintUrl=... to skip the redundant Hamsa API call.
+    // Validate it looks like a CloudFront/Hamsa URL before trusting it.
+    const rawHint = typeof req.query.hintUrl === "string" ? req.query.hintUrl : null;
+    const hintUrl = rawHint && /^https:\/\/[^/]*\.(cloudfront\.net|tryhamsa\.com|amazonaws\.com)\//i.test(rawHint)
+      ? rawHint : null;
+
+    // Resolve URL: prefer fresh hint from frontend → stored webhook data → Hamsa API.
     const wd = run.webhookData as any;
     let recordingUrl: string | null =
+      hintUrl ||
       wd?.data?.conversationRecording || wd?.mediaUrl || wd?.data?.recordingUrl ||
       wd?.data?.recording_url || wd?.caller_info?.recording_url || wd?.recordingUrl || null;
 
@@ -172,11 +180,11 @@ router.get("/:id/recording-stream", async (req: AuthRequest, res) => {
       signal: AbortSignal.timeout(30_000),
     });
 
-    // CloudFront signed URLs expire. If we get 403/401, fetch a fresh URL from Hamsa
-    // and retry once before giving up.
+    // CloudFront signed URLs expire. If we get 403/401, always fetch a fresh URL from
+    // Hamsa and retry — even if the URL looks the same (Hamsa may return a new signature).
     if (upstream.status === 403 || upstream.status === 401) {
       const freshUrl = await fetchFreshUrl();
-      if (freshUrl && freshUrl !== recordingUrl) {
+      if (freshUrl) {
         recordingUrl = freshUrl;
         upstream = await fetch(recordingUrl, {
           headers: upstreamHeaders,

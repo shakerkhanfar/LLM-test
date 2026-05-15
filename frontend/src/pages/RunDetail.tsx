@@ -522,10 +522,18 @@ export default function RunDetail() {
   // after a successful retry (browser won't re-fetch if the src string is unchanged).
   // The token is appended as a query param because <audio> src requests are plain
   // browser GETs that cannot include the Authorization header from localStorage.
+  // hintUrl passes a pre-fetched fresh CloudFront URL so the proxy skips its own
+  // Hamsa API call (Hamsa's conversation endpoint often returns the same cached URL
+  // so having the frontend's fresh copy avoids redundant fetches).
   const _authToken = localStorage.getItem("hamsa_eval_token") ?? "";
-  const audioSrc: string | null = recordingUrl
-    ? `/api/runs/${runId}/recording-stream?v=${audioSrcVersion}&token=${encodeURIComponent(_authToken)}`
-    : null;
+  const audioSrc: string | null = recordingUrl ? (() => {
+    const params = new URLSearchParams({
+      v: String(audioSrcVersion),
+      token: _authToken,
+    });
+    if (freshRecordingUrl) params.set("hintUrl", freshRecordingUrl);
+    return `/api/runs/${runId}/recording-stream?${params.toString()}`;
+  })() : null;
   const wordLabels = (run.wordLabels || []) as any[];
 
   // Flatten words for labeling.
