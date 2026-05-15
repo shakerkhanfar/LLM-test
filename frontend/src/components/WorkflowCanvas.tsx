@@ -495,7 +495,11 @@ function WorkflowCanvasInner({
   // Track the last time the user manually panned/zoomed so we can pause
   // auto-zoom for 3 s after interaction (avoids fighting the user).
   const lastManualInteractionRef = useRef(0);
+  // Absolute timestamp (ms) until which any onMoveStart is from a programmatic
+  // fitView call and should NOT be treated as a manual interaction.
+  const autoZoomEndTimeRef = useRef(0);
   const handleMoveStart = useCallback(() => {
+    if (Date.now() < autoZoomEndTimeRef.current) return; // programmatic zoom, ignore
     lastManualInteractionRef.current = Date.now();
   }, []);
 
@@ -509,6 +513,9 @@ function WorkflowCanvasInner({
     // (can happen when a call log references a node deleted in a later agent version).
     if (!workflowNodes.some((n: any) => n.id === activeNodeId)) return;
     const t = setTimeout(() => {
+      // Mark this as a programmatic zoom for the animation duration + buffer
+      // so onMoveStart triggered by fitView doesn't reset the manual-interaction cooldown.
+      autoZoomEndTimeRef.current = Date.now() + 500;
       fitView({
         nodes: [{ id: activeNodeId }],
         duration: 350,
