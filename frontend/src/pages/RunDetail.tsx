@@ -431,7 +431,7 @@ export default function RunDetail() {
         .map((e: any) => e.timestamp as string);
 
       const matchedMs = out.map(m => new Date(m.timestamp).getTime());
-      const unmatchedTs = nmTimestamps.filter(ts => {
+      const unmatchedTs = nmTimestamps.filter((ts: string) => {
         const ms = new Date(ts).getTime();
         return Number.isFinite(ms) && !matchedMs.some(mMs => Math.abs(mMs - ms) <= 2000);
       });
