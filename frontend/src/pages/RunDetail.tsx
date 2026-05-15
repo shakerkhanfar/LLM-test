@@ -182,17 +182,19 @@ export default function RunDetail() {
   const [audioError, setAudioError] = useState(false);
   const [audioErrorDetail, setAudioErrorDetail] = useState<string | null>(null);
   const [freshRecordingUrl, setFreshRecordingUrl] = useState<string | null>(null);
-  const [recordingRefreshAttempted, setRecordingRefreshAttempted] = useState(false);
   const [recordingRefreshing, setRecordingRefreshing] = useState(false);
+  // Blob URL created from a direct browser fetch of the CloudFront recording.
+  // Avoids the server-side proxy which fails with 403 when CloudFront signed
+  // URLs are IP-restricted to the user's browser IP.
+  const [blobAudioUrl, setBlobAudioUrl] = useState<string | null>(null);
+  const [blobLoading, setBlobLoading] = useState(false);
+  const blobAbortRef = useRef<AbortController | null>(null);
   const audioRef = useRef<HTMLAudioElement>(null);
   const progressBarRef = useRef<HTMLDivElement>(null);
   const [audioTime, setAudioTime] = useState(0);
   const [audioDuration, setAudioDuration] = useState(0);
   const [isAudioPlaying, setIsAudioPlaying] = useState(false);
   const [isMuted, setIsMuted] = useState(false);
-  // Incremented when the user retries after a failed load — forces the audio
-  // element to reload the stream (changing src is the only way to trigger a reload).
-  const [audioSrcVersion, setAudioSrcVersion] = useState(0);
   const [reEvaluating, setReEvaluating] = useState(false);
   const [rehydrating, setRehydrating] = useState(false);
   const [labeling, setLabeling] = useState(false);
@@ -223,13 +225,14 @@ export default function RunDetail() {
     setAudioError(false);
     setAudioErrorDetail(null);
     setFreshRecordingUrl(null);
-    setRecordingRefreshAttempted(false);
     setRecordingRefreshing(false);
+    blobAbortRef.current?.abort();
+    setBlobAudioUrl(prev => { if (prev) URL.revokeObjectURL(prev); return null; });
+    setBlobLoading(false);
     setAudioTime(0);
     setAudioDuration(0);
     setIsAudioPlaying(false);
     setIsMuted(false);
-    setAudioSrcVersion(0);
     setReEvaluating(false);
     setLabelingWord(null);
     load();
@@ -440,6 +443,65 @@ export default function RunDetail() {
     return Number.isFinite(ms) && ms > 0 ? ms : null;
   }, [(run as any)?.callDate, nodeMovementsForSync]);
 
+  // Resolve the raw CloudFront recording URL (before any proxy wrapping).
+  // Computed before early returns so it can be used in the blob-fetch useEffect.
+  const candidateRecordingUrl = useMemo(() => {
+    if (freshRecordingUrl) return freshRecordingUrl;
+    const w = (run as any)?.webhookData;
+    if (!w) return null;
+    return (
+      w?.data?.conversationRecording ||
+      w?.mediaUrl ||
+      w?.data?.recordingUrl ||
+      w?.data?.recording_url ||
+      w?.caller_info?.recording_url ||
+      w?.recordingUrl ||
+      null
+    ) as string | null;
+  }, [freshRecordingUrl, (run as any)?.webhookData]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Fetch the recording directly in the browser (correct IP for CloudFront signed URLs).
+  // Wraps the blob with type "audio/ogg" to fix Chrome's Content-Type: application/octet-stream issue.
+  useEffect(() => {
+    if (!candidateRecordingUrl) {
+      setBlobAudioUrl(prev => { if (prev) URL.revokeObjectURL(prev); return null; });
+      return;
+    }
+    blobAbortRef.current?.abort();
+    const controller = new AbortController();
+    blobAbortRef.current = controller;
+    setBlobLoading(true);
+    setBlobAudioUrl(prev => { if (prev) URL.revokeObjectURL(prev); return null; });
+    setAudioError(false);
+    setAudioErrorDetail(null);
+
+    fetch(candidateRecordingUrl, { signal: controller.signal })
+      .then(async (res) => {
+        if (!res.ok) {
+          const err = new Error(`upstream ${res.status}`) as Error & { status: number };
+          err.status = res.status;
+          throw err;
+        }
+        const blob = await res.blob();
+        const mime = (blob.type && blob.type !== "application/octet-stream") ? blob.type : "audio/ogg";
+        const typed = new Blob([blob], { type: mime });
+        if (!controller.signal.aborted) setBlobAudioUrl(URL.createObjectURL(typed));
+      })
+      .catch((err: Error & { status?: number }) => {
+        if (err.name === "AbortError") return;
+        console.warn("[Recording] direct fetch failed:", err.message);
+        if (!controller.signal.aborted) {
+          setAudioError(true);
+          setAudioErrorDetail(
+            err.status === 403 ? "recording URL expired — click Retry from Hamsa" : err.message.slice(0, 200)
+          );
+        }
+      })
+      .finally(() => { if (!controller.signal.aborted) setBlobLoading(false); });
+
+    return () => { controller.abort(); };
+  }, [candidateRecordingUrl]); // eslint-disable-line react-hooks/exhaustive-deps
+
   // The node the agent was on at the current audio playback position.
   // Computed whenever audioTime > 0, not just while playing — so the highlight
   // persists when the user pauses to inspect the canvas.
@@ -501,39 +563,12 @@ export default function RunDetail() {
   const objectiveAchieved: boolean | null = layeredDetail?.objectiveAchieved != null ? !!layeredDetail.objectiveAchieved : null;
   const complianceScore: number | null = layeredDetail?.complianceScore ?? null;
 
-  // Resolve recording URL — prefer a fresh URL (fetched after CloudFront expiry),
-  // fall back to the stored webhook URL for recent calls where it's still valid.
-  const recordingUrl: string | null = freshRecordingUrl || (() => {
-    const w = run.webhookData as any;
-    return (
-      w?.data?.conversationRecording ||      // webhook: payload.data.conversationRecording
-      w?.mediaUrl ||                         // history runs: conv.mediaUrl
-      w?.data?.recordingUrl ||               // live webhook: payload.data.recordingUrl
-      w?.data?.recording_url ||
-      w?.caller_info?.recording_url ||
-      w?.recordingUrl ||
-      null
-    );
-  })();
-  // Use our backend streaming proxy for the <audio> src so the browser always
-  // receives the correct Content-Type header. CloudFront serves OGG files as
-  // application/octet-stream which Chrome refuses to play (code 4 error).
-  // The stream proxy URL. The ?v= cache-buster forces the audio element to reload
-  // after a successful retry (browser won't re-fetch if the src string is unchanged).
-  // The token is appended as a query param because <audio> src requests are plain
-  // browser GETs that cannot include the Authorization header from localStorage.
-  // hintUrl passes a pre-fetched fresh CloudFront URL so the proxy skips its own
-  // Hamsa API call (Hamsa's conversation endpoint often returns the same cached URL
-  // so having the frontend's fresh copy avoids redundant fetches).
-  const _authToken = localStorage.getItem("hamsa_eval_token") ?? "";
-  const audioSrc: string | null = recordingUrl ? (() => {
-    const params = new URLSearchParams({
-      v: String(audioSrcVersion),
-      token: _authToken,
-    });
-    if (freshRecordingUrl) params.set("hintUrl", freshRecordingUrl);
-    return `/api/runs/${runId}/recording-stream?${params.toString()}`;
-  })() : null;
+  // candidateRecordingUrl is computed before early returns (as a useMemo).
+  // Alias it here for readability in JSX below.
+  const recordingUrl: string | null = candidateRecordingUrl;
+  // Use the blob URL (browser fetched directly from CloudFront with correct IP + MIME type).
+  // Falls back to direct CloudFront URL when blob is still loading or fetch failed.
+  const audioSrc: string | null = blobAudioUrl ?? ((!blobLoading && recordingUrl) ? recordingUrl : null);
   const wordLabels = (run.wordLabels || []) as any[];
 
   // Flatten words for labeling.
@@ -1851,7 +1886,11 @@ export default function RunDetail() {
               Open directly ↗
             </a>
           </div>
-          {audioError ? (
+          {blobLoading && !audioError ? (
+            <div style={{ fontSize: 12, color: T.textSecondary, padding: "4px 0" }}>
+              Loading recording…
+            </div>
+          ) : audioError ? (
             <div style={{ fontSize: 12, color: T.textSecondary, display: "flex", flexDirection: "column", gap: 8 }}>
               {audioErrorDetail === "ogg-unsupported" ? (
                 <>
@@ -1893,12 +1932,11 @@ export default function RunDetail() {
                         getRecordingUrl(runId!)
                           .then(({ url }) => {
                             setFreshRecordingUrl(url);
-                            setAudioError(false);
-                            setRecordingRefreshAttempted(false);
-                            setAudioSrcVersion(v => v + 1); // force audio element to reload the stream
+                            // blob useEffect will fire automatically when candidateRecordingUrl changes
                           })
                           .catch((err) => {
                             const msg = err instanceof Error ? err.message : String(err);
+                            setAudioError(true);
                             setAudioErrorDetail(msg.slice(0, 200));
                           })
                           .finally(() => setRecordingRefreshing(false));
@@ -1926,20 +1964,8 @@ export default function RunDetail() {
                 controls
                 src={audioSrc ?? undefined}
                 onError={(e) => {
-                  // Capture browser-level detail so the user (and we) see WHY.
-                  // MediaError codes: 1=aborted, 2=network, 3=decode, 4=src not supported.
                   const mediaErr = (e.currentTarget as HTMLAudioElement).error;
-                  const codes: Record<number, string> = {
-                    1: "playback aborted",
-                    2: "network error",
-                    3: "decode error (codec unsupported?)",
-                    4: "format not supported by this browser",
-                  };
-                  const detail = mediaErr ? codes[mediaErr.code] || `media error ${mediaErr.code}` : "load failed";
-
-                  // Code 4 = format/codec not supported. Check whether this browser
-                  // genuinely can't play OGG (Safari returns "" for all OGG canPlayType
-                  // queries). If so, skip the retry — a fresh URL won't fix a codec gap.
+                  // Safari can't decode OGG even when the blob MIME type is set correctly.
                   if (mediaErr?.code === 4) {
                     const probe = document.createElement("audio");
                     const canOgg = probe.canPlayType("audio/ogg") !== "" || probe.canPlayType("audio/ogg; codecs=\"vorbis\"") !== "";
@@ -1949,28 +1975,9 @@ export default function RunDetail() {
                       return;
                     }
                   }
-
-                  if (!recordingRefreshAttempted) {
-                    setRecordingRefreshAttempted(true);
-                    setRecordingRefreshing(true);
-                    setAudioErrorDetail(null);
-                    getRecordingUrl(runId!)
-                      .then(({ url }) => { setFreshRecordingUrl(url); setAudioError(false); setAudioSrcVersion(v => v + 1); })
-                      .catch((refreshErr) => {
-                        const msg = refreshErr instanceof Error ? refreshErr.message : String(refreshErr);
-                        setAudioError(true);
-                        setAudioErrorDetail(`refresh failed: ${msg.slice(0, 180)}`);
-                      })
-                      .finally(() => setRecordingRefreshing(false));
-                  } else {
-                    setAudioError(true);
-                    // Code 4 after a successful URL refresh means the server-side stream
-                    // failed (expired URL, recording deleted) — not a browser codec issue.
-                    const finalDetail = mediaErr?.code === 4
-                      ? "recording unavailable on server"
-                      : detail;
-                    setAudioErrorDetail(finalDetail);
-                  }
+                  setAudioError(true);
+                  const codes: Record<number, string> = { 1: "playback aborted", 2: "network error", 3: "decode error (codec unsupported?)", 4: "format not supported" };
+                  setAudioErrorDetail(mediaErr ? codes[mediaErr.code] || `media error ${mediaErr.code}` : "load failed");
                 }}
                 onLoadedMetadata={() => { const d = audioRef.current?.duration ?? 0; setAudioDuration(Number.isFinite(d) ? d : 0); }}
                 onDurationChange={() => { const d = audioRef.current?.duration ?? 0; setAudioDuration(Number.isFinite(d) ? d : 0); }}
