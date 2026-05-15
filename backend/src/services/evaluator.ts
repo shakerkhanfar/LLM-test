@@ -3,6 +3,7 @@ import { Criterion } from "@prisma/client";
 import { evaluateWithLLMJudge } from "./llmJudge";
 import { extractTranscriptFromConversation, extractTranscriptFromCallLog } from "./hamsaApi";
 import { runLayeredEvaluation } from "./layeredEvaluator";
+import { evaluateExperience } from "./experienceEvaluator";
 // extractTranscriptFromConversation and extractTranscriptFromCallLog are used inside resolveTranscript
 
 /**
@@ -1191,6 +1192,21 @@ async function evaluateLayered(_criterion: Criterion, run: any) {
     ? conversationNodes.reduce((sum, n) => sum + n.instructionAdherence.score, 0) / conversationNodes.length / 10
     : null; // No conversation nodes → compliance not applicable
 
+  // ── Experience score: how did the interaction feel? ──────────────
+  let experienceResult = null;
+  let experienceCostUsd = 0;
+  try {
+    experienceResult = await evaluateExperience(
+      callLog,
+      transcript,
+      result.visits,
+      agentSummary,
+    );
+    experienceCostUsd = experienceResult.costUsd;
+  } catch (err) {
+    console.error("[ExperienceEval] failed:", (err as Error).message);
+  }
+
   const passed = qualityScore >= 0.7;
 
   const detail = JSON.stringify({
@@ -1198,6 +1214,8 @@ async function evaluateLayered(_criterion: Criterion, run: any) {
     overallScore: result.layer4.overallScore,
     qualityScore: Math.round(qualityScore * 1000) / 10,   // 0-100 with 1 decimal
     complianceScore: complianceScore != null ? Math.round(complianceScore * 1000) / 10 : null, // 0-100 with 1 decimal, or null if no conversation nodes
+    experienceScore: experienceResult?.experienceScore ?? null,
+    experience: experienceResult ?? null,
     objectiveAchieved: result.layer4.objectiveAchieved,
     callerSentiment: result.layer4.callerSentiment,
     navigation: {
@@ -1216,13 +1234,14 @@ async function evaluateLayered(_criterion: Criterion, run: any) {
     passed,
     score: qualityScore,  // Run.overallScore = quality (NOT compliance)
     detail,
-    costUsd: result.totalCostUsd,
+    costUsd: result.totalCostUsd + experienceCostUsd,
     metadata: {
       layer2Score: result.layer2.score,
       layer3Avg,
       layer4Score: result.layer4.overallScore,
       qualityScore: Math.round(qualityScore * 100),
       complianceScore: complianceScore != null ? Math.round(complianceScore * 100) : null,
+      experienceScore: experienceResult?.experienceScore ?? null,
       nodesEvaluated: result.layer3.length,
       navigationIssues: result.layer2.issues.length,
     },

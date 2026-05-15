@@ -790,6 +790,14 @@ export default function RunDetail() {
             </div>
           </div>
         )}
+        {layeredDetail?.experienceScore != null && (
+          <div>
+            <div style={{ fontSize: 12, color: T.textSecondary, marginBottom: 4 }}>Experience</div>
+            <div style={{ fontSize: 36, fontWeight: 700, color: layeredDetail.experienceScore >= 80 ? "#22c55e" : layeredDetail.experienceScore >= 50 ? "#f59e0b" : "#ef4444" }}>
+              {Math.round(layeredDetail.experienceScore)}%
+            </div>
+          </div>
+        )}
         {objectiveAchieved != null && (
           <div>
             <div style={{ fontSize: 12, color: T.textSecondary, marginBottom: 4 }}>Objective</div>
@@ -1463,6 +1471,87 @@ export default function RunDetail() {
                   ))}
                 </div>
               </div>
+            )}
+
+            {/* Experience Metrics breakdown */}
+            {parsed.experience && (
+              <CollapsibleSection title="Experience Metrics" defaultOpen={false}>
+                {/* Sub-scores */}
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(140px, 1fr))", gap: 8, marginBottom: 12 }}>
+                  {[
+                    { label: "Interruptions", value: parsed.experience.interruptionScore },
+                    { label: "Latency", value: parsed.experience.latencyScore },
+                    { label: "Flow Smoothness", value: parsed.experience.flowSmoothnessScore },
+                    { label: "Empathy", value: parsed.experience.empathyScore },
+                    { label: "Resolution", value: parsed.experience.resolutionScore },
+                  ].map(({ label, value }) => {
+                    const c = value >= 80 ? "#22c55e" : value >= 50 ? "#f59e0b" : "#ef4444";
+                    return (
+                      <div key={label} style={{ background: T.cardAlt, borderRadius: 6, padding: "10px 12px", border: `1px solid ${T.border}` }}>
+                        <div style={{ fontSize: 11, color: T.textMuted, marginBottom: 4 }}>{label}</div>
+                        <div style={{ fontSize: 20, fontWeight: 700, color: c }}>{Math.round(value)}%</div>
+                      </div>
+                    );
+                  })}
+                </div>
+
+                {/* Interruption events */}
+                {parsed.experience.interruptions?.length > 0 && (
+                  <div style={{ marginBottom: 10 }}>
+                    <div style={{ fontSize: 12, color: T.textSecondary, marginBottom: 6 }}>
+                      Interruption Events ({parsed.experience.interruptions.length})
+                    </div>
+                    <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                      {parsed.experience.interruptions.map((ev: any, i: number) => (
+                        <div key={i} style={{
+                          fontSize: 12, padding: "6px 10px", background: T.card,
+                          borderRadius: 4, border: `1px solid ${T.border}`, color: T.text,
+                        }}>
+                          <span style={{ color: T.textMuted }}>Turn {ev.utteranceIndex + 1} · </span>
+                          <span style={{ color: "#f59e0b" }}>{ev.nodeLabel}</span>
+                          <span style={{ color: T.textSecondary }}> — "{ev.text}"</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* Latency summary */}
+                {parsed.experience.latencies?.length > 0 && (() => {
+                  const lats: any[] = parsed.experience.latencies;
+                  const avg = lats.reduce((s: number, l: any) => s + l.waitMs, 0) / lats.length;
+                  const maxL = Math.max(...lats.map((l: any) => l.waitMs));
+                  return (
+                    <div style={{ fontSize: 12, color: T.textSecondary, marginBottom: 6 }}>
+                      Avg RTT: <strong style={{ color: T.text }}>{(avg / 1000).toFixed(1)}s</strong>
+                      {" "} · Max: <strong style={{ color: maxL > 25000 ? "#ef4444" : T.text }}>{(maxL / 1000).toFixed(1)}s</strong>
+                      {" "} · Turns measured: <strong style={{ color: T.text }}>{lats.length}</strong>
+                    </div>
+                  );
+                })()}
+
+                {/* Per-node experience */}
+                {parsed.experience.perNode?.length > 0 && (
+                  <div style={{ marginTop: 8 }}>
+                    <div style={{ fontSize: 12, color: T.textSecondary, marginBottom: 6 }}>Per-Node</div>
+                    <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                      {parsed.experience.perNode.map((n: any, i: number) => (
+                        <div key={i} style={{
+                          fontSize: 12, padding: "6px 10px", background: T.card,
+                          borderRadius: 4, border: `1px solid ${T.border}`,
+                          display: "flex", gap: 12, flexWrap: "wrap",
+                        }}>
+                          <span style={{ fontWeight: 600, color: T.text, minWidth: 80 }}>{n.nodeLabel}</span>
+                          {n.interruptions > 0 && <span style={{ color: "#f59e0b" }}>⚡ {n.interruptions} interruption{n.interruptions > 1 ? "s" : ""}</span>}
+                          {n.avgLatencyMs != null && <span style={{ color: T.textSecondary }}>RTT {(n.avgLatencyMs / 1000).toFixed(1)}s</span>}
+                          {n.correctionCycles > 0 && <span style={{ color: "#a78bfa" }}>↻ {n.correctionCycles} re-ask{n.correctionCycles > 1 ? "s" : ""}</span>}
+                          {n.cutoffRestarts > 0 && <span style={{ color: "#60a5fa" }}>✂ {n.cutoffRestarts} restart{n.cutoffRestarts > 1 ? "s" : ""}</span>}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </CollapsibleSection>
             )}
 
             {/* Comments — non-critical observations */}

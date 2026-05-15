@@ -131,6 +131,7 @@ export interface LayeredEvalResult {
   layer3: Layer3NodeResult[];
   layer4: Layer4Result;
   totalCostUsd: number;
+  visits: NodeVisit[];
 }
 
 // ─── Node-Turn Mapper ─────────────────────────────────────────────
@@ -1178,5 +1179,5 @@ export async function runLayeredEvaluation(
   totalCostUsd += layer4Cost;
   console.log(`[LayeredEval] Layer 4 overall: ${layer4.overallScore}/10`);
 
-  return { layer2, layer3, layer4, totalCostUsd };
+  return { layer2, layer3, layer4, totalCostUsd, visits };
 }

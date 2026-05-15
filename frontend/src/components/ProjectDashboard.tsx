@@ -18,6 +18,7 @@ interface DashData {
   /** SQL-level outcome distribution — all complete runs */
   outcomeDist: Record<string, number>;
   avgCompliance: number | null;
+  avgExperience: number | null;
   /** SQL-level score trend — per-day or per-hour for short date ranges */
   scoreTrend: Array<{ day: string; avgScore: number | null; count: number }>;
   trendGranularity?: "hour" | "day";
@@ -900,7 +901,7 @@ export default function ProjectDashboard({ project, onDashLoaded, onLoadMore, ha
       </div>
 
       {/* KPI Row */}
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(6, 1fr)", gap: 12 }}>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: 12 }}>
         {([
           { label: "Total Runs", value: totalRuns, color: T.text,
             tip: "Total number of evaluated calls in this project, including all statuses." },
@@ -909,6 +910,9 @@ export default function ProjectDashboard({ project, onDashLoaded, onLoadMore, ha
           { label: "Compliance", value: dashData?.avgCompliance != null ? `${dashData.avgCompliance}%` : "—",
             color: dashData?.avgCompliance != null && dashData.avgCompliance >= 70 ? "#17B26A" : dashData?.avgCompliance != null && dashData.avgCompliance >= 50 ? "#f59e0b" : "#ef4444",
             tip: "Average compliance score — how literally the agent followed its node-by-node instructions. A low compliance with high quality means the agent adapted well but deviated from the script." },
+          { label: "Experience", value: dashData?.avgExperience != null ? `${dashData.avgExperience}%` : "—",
+            color: dashData?.avgExperience != null && dashData.avgExperience >= 70 ? "#17B26A" : dashData?.avgExperience != null && dashData.avgExperience >= 50 ? "#f59e0b" : "#ef4444",
+            tip: "Average customer experience score — how the interaction felt from the caller's perspective. Combines interruption events, latency, flow smoothness, empathy, and resolution clarity." },
           { label: "Pass Rate", value: passRate != null ? `${passRate}%` : "—", color: "#17B26A",
             tip: "Percentage of completed calls with quality score 70% or above." },
           { label: "Objective Achieved", value: null, color: T.text,
