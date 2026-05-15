@@ -189,6 +189,8 @@ export default function RunDetail() {
   const [blobAudioUrl, setBlobAudioUrl] = useState<string | null>(null);
   const [blobLoading, setBlobLoading] = useState(false);
   const blobAbortRef = useRef<AbortController | null>(null);
+  // Prevents an infinite loop: auto-refresh on 403 is attempted at most once per run.
+  const blobAutoRefreshedRef = useRef(false);
   const audioRef = useRef<HTMLAudioElement>(null);
   const progressBarRef = useRef<HTMLDivElement>(null);
   const [audioTime, setAudioTime] = useState(0);
@@ -229,6 +231,7 @@ export default function RunDetail() {
     blobAbortRef.current?.abort();
     setBlobAudioUrl(prev => { if (prev) URL.revokeObjectURL(prev); return null; });
     setBlobLoading(false);
+    blobAutoRefreshedRef.current = false;
     setAudioTime(0);
     setAudioDuration(0);
     setIsAudioPlaying(false);
@@ -462,6 +465,7 @@ export default function RunDetail() {
 
   // Fetch the recording directly in the browser (correct IP for CloudFront signed URLs).
   // Wraps the blob with type "audio/ogg" to fix Chrome's Content-Type: application/octet-stream issue.
+  // On 403 (expired URL), auto-fetches a fresh URL from Hamsa and retries once.
   useEffect(() => {
     if (!candidateRecordingUrl) {
       setBlobAudioUrl(prev => { if (prev) URL.revokeObjectURL(prev); return null; });
@@ -475,10 +479,12 @@ export default function RunDetail() {
     setAudioError(false);
     setAudioErrorDetail(null);
 
+    let autoRefreshPending = false;
+
     fetch(candidateRecordingUrl, { signal: controller.signal })
       .then(async (res) => {
         if (!res.ok) {
-          const err = new Error(`upstream ${res.status}`) as Error & { status: number };
+          const err = new Error(`${res.status}`) as Error & { status: number };
           err.status = res.status;
           throw err;
         }
@@ -489,15 +495,33 @@ export default function RunDetail() {
       })
       .catch((err: Error & { status?: number }) => {
         if (err.name === "AbortError") return;
-        console.warn("[Recording] direct fetch failed:", err.message);
+        // On 403 (expired signed URL): auto-fetch a fresh URL from Hamsa and retry.
+        // blobAutoRefreshedRef guards against looping if the fresh URL also 403s.
+        if (err.status === 403 && !blobAutoRefreshedRef.current) {
+          blobAutoRefreshedRef.current = true;
+          autoRefreshPending = true;
+          getRecordingUrl(runId!)
+            .then(({ url }) => { if (!controller.signal.aborted) setFreshRecordingUrl(url); })
+            .catch(() => {
+              if (!controller.signal.aborted) {
+                setAudioError(true);
+                setAudioErrorDetail("recording unavailable — Hamsa returned no URL");
+                setBlobLoading(false);
+              }
+            });
+          return;
+        }
         if (!controller.signal.aborted) {
           setAudioError(true);
           setAudioErrorDetail(
-            err.status === 403 ? "recording URL expired — click Retry from Hamsa" : err.message.slice(0, 200)
+            err.status === 403 ? "recording no longer available" : err.message.slice(0, 200)
           );
         }
       })
-      .finally(() => { if (!controller.signal.aborted) setBlobLoading(false); });
+      .finally(() => {
+        // Don't stop the loading indicator while auto-refresh is in flight.
+        if (!controller.signal.aborted && !autoRefreshPending) setBlobLoading(false);
+      });
 
     return () => { controller.abort(); };
   }, [candidateRecordingUrl]); // eslint-disable-line react-hooks/exhaustive-deps
