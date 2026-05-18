@@ -1,7 +1,8 @@
-import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useParams, Link } from "react-router-dom";
 import T from "../theme";
-import { getRun, createLabel, deleteLabel, triggerEvaluation, rehydrateRun, getRecordingUrl } from "../api/client";
+import { getRun, createLabel, deleteLabel, triggerEvaluation, rehydrateRun, getRecordingUrl, completeReview, listTechIssues, pushSuggestedFix } from "../api/client";
+import type { TechIssue } from "../api/client";
 
 const WorkflowCanvas = lazy(() => import("../components/WorkflowCanvas"));
 
@@ -199,6 +200,15 @@ export default function RunDetail() {
   const [isMuted, setIsMuted] = useState(false);
   const [reEvaluating, setReEvaluating] = useState(false);
   const [rehydrating, setRehydrating] = useState(false);
+  // Inline human review state (for PENDING_REVIEW runs)
+  const [reviewNote, setReviewNote] = useState("");
+  const [reviewPayload, setReviewPayload] = useState("");
+  const [reviewPayloadError, setReviewPayloadError] = useState("");
+  const [reviewIssues, setReviewIssues] = useState<string[]>([]);
+  const [projectIssues, setProjectIssues] = useState<TechIssue[]>([]);
+  const [submittingReview, setSubmittingReview] = useState(false);
+  const [pushingFix, setPushingFix] = useState(false);
+  const [pushFixResult, setPushFixResult] = useState<{ ok: boolean; message: string } | null>(null);
   const [labeling, setLabeling] = useState(false);
   // Tracks which runId the current poll belongs to. When the user navigates
   // to a different run, this ref changes and any in-flight poll for the old
@@ -213,11 +223,16 @@ export default function RunDetail() {
     return () => { mountedRef.current = false; };
   }, []);
 
-  const load = () => {
+  const load = useCallback(() => {
     getRun(runId!)
-      .then(setRun)
+      .then((r) => {
+        setRun(r);
+        if ((r as any)?.status === "PENDING_REVIEW" && (r as any)?.project?.id) {
+          listTechIssues((r as any).project.id).then(setProjectIssues).catch(() => {});
+        }
+      })
       .finally(() => setLoading(false));
-  };
+  }, [runId]); // eslint-disable-line react-hooks/exhaustive-deps
 
 
   // Reset per-run state when navigating between runs
@@ -704,8 +719,14 @@ export default function RunDetail() {
       {/* Header */}
       <div style={{ display: "flex", alignItems: "center", gap: 16, margin: "16px 0" }}>
         <h1 style={{ margin: 0 }}>{run.modelUsed}</h1>
-        <span style={{ color: run.status === "COMPLETE" ? "#22c55e" : "#f59e0b", fontSize: 14 }}>
-          {run.status}
+        <span style={{
+          color: run.status === "COMPLETE" ? "#22c55e"
+            : run.status === "FAILED" ? "#ef4444"
+            : run.status === "PENDING_REVIEW" ? "#f97316"
+            : "#f59e0b",
+          fontSize: 14,
+        }}>
+          {run.status === "PENDING_REVIEW" ? "⏳ Pending Review" : run.status}
         </span>
       </div>
 
@@ -736,6 +757,88 @@ export default function RunDetail() {
               </code>
             </span>
           )}
+        </div>
+      )}
+
+      {/* Inline human review panel for PENDING_REVIEW runs */}
+      {(run as any).status === "PENDING_REVIEW" && (
+        <div style={{ background: "#fff7ed", border: "1px solid #f97316", borderRadius: 8, padding: 16, marginBottom: 20 }}>
+          <div style={{ fontWeight: 600, fontSize: 14, color: "#9a3412", marginBottom: 12 }}>
+            This call is waiting for your review before evaluation begins.
+          </div>
+          <div style={{ marginBottom: 10 }}>
+            <label style={{ fontSize: 12, fontWeight: 600, color: T.textSecondary, display: "block", marginBottom: 4 }}>Reviewer Note</label>
+            <textarea
+              style={{ background: T.input, border: `1px solid ${T.border}`, borderRadius: 6, padding: "8px 12px", fontSize: 13, color: T.text, width: "100%", boxSizing: "border-box", minHeight: 60, resize: "vertical" }}
+              value={reviewNote}
+              onChange={(e) => setReviewNote(e.target.value)}
+              placeholder="What issue occurred in this call? (e.g. seat class extracted as undefined)"
+            />
+          </div>
+          <div style={{ marginBottom: 10 }}>
+            <label style={{ fontSize: 12, fontWeight: 600, color: T.textSecondary, display: "block", marginBottom: 4 }}>API Response Payload (paste raw JSON)</label>
+            <textarea
+              style={{ background: T.input, border: `1px solid ${reviewPayloadError ? T.error : T.border}`, borderRadius: 6, padding: "8px 12px", fontSize: 11, color: T.text, width: "100%", boxSizing: "border-box", minHeight: 70, resize: "vertical", fontFamily: "monospace" }}
+              value={reviewPayload}
+              onChange={(e) => { setReviewPayload(e.target.value); setReviewPayloadError(""); }}
+              placeholder='{"flights": [{"seat_class": "BUSINESS", ...}]}'
+            />
+            {reviewPayloadError && <div style={{ fontSize: 11, color: T.error, marginTop: 4 }}>{reviewPayloadError}</div>}
+          </div>
+          {projectIssues.filter((i) => i.status !== "RESOLVED" && i.status !== "WONT_FIX").length > 0 && (
+            <div style={{ marginBottom: 12 }}>
+              <label style={{ fontSize: 12, fontWeight: 600, color: T.textSecondary, display: "block", marginBottom: 6 }}>Link to Issues</label>
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+                {projectIssues.filter((i) => i.status !== "RESOLVED" && i.status !== "WONT_FIX").map((issue) => {
+                  const sel = reviewIssues.includes(issue.id);
+                  return (
+                    <button key={issue.id} onClick={() => setReviewIssues((ids) => sel ? ids.filter((id) => id !== issue.id) : [...ids, issue.id])}
+                      style={{ background: sel ? T.primary : T.cardAlt, color: sel ? T.primaryText : T.textSecondary, border: `1px solid ${sel ? T.primary : T.border}`, borderRadius: 6, padding: "4px 10px", fontSize: 12, cursor: "pointer" }}>
+                      {issue.title}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+          <div style={{ display: "flex", gap: 8 }}>
+            <button
+              style={{ background: T.primary, color: T.primaryText, border: "none", borderRadius: 6, padding: "8px 16px", fontSize: 13, cursor: "pointer", fontWeight: 500 }}
+              disabled={submittingReview}
+              onClick={async () => {
+                let apiPayload: any = undefined;
+                if (reviewPayload.trim()) {
+                  try { apiPayload = JSON.parse(reviewPayload); }
+                  catch { setReviewPayloadError("Invalid JSON"); return; }
+                }
+                setSubmittingReview(true);
+                try {
+                  await completeReview(run.id, { note: reviewNote || undefined, issueIds: reviewIssues, apiPayload, skip: false });
+                  load();
+                } catch (err: any) {
+                  // 409 = already reviewed from another tab/window — refresh to show new state
+                  if (err.message?.includes("409") || err.message?.includes("already been reviewed")) {
+                    load();
+                  } else {
+                    setReviewPayloadError(err.message || "Failed");
+                  }
+                } finally { setSubmittingReview(false); }
+              }}
+            >
+              {submittingReview ? "Submitting…" : "Complete Review & Evaluate"}
+            </button>
+            <button
+              style={{ background: T.cardAlt, color: T.textSecondary, border: `1px solid ${T.border}`, borderRadius: 6, padding: "8px 16px", fontSize: 13, cursor: "pointer" }}
+              disabled={submittingReview}
+              onClick={async () => {
+                setSubmittingReview(true);
+                try { await completeReview(run.id, { skip: true }); load(); }
+                catch {} finally { setSubmittingReview(false); }
+              }}
+            >
+              Skip
+            </button>
+          </div>
         </div>
       )}
 
@@ -999,6 +1102,134 @@ export default function RunDetail() {
           </div>
         </div>
       )}
+
+      {/* Tech Support Analysis */}
+      {(() => {
+        const tsResult = evalResults.find((er: any) => er.criterion?.type === "TECH_SUPPORT_ANALYSIS");
+        if (!tsResult?.detail) return null;
+        let tsDetail: any = null;
+        try { const d = typeof tsResult.detail === "string" ? JSON.parse(tsResult.detail) : tsResult.detail; tsDetail = d.techSupport ?? d; } catch { return null; }
+        if (!tsDetail) return null;
+        const severityColor = tsDetail.severity === "HIGH" ? T.error : tsDetail.severity === "MEDIUM" ? T.warning : T.success;
+        return (
+          <div style={{ marginBottom: 32 }}>
+            <h2 style={{ fontSize: 16, marginBottom: 12 }}>Technical Issue Analysis</h2>
+            <div style={{ background: tsDetail.issueDetected ? "#fef2f2" : T.successBg, border: `1px solid ${tsDetail.issueDetected ? T.error : T.success}`, borderRadius: 8, padding: 16 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10 }}>
+                <span style={{ fontSize: 20 }}>{tsDetail.issueDetected ? "🔴" : "✅"}</span>
+                <div>
+                  <div style={{ fontWeight: 700, fontSize: 15, color: T.text }}>
+                    {tsDetail.title || (tsDetail.issueDetected ? "Issue Detected" : "No Issue Detected")}
+                  </div>
+                  {tsDetail.severity && <span style={{ fontSize: 11, background: severityColor, color: "#fff", borderRadius: 4, padding: "2px 7px", marginTop: 2, display: "inline-block" }}>{tsDetail.severity}</span>}
+                </div>
+                {tsDetail.confidence != null && <span style={{ fontSize: 12, color: T.textMuted, marginLeft: "auto" }}>Confidence: {Math.round(tsDetail.confidence * 100)}%</span>}
+              </div>
+              {tsDetail.summary && <p style={{ margin: "0 0 10px", fontSize: 13, color: T.text }}>{tsDetail.summary}</p>}
+              {tsDetail.rootCause && (
+                <div style={{ background: T.input, borderRadius: 6, padding: "8px 12px", marginBottom: 10, fontSize: 12, color: T.textSecondary }}>
+                  <strong>Root cause:</strong> {tsDetail.rootCause}
+                </div>
+              )}
+              {tsDetail.suggestedFix && (
+                <div style={{ background: T.primaryLight, borderRadius: 6, padding: "12px 14px", marginBottom: 10, fontSize: 12, color: T.text }}>
+                  <div style={{ fontWeight: 600, marginBottom: 6 }}>Suggested Fix</div>
+                  <div style={{ marginBottom: 8 }}>{tsDetail.suggestedFix}</div>
+                  {tsDetail.suggestedNodeId && (
+                    <div style={{ fontSize: 11, color: T.textSecondary, marginBottom: 8 }}>
+                      Node: <code style={{ background: T.cardAlt, padding: "1px 5px", borderRadius: 3 }}>{tsDetail.suggestedNodeId}</code>
+                    </div>
+                  )}
+                  {(tsDetail.suggestedBugString || tsDetail.suggestedNewPrompt) && tsDetail.suggestedNodeId && (
+                    <div style={{ borderTop: `1px solid ${T.border}`, paddingTop: 10, marginTop: 6 }}>
+                      {tsDetail.suggestedBugString && (
+                        <div style={{ marginBottom: 8 }}>
+                          <div style={{ fontSize: 11, color: T.textSecondary, marginBottom: 3 }}>
+                            Find ({tsDetail.suggestedFieldType === "staticVariable" ? "staticVariable" : "message"}):
+                          </div>
+                          <pre style={{ background: "#fef2f2", border: "1px solid #fca5a5", borderRadius: 4, padding: "6px 10px", fontSize: 11, margin: 0, whiteSpace: "pre-wrap", wordBreak: "break-all" }}>
+                            {tsDetail.suggestedBugString}
+                          </pre>
+                        </div>
+                      )}
+                      {tsDetail.suggestedFixString && (
+                        <div style={{ marginBottom: 10 }}>
+                          <div style={{ fontSize: 11, color: T.textSecondary, marginBottom: 3 }}>Replace with:</div>
+                          <pre style={{ background: "#f0fdf4", border: "1px solid #86efac", borderRadius: 4, padding: "6px 10px", fontSize: 11, margin: 0, whiteSpace: "pre-wrap", wordBreak: "break-all" }}>
+                            {tsDetail.suggestedFixString}
+                          </pre>
+                        </div>
+                      )}
+                      {!tsDetail.suggestedBugString && tsDetail.suggestedNewPrompt && (
+                        <div style={{ marginBottom: 10 }}>
+                          <div style={{ fontSize: 11, color: T.textSecondary, marginBottom: 3 }}>New prompt:</div>
+                          <pre style={{ background: "#f0fdf4", border: "1px solid #86efac", borderRadius: 4, padding: "6px 10px", fontSize: 11, margin: 0, whiteSpace: "pre-wrap", wordBreak: "break-all", maxHeight: 200, overflow: "auto" }}>
+                            {tsDetail.suggestedNewPrompt}
+                          </pre>
+                        </div>
+                      )}
+                      {pushFixResult ? (
+                        <div style={{ fontSize: 12, color: pushFixResult.ok ? T.success : T.error, fontWeight: 600 }}>
+                          {pushFixResult.message}
+                        </div>
+                      ) : (
+                        <button
+                          style={{ background: T.primary, color: T.primaryText, border: "none", borderRadius: 6, padding: "7px 16px", fontSize: 12, cursor: "pointer", fontWeight: 600, opacity: pushingFix ? 0.7 : 1 }}
+                          disabled={pushingFix}
+                          onClick={async () => {
+                            setPushingFix(true);
+                            setPushFixResult(null);
+                            try {
+                              await pushSuggestedFix(run.id, {
+                                nodeId: tsDetail.suggestedNodeId,
+                                bugString: tsDetail.suggestedBugString ?? undefined,
+                                fixString: tsDetail.suggestedFixString ?? undefined,
+                                fieldType: tsDetail.suggestedFieldType ?? undefined,
+                                newPrompt: tsDetail.suggestedNewPrompt ?? undefined,
+                                issueId: tsDetail.matchesIssueId ?? undefined,
+                              });
+                              setPushFixResult({ ok: true, message: "Fix pushed to live agent ✓" });
+                            } catch (err: any) {
+                              setPushFixResult({ ok: false, message: err.message || "Failed to push fix" });
+                            } finally {
+                              setPushingFix(false);
+                            }
+                          }}
+                        >
+                          {pushingFix ? "Pushing…" : "Push Fix to Live Agent"}
+                        </button>
+                      )}
+                    </div>
+                  )}
+                </div>
+              )}
+              {tsDetail.variableComparison?.length > 0 && (
+                <div style={{ marginTop: 12 }}>
+                  <div style={{ fontSize: 12, fontWeight: 600, color: T.textSecondary, marginBottom: 6 }}>Variable Comparison</div>
+                  <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+                    <thead><tr style={{ background: T.cardAlt }}>
+                      <th style={{ padding: "6px 10px", textAlign: "left", fontWeight: 600, color: T.textSecondary }}>Variable</th>
+                      <th style={{ padding: "6px 10px", textAlign: "left", fontWeight: 600, color: T.textSecondary }}>API Value</th>
+                      <th style={{ padding: "6px 10px", textAlign: "left", fontWeight: 600, color: T.textSecondary }}>Extracted Value</th>
+                      <th style={{ padding: "6px 10px", textAlign: "center", fontWeight: 600, color: T.textSecondary }}>Match</th>
+                    </tr></thead>
+                    <tbody>
+                      {tsDetail.variableComparison.map((vc: any, i: number) => (
+                        <tr key={i} style={{ borderTop: `1px solid ${T.border}`, background: vc.match ? T.successBg : T.errorBg }}>
+                          <td style={{ padding: "6px 10px", fontFamily: "monospace", color: T.text }}>{vc.variable}</td>
+                          <td style={{ padding: "6px 10px", fontFamily: "monospace", color: T.text }}>{JSON.stringify(vc.apiValue)}</td>
+                          <td style={{ padding: "6px 10px", fontFamily: "monospace", color: T.text }}>{JSON.stringify(vc.extractedValue)}</td>
+                          <td style={{ padding: "6px 10px", textAlign: "center" }}>{vc.match ? "✅" : "❌"}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+          </div>
+        );
+      })()}
 
       {/* Metrics Breakdown (from FLOW_PROGRESSION) */}
       {(() => {

@@ -22,8 +22,21 @@ router.get("/project/:projectId", async (req: AuthRequest, res) => {
   const skip = parseInt(req.query.skip as string) || 0;
   const take = Math.min(parseInt(req.query.take as string) || 100, 200);
 
+  // Optional status filter — used by review queue to avoid client-side filtering
+  const VALID_STATUSES = new Set([
+    "PENDING", "PENDING_REVIEW", "RUNNING", "AWAITING_DATA",
+    "EVALUATING", "COMPLETE", "FAILED",
+  ]);
+  const statusParam = req.query.status as string | undefined;
+  if (statusParam && !VALID_STATUSES.has(statusParam)) {
+    return res.status(400).json({ error: `Invalid status filter: ${statusParam}` });
+  }
+
   const runs = await prisma.run.findMany({
-    where: { projectId: req.params.projectId },
+    where: {
+      projectId: req.params.projectId,
+      ...(statusParam ? { status: statusParam as RunStatus } : {}),
+    },
     orderBy: { createdAt: "desc" },
     skip,
     take,
@@ -51,7 +64,10 @@ router.get("/:id", async (req: AuthRequest, res) => {
     if (!await canAccess(projectUserId, req)) {
       return res.status(403).json({ error: "Access denied" });
     }
-    res.json(run);
+    // Strip server-side secrets — the frontend never needs hamsaApiKey or webhookSecret
+    const { project: rawProject, ...runBody } = run as any;
+    const { hamsaApiKey: _k, webhookSecret: _w, ...safeProject } = rawProject ?? {};
+    res.json({ ...runBody, project: rawProject ? safeProject : undefined });
   } catch {
     res.status(500).json({ error: "Failed to fetch run" });
   }
@@ -536,6 +552,263 @@ router.delete("/:id", async (req: AuthRequest, res) => {
   } catch (err: any) {
     if (err?.code === "P2025") return res.status(404).json({ error: "Run not found" });
     res.status(500).json({ error: "Failed to delete run" });
+  }
+});
+
+// POST /api/runs/:id/complete-review
+// Human review step for TECH_SUPPORT projects.
+// Body: { note?, issueIds?, apiPayload?, skip? }
+// Atomically claims PENDING_REVIEW → PENDING, links issues, fires evaluation.
+router.post("/:id/complete-review", async (req: AuthRequest, res) => {
+  try {
+    const run = await prisma.run.findUnique({
+      where: { id: req.params.id },
+      select: {
+        id: true, status: true, projectId: true,
+        project: { select: { userId: true, projectType: true } },
+      },
+    });
+    if (!run) return res.status(404).json({ error: "Run not found" });
+    if (!await canAccess((run.project as any)?.userId ?? null, req)) {
+      return res.status(403).json({ error: "Access denied" });
+    }
+    if ((run.project as any)?.projectType !== "TECH_SUPPORT") {
+      return res.status(400).json({ error: "complete-review is only for TECH_SUPPORT projects" });
+    }
+
+    const { note, issueIds, apiPayload, skip = false } = req.body;
+
+    // Validate apiPayload size before storing
+    if (apiPayload != null) {
+      const payloadSize = Buffer.byteLength(JSON.stringify(apiPayload), "utf8");
+      if (payloadSize > 512_000) {
+        return res.status(400).json({ error: "apiPayload exceeds 512 KB limit" });
+      }
+    }
+
+    // Atomic status claim — if another request already claimed it, count will be 0.
+    // This eliminates the TOCTOU race where two simultaneous requests both pass the
+    // status check and both fire evaluation.
+    const claimed = await prisma.run.updateMany({
+      where: { id: run.id, status: "PENDING_REVIEW" },
+      data: {
+        humanReviewNote: note?.trim() || null,
+        humanReviewedAt: new Date(),
+        humanReviewedBy: req.userId || null,
+        apiPayload: apiPayload ?? null,
+        status: "PENDING",
+      },
+    });
+    if (claimed.count === 0) {
+      return res.status(409).json({
+        error: "Run is not in PENDING_REVIEW status — it may have already been reviewed",
+      });
+    }
+
+    // Batch-link issues: validate all in one query, then upsert in parallel
+    if (Array.isArray(issueIds) && issueIds.length > 0) {
+      const validIds = issueIds.filter((id): id is string => typeof id === "string");
+      const validIssues = await prisma.techIssue.findMany({
+        where: { id: { in: validIds }, projectId: run.projectId },
+        select: { id: true },
+      });
+      await Promise.all(
+        validIssues.map(({ id: issueId }) =>
+          prisma.techIssueRun.upsert({
+            where: { issueId_runId: { issueId, runId: run.id } },
+            create: { issueId, runId: run.id },
+            update: {},
+          })
+        )
+      );
+    }
+
+    // Always fire evaluation immediately — skip only controls whether review
+    // context (note/payload) was attached, not when evaluation runs.
+    const { runEvaluationCheck } = await import("../services/evaluationRunner");
+    runEvaluationCheck(run.id).catch(err =>
+      console.error(`[TechSupport] Evaluation failed for run ${run.id}: ${err}`)
+    );
+
+    res.json({ ok: true, runId: run.id });
+  } catch (err) {
+    console.error("[Runs] complete-review error:", err);
+    res.status(500).json({ error: (err as Error).message });
+  }
+});
+
+// POST /api/runs/:id/push-suggested-fix
+// Push the fix suggested by the tech support evaluator for this run.
+// Body: { nodeId, bugString?, fixString?, fieldType?, newPrompt?, description?, issueId? }
+//
+// Operation order (safe):
+//   1. Validate all inputs
+//   2. Build patched node array in memory
+//   3. Push to Hamsa  ← point of no return
+//   4. Atomically: log TechIssueFix (if issueId) + update agentStructure cache (optimistic lock)
+router.post("/:id/push-suggested-fix", async (req: AuthRequest, res) => {
+  try {
+    const run = await prisma.run.findUnique({
+      where: { id: req.params.id },
+      select: {
+        id: true, projectId: true,
+        project: {
+          select: {
+            userId: true, projectType: true, agentId: true, hamsaApiKey: true,
+            agentStructure: true, updatedAt: true,
+          },
+        },
+      },
+    });
+    if (!run) return res.status(404).json({ error: "Run not found" });
+    const project = run.project as any;
+    if (!await canAccess(project?.userId ?? null, req)) {
+      return res.status(403).json({ error: "Access denied" });
+    }
+    if (project?.projectType !== "TECH_SUPPORT") {
+      return res.status(400).json({ error: "push-suggested-fix is only available for TECH_SUPPORT projects" });
+    }
+    if (!project.agentStructure) {
+      return res.status(400).json({ error: "Agent structure not loaded. Sync the agent first." });
+    }
+
+    const { nodeId, bugString, fixString, fieldType, newPrompt, issueId, description } = req.body;
+
+    // ── Input validation ──────────────────────────────────────────────────────
+    if (!nodeId) return res.status(400).json({ error: "nodeId is required" });
+    if (!bugString && !newPrompt) {
+      return res.status(400).json({ error: "Provide either (bugString + fixString) or newPrompt" });
+    }
+    if (bugString && bugString.length > 2_000) {
+      return res.status(400).json({ error: "bugString exceeds 2000 chars" });
+    }
+    if (fixString && fixString.length > 2_000) {
+      return res.status(400).json({ error: "fixString exceeds 2000 chars" });
+    }
+    if (newPrompt && newPrompt.length > 20_000) {
+      return res.status(400).json({ error: "newPrompt exceeds 20000 chars" });
+    }
+    const VALID_FIELD_TYPES = new Set(["message", "staticVariable"]);
+    if (fieldType !== undefined && !VALID_FIELD_TYPES.has(fieldType)) {
+      return res.status(400).json({ error: "Invalid fieldType" });
+    }
+    if (issueId !== undefined && typeof issueId !== "string") {
+      return res.status(400).json({ error: "issueId must be a string" });
+    }
+
+    // ── Build patched node array ──────────────────────────────────────────────
+    const structure = project.agentStructure as any;
+    const nodes: any[] = structure?.workflow?.nodes ?? [];
+    const node = nodes.find((n: any) => n.id === nodeId);
+    if (!node) return res.status(404).json({ error: `Node ${nodeId} not found in agent structure` });
+
+    let updatedNodes: any[];
+    let appliedContent: string;
+
+    if (bugString && fixString) {
+      const target = fieldType === "staticVariable" ? "staticVariable" : "message";
+      if (target === "message") {
+        const original: string = node.message ?? "";
+        const occurrences = original.split(bugString).length - 1;
+        if (occurrences === 0) {
+          return res.status(400).json({ error: "bugString not found in node message. Already patched?" });
+        }
+        if (occurrences > 1) {
+          return res.status(400).json({ error: `bugString matched ${occurrences} times — use a more specific string to avoid unintended replacements` });
+        }
+        appliedContent = original.split(bugString).join(fixString);
+        updatedNodes = nodes.map((n: any) =>
+          n.id === nodeId ? { ...n, message: appliedContent } : n
+        );
+      } else {
+        const staticVars: any[] = node.staticVariables ?? [];
+        let matched = false;
+        const patchedVars = staticVars.map((sv: any) => {
+          const val: string = sv.value ?? "";
+          if (val.includes(bugString)) { matched = true; return { ...sv, value: val.split(bugString).join(fixString) }; }
+          return sv;
+        });
+        if (!matched) {
+          return res.status(400).json({ error: "bugString not found in staticVariables. Already patched?" });
+        }
+        appliedContent = `staticVariable patch: "${bugString}" → "${fixString}"`;
+        updatedNodes = nodes.map((n: any) =>
+          n.id === nodeId ? { ...n, staticVariables: patchedVars } : n
+        );
+      }
+    } else {
+      appliedContent = newPrompt.trim();
+      updatedNodes = nodes.map((n: any) =>
+        n.id === nodeId ? { ...n, message: appliedContent } : n
+      );
+    }
+
+    // ── Push to Hamsa ─────────────────────────────────────────────────────────
+    const { updateAgentWorkflow } = await import("../services/hamsaApi");
+    await updateAgentWorkflow(project.agentId, updatedNodes, project.hamsaApiKey ?? undefined);
+
+    // ── Atomically: update local cache + log fix (if issueId) ─────────────────
+    const newStructure = { ...structure, workflow: { ...structure.workflow, nodes: updatedNodes } };
+
+    // Verify the linked issue belongs to this project before using it
+    let verifiedIssueId: string | null = null;
+    if (issueId) {
+      const issue = await prisma.techIssue.findFirst({
+        where: { id: issueId, projectId: run.projectId },
+        select: { id: true },
+      });
+      verifiedIssueId = issue?.id ?? null;
+    }
+
+    const ops: any[] = [
+      prisma.project.updateMany({
+        where: { id: run.projectId, updatedAt: project.updatedAt },
+        data: { agentStructure: newStructure },
+      }),
+    ];
+    if (verifiedIssueId) {
+      ops.push(
+        prisma.techIssueFix.create({
+          data: {
+            issueId: verifiedIssueId,
+            description: description?.trim() ||
+              (bugString ? `Find/replace: "${bugString}" → "${fixString}"` : "Prompt rewrite"),
+            nodeId,
+            oldPrompt: bugString || null,
+            newPrompt: appliedContent,
+            appliedBy: req.userId || null,
+          },
+        }),
+        prisma.techIssue.updateMany({
+          where: { id: verifiedIssueId, status: "OPEN" },
+          data: { status: "IN_PROGRESS" },
+        })
+      );
+    }
+
+    const [cacheUpdate] = await prisma.$transaction(ops);
+    if ((cacheUpdate as any).count === 0) {
+      // Hamsa already patched — cache diverged. Caller should re-sync.
+      return res.status(409).json({
+        error: "Concurrent patch detected. Fix applied to live agent but local cache needs re-sync.",
+      });
+    }
+
+    console.log(JSON.stringify({
+      event: "agent_patched",
+      projectId: run.projectId,
+      agentId: project.agentId,
+      nodeId,
+      issueId: verifiedIssueId,
+      runId: run.id,
+      appliedBy: req.userId,
+      timestamp: new Date().toISOString(),
+    }));
+
+    res.json({ ok: true, nodeId });
+  } catch (err) {
+    console.error("[Runs] push-suggested-fix error:", err);
+    res.status(500).json({ error: (err as Error).message });
   }
 });
 

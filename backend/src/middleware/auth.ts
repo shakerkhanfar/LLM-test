@@ -2,8 +2,7 @@ import { Request, Response, NextFunction } from "express";
 import { ParamsFlatDictionary } from "express-serve-static-core";
 import jwt from "jsonwebtoken";
 import { JWT_SECRET, JWT_EXPIRES_IN } from "../lib/config";
-
-export { JWT_SECRET };
+import prisma from "../lib/prisma";
 
 export interface AuthRequest extends Request<ParamsFlatDictionary> {
   userId?: string;
@@ -14,7 +13,7 @@ export interface AuthRequest extends Request<ParamsFlatDictionary> {
   requestId?: string;
 }
 
-export function requireAuth(req: AuthRequest, res: Response, next: NextFunction) {
+export async function requireAuth(req: AuthRequest, res: Response, next: NextFunction) {
   const auth = req.headers.authorization;
   // Browser media elements (audio/video src) cannot send Authorization headers,
   // so also accept the token as a query param for streaming routes.
@@ -23,39 +22,72 @@ export function requireAuth(req: AuthRequest, res: Response, next: NextFunction)
     return res.status(401).json({ error: "Unauthorized" });
   }
   const token = auth?.startsWith("Bearer ") ? auth.slice(7) : queryToken!;
+  let payload: any;
   try {
-    const payload = jwt.verify(token, JWT_SECRET);
-    if (
-      typeof payload !== "object" ||
-      payload === null ||
-      typeof (payload as any).userId !== "string" ||
-      !(payload as any).userId
-    ) {
-      return res.status(401).json({ error: "Invalid token payload" });
-    }
-    req.userId = (payload as any).userId as string;
-    req.userEmail = (payload as any).email as string | undefined;
-    // organizationId is embedded in the token at login — zero DB cost per request.
-    // If absent (old tokens), it will be undefined and org-level access degrades
-    // to userId-only until the user re-logs-in.
-    req.organizationId = (payload as any).organizationId as string | undefined;
-    next();
+    payload = jwt.verify(token, JWT_SECRET);
   } catch {
     return res.status(401).json({ error: "Invalid or expired token" });
   }
+  if (
+    typeof payload !== "object" ||
+    payload === null ||
+    typeof payload.userId !== "string" ||
+    !payload.userId
+  ) {
+    return res.status(401).json({ error: "Invalid token payload" });
+  }
+
+  // Revocation check: compare tokenVersion in JWT against DB.
+  // Tokens issued before revocation support was added carry no tokenVersion field;
+  // treat them as version 0 (matching the DB default) so existing sessions survive
+  // the upgrade. After a user explicitly logs out, their DB tokenVersion increments,
+  // invalidating any older token regardless of whether it carried the field.
+  const tokenVer = typeof payload.tokenVersion === "number" ? payload.tokenVersion : 0;
+  try {
+    const user = await prisma.user.findUnique({
+      where: { id: payload.userId },
+      select: { tokenVersion: true },
+    });
+    if (!user || user.tokenVersion !== tokenVer) {
+      return res.status(401).json({ error: "Token has been revoked — please log in again" });
+    }
+  } catch (err) {
+    // DB unavailable — fail closed: a token that can't be verified against current
+    // revocation state must be rejected, not trusted. The caller can retry.
+    console.error("[Auth] DB unavailable during token revocation check:", err);
+    return res.status(503).json({ error: "Service temporarily unavailable" });
+  }
+
+  req.userId = payload.userId as string;
+  req.userEmail = payload.email as string | undefined;
+  // organizationId is embedded in the token at login — zero DB cost per request.
+  // If absent (old tokens), it will be undefined and org-level access degrades
+  // to userId-only until the user re-logs-in.
+  req.organizationId = payload.organizationId as string | undefined;
+  next();
 }
 
 /**
- * Sign a JWT that includes the user's organizationId so downstream
- * middleware never needs a DB lookup to check org membership.
+ * Sign a JWT that includes the user's organizationId and tokenVersion so that
+ * explicit logout can invalidate all previously issued tokens.
  */
-export function signToken(userId: string, email: string, organizationId?: string | null): string {
+export function signToken(
+  userId: string,
+  email: string,
+  organizationId?: string | null,
+  tokenVersion?: number,
+): string {
   // jwt.sign expiresIn must be a StringValue ("30d", "1h") or number of seconds.
   // We cast via `as any` here because the env var is a string but the type expects
   // the branded StringValue type from @types/jsonwebtoken.
   return jwt.sign(
-    { userId, email, ...(organizationId ? { organizationId } : {}) },
+    {
+      userId,
+      email,
+      ...(organizationId ? { organizationId } : {}),
+      ...(tokenVersion !== undefined ? { tokenVersion } : {}),
+    },
     JWT_SECRET,
-    { expiresIn: JWT_EXPIRES_IN as any }
+    { expiresIn: JWT_EXPIRES_IN as any },
   );
 }

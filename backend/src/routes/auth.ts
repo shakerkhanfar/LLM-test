@@ -1,23 +1,35 @@
 import { Router } from "express";
 import bcrypt from "bcryptjs";
 import prisma from "../lib/prisma";
+import redis from "../lib/redis";
 import { requireAuth, signToken, AuthRequest } from "../middleware/auth";
 import { BCRYPT_ROUNDS } from "../lib/config";
 import { validatePassword } from "../lib/password";
 
 const router = Router();
 
-// ── In-memory rate limiter for login ──────────────────────────────
+// ── Login rate limiter: Redis-backed with in-memory fallback ───────
 // 10 attempts per IP per 15-minute window. Deliberately conservative.
-const loginAttempts = new Map<string, { count: number; resetAt: number }>();
+// Redis is preferred so the limit holds across multiple Node.js processes
+// (horizontal scaling, PM2 cluster). Falls back to per-process memory if
+// Redis is unavailable — callers get less protection but the service stays up.
 const RATE_LIMIT_MAX = 10;
-const RATE_LIMIT_WINDOW_MS = 15 * 60 * 1000;
+const RATE_LIMIT_WINDOW_SEC = 15 * 60;
 
-function checkLoginRateLimit(ip: string): { allowed: boolean; retryAfterSec: number } {
+// In-memory fallback (single-process only)
+const loginAttempts = new Map<string, { count: number; resetAt: number }>();
+setInterval(() => {
+  const now = Date.now();
+  for (const [ip, entry] of loginAttempts) {
+    if (entry.resetAt < now) loginAttempts.delete(ip);
+  }
+}, 30 * 60 * 1000).unref();
+
+function checkLoginRateLimitMemory(ip: string): { allowed: boolean; retryAfterSec: number } {
   const now = Date.now();
   let entry = loginAttempts.get(ip);
   if (!entry || entry.resetAt < now) {
-    entry = { count: 0, resetAt: now + RATE_LIMIT_WINDOW_MS };
+    entry = { count: 0, resetAt: now + RATE_LIMIT_WINDOW_SEC * 1000 };
     loginAttempts.set(ip, entry);
   }
   if (entry.count >= RATE_LIMIT_MAX) {
@@ -27,12 +39,24 @@ function checkLoginRateLimit(ip: string): { allowed: boolean; retryAfterSec: num
   return { allowed: true, retryAfterSec: 0 };
 }
 
-setInterval(() => {
-  const now = Date.now();
-  for (const [ip, entry] of loginAttempts) {
-    if (entry.resetAt < now) loginAttempts.delete(ip);
+async function checkLoginRateLimit(ip: string): Promise<{ allowed: boolean; retryAfterSec: number }> {
+  const key = `login_rl:${ip}`;
+  try {
+    const count = await redis.incr(key);
+    if (count === 1) {
+      // Set TTL only on first increment — avoids resetting the window on every hit
+      await redis.expire(key, RATE_LIMIT_WINDOW_SEC);
+    }
+    if (count > RATE_LIMIT_MAX) {
+      const ttl = await redis.ttl(key);
+      return { allowed: false, retryAfterSec: Math.max(ttl, 1) };
+    }
+    return { allowed: true, retryAfterSec: 0 };
+  } catch {
+    // Redis unavailable — fall back to in-process Map
+    return checkLoginRateLimitMemory(ip);
   }
-}, 30 * 60 * 1000).unref();
+}
 
 // Pre-compute a valid dummy hash for timing-attack prevention.
 // Uses the same BCRYPT_ROUNDS constant so timing matches real hashes.
@@ -41,12 +65,10 @@ bcrypt.hash("dummy_timing_placeholder", BCRYPT_ROUNDS).then((h) => { DUMMY_HASH 
 
 // POST /api/auth/login
 router.post("/login", async (req, res) => {
-  const ip =
-    (req.headers["x-forwarded-for"] as string | undefined)?.split(",")[0]?.trim() ||
-    req.socket.remoteAddress ||
-    "unknown";
+  // req.ip is safe because app.set("trust proxy", ...) is configured in app.ts.
+  const ip = (req as any).ip || req.socket.remoteAddress || "unknown";
 
-  const { allowed, retryAfterSec } = checkLoginRateLimit(ip);
+  const { allowed, retryAfterSec } = await checkLoginRateLimit(ip);
   if (!allowed) {
     console.warn(`[Auth] Rate limited IP: ${ip}`);
     res.setHeader("Retry-After", String(retryAfterSec));
@@ -66,12 +88,12 @@ router.post("/login", async (req, res) => {
   }
 
   const cleanEmail = email.trim().toLowerCase();
-  const cleanPassword = password.trim();
+  const cleanPassword = password; // do not trim — passwords may legitimately contain spaces
 
   try {
     const user = await prisma.user.findUnique({
       where: { email: cleanEmail },
-      select: { id: true, email: true, passwordHash: true, organizationId: true },
+      select: { id: true, email: true, passwordHash: true, organizationId: true, tokenVersion: true },
     });
 
     // Always run bcrypt even when user doesn't exist (timing-attack prevention)
@@ -93,8 +115,8 @@ router.post("/login", async (req, res) => {
       return res.status(401).json({ error: "Invalid email or password" });
     }
 
-    // Embed organizationId in token — eliminates DB hit on every authenticated request
-    const token = signToken(user.id, user.email, user.organizationId);
+    // Embed organizationId and tokenVersion — tokenVersion enables explicit logout revocation
+    const token = signToken(user.id, user.email, user.organizationId, user.tokenVersion);
     res.json({ token, user: { id: user.id, email: user.email } });
   } catch (err) {
     console.error("[Auth] Login error:", err);
@@ -114,7 +136,7 @@ router.post("/register", requireAuth, async (req: AuthRequest, res) => {
     return res.status(400).json({ error: "Password is required" });
   }
 
-  const validationError = validatePassword(password.trim());
+  const validationError = validatePassword(password);
   if (validationError) return res.status(400).json({ error: validationError });
 
   const cleanEmail = email.trim().toLowerCase();
@@ -126,7 +148,7 @@ router.post("/register", requireAuth, async (req: AuthRequest, res) => {
       select: { organizationId: true },
     });
 
-    const hash = await bcrypt.hash(password.trim(), BCRYPT_ROUNDS);
+    const hash = await bcrypt.hash(password, BCRYPT_ROUNDS); // do not trim — preserve exact password
     const newUser = await prisma.user.create({
       data: {
         email: cleanEmail,
@@ -158,6 +180,20 @@ router.get("/me", requireAuth, async (req: AuthRequest, res) => {
   } catch (err) {
     console.error("[Auth] /me error:", err);
     res.status(500).json({ error: "Failed to fetch user" });
+  }
+});
+
+// POST /api/auth/logout — invalidate all existing tokens for this user
+router.post("/logout", requireAuth, async (req: AuthRequest, res) => {
+  try {
+    await prisma.user.update({
+      where: { id: req.userId },
+      data: { tokenVersion: { increment: 1 } },
+    });
+    res.json({ ok: true });
+  } catch (err) {
+    console.error("[Auth] Logout error:", err);
+    res.status(500).json({ error: "Logout failed" });
   }
 });
 

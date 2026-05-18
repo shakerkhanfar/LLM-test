@@ -48,8 +48,15 @@ async function verifyWebhookSignature(
     return false;
   }
 
-  // Use raw body bytes for HMAC so JSON serialisation differences don't break verification
-  const bodyBytes = (req as any).rawBody || Buffer.from(JSON.stringify(req.body));
+  // rawBody MUST be present — it is captured by the dedicated webhook body parser in app.ts.
+  // Falling back to re-serialised JSON would silently break HMAC verification because key
+  // order and whitespace may differ from the original request bytes.
+  const bodyBytes: Buffer | undefined = (req as any).rawBody;
+  if (!bodyBytes) {
+    console.error("[Webhook] rawBody not captured — webhook body parser misconfigured");
+    res.status(500).json({ error: "Internal webhook configuration error" });
+    return false;
+  }
   const expectedHex = crypto
     .createHmac("sha256", secret)
     .update(bodyBytes)
@@ -97,7 +104,7 @@ router.post("/hamsa/:projectId", async (req, res) => {
     return res.status(400).json({ error: "Missing call_id in webhook" });
   }
 
-  // Verify project exists and is a WEBHOOK project
+  // Verify project exists and is a WEBHOOK or TECH_SUPPORT project
   const project = await prisma.project.findUnique({
     where: { id: projectId },
     select: { id: true, projectType: true, hamsaApiKey: true, agentSummary: true, webhookSecret: true },
@@ -106,8 +113,8 @@ router.post("/hamsa/:projectId", async (req, res) => {
   if (!project) {
     return res.status(404).json({ error: "Project not found" });
   }
-  if (project.projectType !== "WEBHOOK") {
-    return res.status(400).json({ error: "Project is not a webhook project" });
+  if (project.projectType !== "WEBHOOK" && project.projectType !== "TECH_SUPPORT") {
+    return res.status(400).json({ error: "Project is not a webhook or tech-support project" });
   }
 
   // Check for duplicate by callId
@@ -160,6 +167,9 @@ router.post("/hamsa/:projectId", async (req, res) => {
   const outcomeResult = payload.data?.outcomeResult ?? null;
   const callOutcome = outcomeResult?.call_outcome ?? null;
 
+  // TECH_SUPPORT projects land in PENDING_REVIEW — human must review before eval
+  const initialStatus = project.projectType === "TECH_SUPPORT" ? "PENDING_REVIEW" : "AWAITING_DATA";
+
   let newRun;
   try {
     newRun = await prisma.run.create({
@@ -176,7 +186,7 @@ router.post("/hamsa/:projectId", async (req, res) => {
         outcomeResult: outcomeResult as any,
         transcript: transcript as any,
         webhookData: payload as any,
-        status: "AWAITING_DATA",
+        status: initialStatus,
         startedAt: callDate,
       },
     });
@@ -188,11 +198,17 @@ router.post("/hamsa/:projectId", async (req, res) => {
     throw createErr;
   }
 
-  console.log(`[Webhook] Created run ${newRun.id} for project ${projectId} (callId=${callId})`);
+  console.log(`[Webhook] Created run ${newRun.id} for project ${projectId} (callId=${callId}, status=${initialStatus})`);
 
-  // Fire-and-forget: evaluate in background
-  hydrateWebhookRun(newRun.id, callId, project.hamsaApiKey || undefined)
-    .catch(err => console.error(`[Webhook] Uncaught hydration error for run ${newRun.id}:`, err));
+  if (project.projectType === "TECH_SUPPORT") {
+    // Fetch call logs in background but do NOT evaluate — wait for human review
+    fetchWebhookCallLogs(newRun.id, callId, conversationId, project.hamsaApiKey || undefined)
+      .catch(err => console.error(`[Webhook] Log fetch error for run ${newRun.id}:`, err));
+  } else {
+    // Fire-and-forget: evaluate in background
+    hydrateWebhookRun(newRun.id, callId, project.hamsaApiKey || undefined)
+      .catch(err => console.error(`[Webhook] Uncaught hydration error for run ${newRun.id}:`, err));
+  }
 
   return res.json({ ok: true, runId: newRun.id, autoCreated: true });
 
@@ -279,6 +295,39 @@ router.post("/hamsa", async (req, res) => {
     return res.status(500).json({ error: "Internal webhook error" });
   }
 });
+
+/**
+ * Fetch call logs for a TECH_SUPPORT run without triggering evaluation.
+ * Evaluation is gated behind human review (complete-review endpoint).
+ */
+async function fetchWebhookCallLogs(
+  runId: string,
+  callId: string,
+  conversationId: string | null,
+  apiKey: string | undefined
+) {
+  if (!conversationId || !apiKey) return;
+  try {
+    let convLogs: any[] | null = null;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const conv = await fetchConversation(conversationId, apiKey);
+      convLogs = Array.isArray(conv?.logs) && conv.logs.length > 0 ? conv.logs : null;
+      if (convLogs) break;
+      if (attempt < 2) {
+        await new Promise(r => setTimeout(r, 5000));
+      }
+    }
+    if (convLogs) {
+      await prisma.run.update({
+        where: { id: runId },
+        data: { callLog: convLogs as any },
+      });
+      console.log(`[Webhook] Fetched ${convLogs.length} log entries for TECH_SUPPORT run ${runId}`);
+    }
+  } catch (err) {
+    console.warn(`[Webhook] Log fetch failed for TECH_SUPPORT run ${runId}: ${(err as Error).message}`);
+  }
+}
 
 /**
  * Hydrate a webhook-created run in the background.

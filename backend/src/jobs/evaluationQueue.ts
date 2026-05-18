@@ -5,7 +5,8 @@ import { PrismaClient } from "@prisma/client";
 import { evaluateRun } from "../services/evaluator";
 import { fetchCallLog } from "../services/hamsaApi";
 
-
+// BullMQ requires maxRetriesPerRequest: null on its own dedicated connection.
+// Do NOT share this with the general-purpose redis client in lib/redis.ts.
 const connection = new IORedis(process.env.REDIS_URL || "redis://localhost:6379", {
   maxRetriesPerRequest: null,
 });
@@ -34,11 +35,13 @@ export async function queueCallLogFetch(runId: string, callId: string) {
 }
 
 // ─── Startup recovery ─────────────────────────────────────────────
-// Runs left stuck in EVALUATING after a crash/restart are reset to PENDING
-// so the queue can pick them up again on the next poll cycle.
+// Only reset runs that have been EVALUATING for more than 10 minutes — this
+// prevents a rolling-deploy pod from resetting runs actively being processed
+// by a worker on another pod that just started up.
 export async function recoverStuckRuns() {
+  const staleThreshold = new Date(Date.now() - 10 * 60 * 1000);
   const stuck = await prisma.run.updateMany({
-    where: { status: "EVALUATING" },
+    where: { status: "EVALUATING", updatedAt: { lte: staleThreshold } },
     data: { status: "PENDING" },
   });
   if (stuck.count > 0) {
@@ -94,7 +97,7 @@ export function startWorker() {
         // still PENDING/AWAITING_DATA/FAILED. If another worker already claimed it
         // (status became EVALUATING or COMPLETE), count === 0 and we skip.
         const claimed = await prisma.run.updateMany({
-          where: { id: runId, status: { notIn: ["EVALUATING", "COMPLETE"] } },
+          where: { id: runId, status: { notIn: ["EVALUATING", "COMPLETE", "PENDING_REVIEW"] } },
           data: { status: "EVALUATING" },
         });
         if (claimed.count === 0) {

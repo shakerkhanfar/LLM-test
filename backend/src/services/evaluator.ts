@@ -4,6 +4,7 @@ import { evaluateWithLLMJudge } from "./llmJudge";
 import { extractTranscriptFromConversation, extractTranscriptFromCallLog } from "./hamsaApi";
 import { runLayeredEvaluation } from "./layeredEvaluator";
 import { evaluateExperience } from "./experienceEvaluator";
+import { evaluateTechSupport } from "./techSupportEvaluator";
 // extractTranscriptFromConversation and extractTranscriptFromCallLog are used inside resolveTranscript
 
 /**
@@ -139,6 +140,8 @@ async function evaluateCriterion(criterion: Criterion, run: any) {
       return evaluateActionHallucination(criterion, run);
     case "LAYERED_EVALUATION":
       return evaluateLayered(criterion, run);
+    case "TECH_SUPPORT_ANALYSIS":
+      return evaluateTechSupportCriterion(criterion, run);
     default:
       return { passed: null, score: null, detail: `Unknown type: ${criterion.type}` };
   }
@@ -1246,4 +1249,29 @@ async function evaluateLayered(_criterion: Criterion, run: any) {
       navigationIssues: result.layer2.issues.length,
     },
   };
+}
+
+async function evaluateTechSupportCriterion(_criterion: Criterion, run: any) {
+  const projectId = run.project?.id ?? run.projectId;
+  if (!projectId) {
+    return { passed: null, score: null, detail: JSON.stringify({ error: "No projectId on run" }) };
+  }
+  try {
+    const result = await evaluateTechSupport(run.id, projectId);
+    const score = result.issueDetected
+      ? (result.severity === "HIGH" ? 0.2 : result.severity === "MEDIUM" ? 0.5 : 0.7)
+      : 1.0;
+    return {
+      passed: !result.issueDetected,
+      score,
+      detail: JSON.stringify({ techSupport: result }),
+      costUsd: result.costUsd,
+    };
+  } catch (err) {
+    return {
+      passed: null,
+      score: null,
+      detail: JSON.stringify({ error: (err as Error).message }),
+    };
+  }
 }

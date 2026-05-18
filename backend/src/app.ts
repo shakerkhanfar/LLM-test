@@ -17,6 +17,7 @@ import webhooksRouter from "./routes/webhooks";
 import historyRouter from "./routes/history";
 import authRouter from "./routes/auth";
 import usersRouter from "./routes/users";
+import techSupportRouter from "./routes/techSupport";
 import mcpRouter from "./mcp/server";
 import { requireAuth } from "./middleware/auth";
 import { requestIdMiddleware } from "./middleware/requestId";
@@ -24,6 +25,7 @@ import { errorHandler } from "./middleware/errorHandler";
 import { webhookRateLimit } from "./middleware/rateLimiter";
 import prisma from "./lib/prisma";
 import bcrypt from "bcryptjs";
+import { validatePassword } from "./lib/password";
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -31,12 +33,19 @@ const PORT = process.env.PORT || 3001;
 // ── Request ID — must be first so all logs carry correlation ID ──
 app.use(requestIdMiddleware);
 
+// ── Trust proxy ───────────────────────────────────────────────────
+// Must be set before any routes that use req.ip (rate limiting, audit logs).
+// "loopback" trusts only 127.0.0.1 (Docker/local). Set TRUSTED_PROXY_IPS to
+// "1" (single reverse proxy) or a CIDR range for production deployments.
+app.set("trust proxy", process.env.TRUSTED_PROXY_IPS || "loopback");
+
 // ── CORS ─────────────────────────────────────────────────────────
+const allowReplitOrigins = process.env.ALLOW_REPLIT_ORIGINS === "true" && process.env.NODE_ENV !== "production";
 app.use(cors({
   origin: (origin, cb) => {
     if (!origin) return cb(null, true);
     if (/^https?:\/\/localhost(:\d+)?$/.test(origin)) return cb(null, true);
-    if (/\.replit\.app$/.test(origin) || /\.repl\.co$/.test(origin)) return cb(null, true);
+    if (allowReplitOrigins && (/\.replit\.app$/.test(origin) || /\.repl\.co$/.test(origin))) return cb(null, true);
     if (process.env.FRONTEND_URL && origin === process.env.FRONTEND_URL) return cb(null, true);
     cb(new Error(`CORS: origin ${origin} not allowed`));
   },
@@ -45,10 +54,16 @@ app.use(cors({
 }));
 
 // ── Body parsing ──────────────────────────────────────────────────
-// MCP requests are tiny (kilobytes). Mount a stricter parser for /api/mcp
-// BEFORE the global 200mb parser so MCP doesn't share that ceiling.
+// Default limit is 1mb — sufficient for all API calls.
+// The bundle import endpoint mounts its own 50mb parser (project + runs JSON).
+// MCP requests get a tighter 1mb cap regardless.
 app.use("/api/mcp", express.json({ limit: "1mb" }));
-app.use(express.json({ limit: "200mb" }));   // project bundles can be large
+// Capture raw body for webhook HMAC verification BEFORE the JSON parser consumes the stream.
+app.use("/api/webhooks", express.json({
+  limit: "2mb",
+  verify: (req: any, _res, buf) => { req.rawBody = buf; },
+}));
+app.use(express.json({ limit: "1mb" }));
 
 // ── Routes ───────────────────────────────────────────────────────
 app.use("/api/auth", authRouter);
@@ -62,6 +77,7 @@ app.use("/api/runs", requireAuth, runsRouter);
 app.use("/api/labels", requireAuth, labelsRouter);
 app.use("/api/history", requireAuth, historyRouter);
 app.use("/api/users", requireAuth, usersRouter);
+app.use("/api/tech-support", requireAuth, techSupportRouter);
 
 // ── Deep health check ────────────────────────────────────────────
 // Returns 503 if database or queue is unavailable so load balancers
@@ -116,6 +132,11 @@ async function ensureDemoUser() {
   const password = process.env.DEMO_USER_PASSWORD;
   const orgName = process.env.DEMO_ORG_NAME || "Hamsa";
   if (!email || !password) return;
+  const pwErr = validatePassword(password);
+  if (pwErr) {
+    console.warn(`[Seed] DEMO_USER_PASSWORD does not meet policy: ${pwErr}`);
+    return;
+  }
   try {
     // Use a deterministic org ID derived from the name so this upsert is
     // idempotent and race-safe across simultaneous autoscale startups.

@@ -77,6 +77,8 @@ router.post("/:projectId/import-ids", async (req: AuthRequest, res) => {
     return res.status(400).json({ error: "No Hamsa API key configured for this project" });
   }
 
+  const isTechSupport = project.projectType === "TECH_SUPPORT";
+
   // Deduplicate against existing runs
   const existingRuns = await prisma.run.findMany({
     where: { projectId, conversationId: { in: validIds } },
@@ -108,6 +110,9 @@ router.post("/:projectId/import-ids", async (req: AuthRequest, res) => {
       try {
         flog(`[ImportIDs] ${completed + failed + 1}/${newIds.length} Processing ${convId}`);
 
+        // TECH_SUPPORT runs land in PENDING_REVIEW — human must review before eval
+        const initialStatus = isTechSupport ? "PENDING_REVIEW" : "PENDING";
+
         // Create run stub
         const run = await prisma.run.create({
           data: {
@@ -115,7 +120,7 @@ router.post("/:projectId/import-ids", async (req: AuthRequest, res) => {
             source: "HISTORY",
             conversationId: convId,
             modelUsed: null,
-            status: "PENDING",
+            status: initialStatus,
             startedAt: new Date(),
           },
         }).catch((err: any) => {
@@ -150,7 +155,7 @@ router.post("/:projectId/import-ids", async (req: AuthRequest, res) => {
             hamsaCallId: jobId,
             modelUsed,
             webhookData: conv as any,
-            status: "AWAITING_DATA",
+            status: isTechSupport ? "PENDING_REVIEW" : "AWAITING_DATA",
           },
         });
 
@@ -164,8 +169,12 @@ router.post("/:projectId/import-ids", async (req: AuthRequest, res) => {
           } catch {}
         }
 
-        // Trigger evaluation
-        await runEvaluationCheck(run.id);
+        if (!isTechSupport) {
+          // Trigger evaluation for non-tech-support projects
+          await runEvaluationCheck(run.id);
+        } else {
+          flog(`[ImportIDs] TECH_SUPPORT run ${run.id} waiting for human review`);
+        }
         completed++;
 
         await new Promise((r) => setTimeout(r, throttleMs));
@@ -175,7 +184,7 @@ router.post("/:projectId/import-ids", async (req: AuthRequest, res) => {
         // Mark the stub as FAILED so it doesn't stay PENDING forever
         try {
           await prisma.run.updateMany({
-            where: { projectId, conversationId: convId, status: "PENDING" },
+            where: { projectId, conversationId: convId, status: { in: ["PENDING", "PENDING_REVIEW"] } },
             data: { status: "FAILED", errorLog: `Import failed: ${errMsg.slice(0, 500)}` },
           });
         } catch {}
@@ -225,6 +234,8 @@ router.post("/:projectId/import", async (req: AuthRequest, res) => {
   if (!apiKey && !process.env.HAMSA_API_KEY) {
     return res.status(400).json({ error: "No Hamsa API key configured for this project" });
   }
+
+  const isTechSupportProject = project.projectType === "TECH_SUPPORT";
 
   flog(`[History] Starting import for project ${projectId}, agent ${project.agentId}`);
 
@@ -322,7 +333,7 @@ router.post("/:projectId/import", async (req: AuthRequest, res) => {
   });
 
   // Fire-and-forget: process initial stubs + lazy IDs, stop at importLimit valid calls
-  hydrateRunsInBackground(stubsCreated, lazyBatch, apiKey, projectId, importLimit);
+  hydrateRunsInBackground(stubsCreated, lazyBatch, apiKey, projectId, importLimit, isTechSupportProject);
 });
 
 /**
@@ -465,7 +476,7 @@ router.post("/:projectId/import-csv", async (req: AuthRequest, res) => {
       for (let i = 0; i < stubs.length; i += BATCH_SIZE) {
         const batch = stubs.slice(i, i + BATCH_SIZE);
         const results = await Promise.allSettled(
-          batch.map((s) => hydrateRun(s.id, s.conversationId, apiKey, projectId, baseUrl))
+          batch.map((s) => hydrateRun(s.id, s.conversationId, apiKey, projectId, baseUrl, project.projectType === "TECH_SUPPORT"))
         );
         for (const r of results) {
           if (r.status === "fulfilled" && r.value === "COMPLETED") completed++;
@@ -633,7 +644,8 @@ async function hydrateRunsInBackground(
   lazyIds: string[],
   apiKey: string | undefined,
   projectId: string,
-  limit: number
+  limit: number,
+  isTechSupport = false,
 ) {
   // Work queue: starts with pre-created stubs; lazy IDs appended as needed
   const queue: { id: string | null; conversationId: string }[] = [
@@ -697,7 +709,7 @@ async function hydrateRunsInBackground(
     }
 
     const results = await Promise.allSettled(
-      toHydrate.map((item) => hydrateRun(item.id!, item.conversationId, apiKey, projectId))
+      toHydrate.map((item) => hydrateRun(item.id!, item.conversationId, apiKey, projectId, undefined, isTechSupport))
     );
 
     for (const r of results) {
@@ -716,6 +728,7 @@ async function hydrateRun(
   apiKey: string | undefined,
   _projectId: string,
   apiBaseUrl?: string,
+  isTechSupport = false,
 ): Promise<"COMPLETED" | "FAILED"> {
   try {
     // Fetch conversation details from Hamsa
@@ -814,7 +827,7 @@ async function hydrateRun(
         transcript: transcript as any,
         callLog: convLogs as any,   // store embedded logs immediately
         webhookData: conv as any,
-        status: "AWAITING_DATA",
+        status: isTechSupport ? "PENDING_REVIEW" : "AWAITING_DATA",
       },
     });
 
@@ -844,10 +857,13 @@ async function hydrateRun(
       flog(`[History] No jobId for ${convId} — using embedded conv.logs only`);
     }
 
-    // Trigger evaluation
-    await runEvaluationCheck(runId);
-
-    flog(`[History] Hydrated and evaluated run ${runId} (conv=${convId})`);
+    if (!isTechSupport) {
+      // Trigger evaluation
+      await runEvaluationCheck(runId);
+      flog(`[History] Hydrated and evaluated run ${runId} (conv=${convId})`);
+    } else {
+      flog(`[History] Hydrated TECH_SUPPORT run ${runId} (conv=${convId}) — awaiting human review`);
+    }
     return "COMPLETED";
   } catch (err) {
     flog(`[History] Failed to hydrate run ${runId} (conv=${convId}): ${(err as Error).message}`);

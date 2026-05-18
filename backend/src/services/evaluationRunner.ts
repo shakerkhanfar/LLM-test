@@ -68,9 +68,9 @@ export async function runEvaluationCheck(runId: string) {
   if (!hasData) return;
 
   // Atomic claim — only one caller wins; others see count === 0 and skip.
-  // This is safe across multiple processes because it's a single DB statement.
+  // PENDING_REVIEW runs must not be claimed here — they wait for human review.
   const claimed = await prisma.run.updateMany({
-    where: { id: runId, status: { notIn: ["EVALUATING", "COMPLETE"] } },
+    where: { id: runId, status: { notIn: ["EVALUATING", "COMPLETE", "PENDING_REVIEW"] } },
     data: { status: "EVALUATING" },
   });
   if (claimed.count === 0) {

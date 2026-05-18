@@ -5,6 +5,7 @@ function getToken(): string | null {
 }
 
 // Guard against multiple simultaneous 401 responses all triggering a redirect.
+// Auto-resets after 5 s so that a navigation-abort doesn't permanently suppress redirects.
 let redirectingToLogin = false;
 
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
@@ -23,6 +24,7 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
     localStorage.removeItem("hamsa_eval_user");
     if (!redirectingToLogin) {
       redirectingToLogin = true;
+      setTimeout(() => { redirectingToLogin = false; }, 5000);
       window.location.href = "/login";
     }
     throw new Error("Session expired. Please sign in again.");
@@ -56,7 +58,7 @@ export function createProject(data: {
   description?: string;
   agentStructure?: any;
   criteria?: any[];
-  projectType?: "LIVE" | "HISTORY" | "WEBHOOK";
+  projectType?: "LIVE" | "HISTORY" | "WEBHOOK" | "TECH_SUPPORT";
   historyStartDate?: string;
   historyEndDate?: string;
 }) {
@@ -104,8 +106,10 @@ export function deleteCriterion(projectId: string, criterionId: string) {
 
 // ─── Runs ──────────────────────────────────────────────────────────
 
-export function listRuns(projectId: string, skip = 0, take = 100) {
-  return request<any[]>(`/runs/project/${projectId}?skip=${skip}&take=${take}`);
+export function listRuns(projectId: string, skip = 0, take = 100, status?: string) {
+  const params = new URLSearchParams({ skip: String(skip), take: String(take) });
+  if (status) params.set("status", status);
+  return request<any[]>(`/runs/project/${projectId}?${params}`);
 }
 
 export function getRun(id: string) {
@@ -467,7 +471,10 @@ export function getProjectDashboard(projectId: string, dateFilter?: { from: stri
 }
 
 export function getRunsByIds(projectId: string, ids: string[]) {
-  return request<any[]>(`/projects/${projectId}/runs-by-ids?ids=${ids.join(",")}`);
+  return request<any[]>(`/projects/${projectId}/runs-by-ids`, {
+    method: "POST",
+    body: JSON.stringify({ ids }),
+  });
 }
 
 export function getProjectReport(projectId: string, days = 7) {
@@ -557,4 +564,141 @@ export function resetUserPassword(userId: string, password: string) {
 
 export function deleteUser(userId: string) {
   return request<any>(`/users/${userId}`, { method: "DELETE" });
+}
+
+// ─── Tech Support ─────────────────────────────────────────────────
+
+export type DocType = "DESCRIPTION" | "CODE_SNIPPET" | "ERROR_CODES" | "DATA_FLOW";
+export type IssueType = "AGENT_BEHAVIOR" | "BACKEND_FAILURE" | "DATA_MISMATCH" | "VARIABLE_SETTER" | "CONFIGURATION" | "OTHER";
+export type IssueStatus = "OPEN" | "IN_PROGRESS" | "RESOLVED" | "WONT_FIX";
+
+export interface SystemDocument {
+  id: string;
+  projectId: string;
+  name: string;
+  docType: DocType;
+  content: string;
+  order: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface TechIssueFix {
+  id: string;
+  issueId: string;
+  description: string;
+  nodeId: string | null;
+  oldPrompt: string | null;
+  newPrompt: string | null;
+  appliedAt: string;
+  appliedBy: string | null;
+}
+
+export interface TechIssue {
+  id: string;
+  projectId: string;
+  title: string;
+  issueType: IssueType;
+  status: IssueStatus;
+  description: string;
+  rootCause: string | null;
+  fix: string | null;
+  component: string | null;
+  fixes: TechIssueFix[];
+  runs: Array<{
+    id: string;
+    runId: string;
+    addedAt: string;
+    run: { id: string; callDate: string | null; status: string; overallScore: number | null };
+  }>;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface TechSupportAnalysis {
+  issueDetected: boolean;
+  issueType: string | null;
+  title: string | null;
+  rootCause: string | null;
+  suggestedFix: string | null;
+  suggestedNodeId: string | null;
+  suggestedNewPrompt: string | null;
+  suggestedBugString: string | null;
+  suggestedFixString: string | null;
+  suggestedFieldType: "message" | "staticVariable" | null;
+  fixWorked: boolean | "partial" | null;
+  severity: "HIGH" | "MEDIUM" | "LOW" | null;
+  matchesIssueId: string | null;
+  confidence: number;
+  variableComparison: Array<{
+    variable: string;
+    apiValue: any;
+    extractedValue: any;
+    match: boolean;
+  }>;
+  summary: string;
+  costUsd: number;
+}
+
+// System docs
+export function listSystemDocs(projectId: string) {
+  return request<SystemDocument[]>(`/tech-support/${projectId}/system-docs`);
+}
+export function createSystemDoc(projectId: string, data: { name: string; docType: DocType; content: string; order?: number }) {
+  return request<SystemDocument>(`/tech-support/${projectId}/system-docs`, { method: "POST", body: JSON.stringify(data) });
+}
+export function updateSystemDoc(projectId: string, docId: string, data: Partial<{ name: string; docType: DocType; content: string; order: number }>) {
+  return request<{ ok: boolean }>(`/tech-support/${projectId}/system-docs/${docId}`, { method: "PATCH", body: JSON.stringify(data) });
+}
+export function deleteSystemDoc(projectId: string, docId: string) {
+  return request<{ ok: boolean }>(`/tech-support/${projectId}/system-docs/${docId}`, { method: "DELETE" });
+}
+
+// Issues
+export function listTechIssues(projectId: string) {
+  return request<TechIssue[]>(`/tech-support/${projectId}/issues`);
+}
+export function createTechIssue(projectId: string, data: { title: string; issueType: IssueType; description: string; rootCause?: string; fix?: string; component?: string }) {
+  return request<TechIssue>(`/tech-support/${projectId}/issues`, { method: "POST", body: JSON.stringify(data) });
+}
+export function updateTechIssue(projectId: string, issueId: string, data: Partial<{ title: string; issueType: IssueType; status: IssueStatus; description: string; rootCause: string; fix: string; component: string }>) {
+  return request<{ ok: boolean }>(`/tech-support/${projectId}/issues/${issueId}`, { method: "PATCH", body: JSON.stringify(data) });
+}
+export function deleteTechIssue(projectId: string, issueId: string) {
+  return request<{ ok: boolean }>(`/tech-support/${projectId}/issues/${issueId}`, { method: "DELETE" });
+}
+export function linkIssueToRun(projectId: string, issueId: string, runId: string) {
+  return request<{ ok: boolean }>(`/tech-support/${projectId}/issues/${issueId}/link/${runId}`, { method: "POST" });
+}
+export function unlinkIssueFromRun(projectId: string, issueId: string, runId: string) {
+  return request<{ ok: boolean }>(`/tech-support/${projectId}/issues/${issueId}/link/${runId}`, { method: "DELETE" });
+}
+export function applyIssueFix(projectId: string, issueId: string, data: {
+  description: string;
+  nodeId?: string;
+  oldPrompt?: string;
+  newPrompt?: string;
+  bugString?: string;
+  fixString?: string;
+  fieldType?: "message" | "staticVariable";
+}) {
+  return request<{ ok: boolean; fix: TechIssueFix }>(`/tech-support/${projectId}/issues/${issueId}/apply-fix`, { method: "POST", body: JSON.stringify(data) });
+}
+
+// Human review gate
+export function completeReview(runId: string, data: { note?: string; issueIds?: string[]; apiPayload?: any; skip?: boolean }) {
+  return request<{ ok: boolean; runId: string }>(`/runs/${runId}/complete-review`, { method: "POST", body: JSON.stringify(data) });
+}
+
+// Push the suggested fix from a tech support analysis directly to the live agent
+export function pushSuggestedFix(runId: string, data: {
+  nodeId: string;
+  bugString?: string;
+  fixString?: string;
+  fieldType?: "message" | "staticVariable";
+  newPrompt?: string;
+  description?: string;
+  issueId?: string;
+}) {
+  return request<{ ok: boolean; nodeId: string; appliedNewPrompt: string }>(`/runs/${runId}/push-suggested-fix`, { method: "POST", body: JSON.stringify(data) });
 }

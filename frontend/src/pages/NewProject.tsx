@@ -42,7 +42,7 @@ function getPresetRange(days: number) {
 
 export default function NewProject() {
   const navigate = useNavigate();
-  const [projectType, setProjectType] = useState<"LIVE" | "HISTORY" | "WEBHOOK">("WEBHOOK");
+  const [projectType, setProjectType] = useState<"LIVE" | "HISTORY" | "WEBHOOK" | "TECH_SUPPORT">("WEBHOOK");
 
   // Common fields
   const [name, setName] = useState("");
@@ -229,7 +229,7 @@ export default function NewProject() {
 
       {/* Project type toggle */}
       <div style={{ display: "flex", gap: 0, marginBottom: 24, borderRadius: 8, overflow: "hidden", border: `1px solid ${T.border}` }}>
-        {(["WEBHOOK", "HISTORY", "LIVE"] as const).map((t) => (
+        {(["WEBHOOK", "HISTORY", "LIVE", "TECH_SUPPORT"] as const).map((t) => (
           <button
             key={t}
             type="button"
@@ -246,7 +246,7 @@ export default function NewProject() {
               transition: "all 0.15s",
             }}
           >
-            {t === "WEBHOOK" ? "Webhook Evaluation" : t === "LIVE" ? "Live Call Evaluation" : "Historical Call Evaluation"}
+            {t === "WEBHOOK" ? "Webhook Evaluation" : t === "LIVE" ? "Live Call Evaluation" : t === "HISTORY" ? "Historical Call Evaluation" : "Tech Support"}
           </button>
         ))}
       </div>
@@ -256,7 +256,9 @@ export default function NewProject() {
           ? "Connect your agent's webhook and automatically evaluate every call."
           : projectType === "LIVE"
             ? "Make live test calls and evaluate each one in real time."
-            : "Import and evaluate past calls from this agent's history."}
+            : projectType === "TECH_SUPPORT"
+              ? "Debug your voice agent. Gate every call behind human review, attach API payloads, track issues with fix history, and identify variable setter mismatches."
+              : "Import and evaluate past calls from this agent's history."}
       </p>
 
       <form onSubmit={handleSubmit}>
@@ -498,7 +500,7 @@ export default function NewProject() {
             opacity: saving ? 0.7 : 1,
           }}
         >
-          {saving ? savingStage || "Creating…" : projectType === "HISTORY" ? "Create & Start Import" : projectType === "WEBHOOK" ? "Create Webhook Project" : "Create Project"}
+          {saving ? savingStage || "Creating…" : projectType === "HISTORY" ? "Create & Start Import" : projectType === "WEBHOOK" ? "Create Webhook Project" : projectType === "TECH_SUPPORT" ? "Create Tech Support Project" : "Create Project"}
         </button>
       </form>
     </div>

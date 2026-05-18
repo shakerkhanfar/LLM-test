@@ -11,6 +11,9 @@ import {
 import CallAgent from "../components/CallAgent";
 import ProjectDashboard from "../components/ProjectDashboard";
 import McpAccessPanel from "../components/McpAccessPanel";
+import ReviewQueueTab from "../components/ReviewQueueTab";
+import IssuesTab from "../components/IssuesTab";
+import SystemDocsPanel from "../components/SystemDocsPanel";
 import T from "../theme";
 
 const AVAILABLE_MODELS = [
@@ -32,6 +35,7 @@ const AVAILABLE_MODELS = [
 
 const STATUS_COLORS: Record<string, string> = {
   PENDING: T.textSecondary,
+  PENDING_REVIEW: "#f97316",
   RUNNING: "#f59e0b",
   AWAITING_DATA: "#f59e0b",
   EVALUATING: "#3b82f6",
@@ -99,7 +103,7 @@ export default function ProjectDetail() {
   const [modelInput, setModelInput] = useState("openai/gpt-4.1");
   const [showUpload, setShowUpload] = useState<string | null>(null);
   const [callingRunId, setCallingRunId] = useState<string | null>(null);
-  const [activeTab, setActiveTab] = useState<"dashboard" | "evaluation" | "outcomes">("dashboard");
+  const [activeTab, setActiveTab] = useState<"dashboard" | "evaluation" | "outcomes" | "review" | "issues" | "docs">("dashboard");
   const [showMcpPanel, setShowMcpPanel] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const [channelFilter, setChannelFilter] = useState<string | null>(null);
@@ -181,6 +185,7 @@ export default function ProjectDetail() {
 
   const isHistory = project?.projectType === "HISTORY";
   const isWebhook = project?.projectType === "WEBHOOK";
+  const isTechSupport = project?.projectType === "TECH_SUPPORT";
 
   const load = useCallback(() => {
     getProject(id!)
@@ -1355,12 +1360,15 @@ export default function ProjectDetail() {
             );
           })()}
         </div>
-        {(isHistory || isWebhook) && (
+        {(isHistory || isWebhook || isTechSupport) && (
           <div style={{ display: "flex", gap: 0, borderRadius: 6, overflow: "hidden", border: `1px solid ${T.border}` }}>
-            {(["dashboard", "evaluation", "outcomes"] as const).map((tab) => (
+            {(isTechSupport
+              ? (["review", "issues", "docs", "evaluation"] as const)
+              : (["dashboard", "evaluation", "outcomes"] as const)
+            ).map((tab) => (
               <button
                 key={tab}
-                onClick={() => setActiveTab(tab)}
+                onClick={() => setActiveTab(tab as any)}
                 style={{
                   padding: "5px 14px",
                   background: activeTab === tab ? T.primary : T.card,
@@ -1369,15 +1377,32 @@ export default function ProjectDetail() {
                   cursor: "pointer",
                   fontSize: 12,
                   fontWeight: activeTab === tab ? 600 : 400,
+                  position: "relative",
                 }}
               >
-                {tab === "dashboard" ? "Dashboard" : tab === "evaluation" ? "Evaluation" : `Outcomes${outcomeColumns.length ? ` (${outcomeColumns.length})` : ""}`}
+                {tab === "dashboard" ? "Dashboard"
+                  : tab === "evaluation" ? "Evaluation"
+                  : tab === "outcomes" ? `Outcomes${outcomeColumns.length ? ` (${outcomeColumns.length})` : ""}`
+                  : tab === "review" ? "Review Queue"
+                  : tab === "issues" ? "Issues"
+                  : "System Docs"}
               </button>
             ))}
           </div>
         )}
       </div>
-      {activeTab === "dashboard" && (isHistory || isWebhook) ? (
+      {/* Tech Support tabs */}
+      {isTechSupport && activeTab === "review" && (
+        <div style={{ padding: "8px 0" }}><ReviewQueueTab projectId={project.id} /></div>
+      )}
+      {isTechSupport && activeTab === "issues" && (
+        <div style={{ padding: "8px 0" }}><IssuesTab projectId={project.id} /></div>
+      )}
+      {isTechSupport && activeTab === "docs" && (
+        <div style={{ padding: "8px 0" }}><SystemDocsPanel projectId={project.id} /></div>
+      )}
+      {/* Standard dashboard / evaluation table — hidden for TECH_SUPPORT custom tabs */}
+      {activeTab === "dashboard" && (isHistory || isWebhook) && !isTechSupport ? (
         <ProjectDashboard
           project={project}
           onDashLoaded={({ totalRuns, totalEvalCost, totalFailed }) => {
@@ -1581,7 +1606,7 @@ export default function ProjectDetail() {
         </tbody>
       </table>
       )}
-      {activeTab !== "dashboard" && (searchQuery.trim() || channelFilter) && project.runs?.length > 0 && (() => {
+      {(!isTechSupport || activeTab === "evaluation") && activeTab !== "dashboard" && (searchQuery.trim() || channelFilter) && project.runs?.length > 0 && (() => {
         const filtered = (project.runs ?? []).filter((run: any) => {
           if (channelFilter) {
             const ch = getChannel(run.webhookData);

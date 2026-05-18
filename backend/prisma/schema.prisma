@@ -34,6 +34,7 @@ model User {
   id             String        @id @default(cuid())
   email          String        @unique
   passwordHash   String
+  tokenVersion   Int           @default(0)
   organizationId String?
   organization   Organization? @relation(fields: [organizationId], references: [id])
   createdAt      DateTime      @default(now())
@@ -60,6 +61,8 @@ model Project {
   criteria         Criterion[]
   runs             Run[]
   analyses         ProjectAnalysis[]
+  systemDocs       SystemDocument[]
+  techIssues       TechIssue[]
   createdAt        DateTime          @default(now())
   updatedAt        DateTime          @updatedAt
 }
@@ -68,6 +71,7 @@ enum ProjectType {
   LIVE
   HISTORY
   WEBHOOK
+  TECH_SUPPORT
 }
 
 // MCP access token — used by AI agents (via Model Context Protocol) to access
@@ -126,6 +130,7 @@ enum CriterionType {
   ACTION_CONSISTENCY
   ACTION_HALLUCINATION
   LAYERED_EVALUATION
+  TECH_SUPPORT_ANALYSIS
 }
 
 model Run {
@@ -145,14 +150,20 @@ model Run {
   callLog        Json? // Raw Hamsa call log array (nodes, tools, timestamps)
   transcript     Json? // Raw webhook transcript payload
   webhookData    Json? // Full webhook payload (includes summary, recording URL, etc.)
-  overallScore   Float? // Computed weighted average of all criteria
-  evalCost       Float? // Total OpenAI API cost for this run's evaluations (USD)
-  errorLog       String?
-  startedAt      DateTime?
-  completedAt    DateTime?
-  evalResults    EvalResult[]
-  wordLabels     WordLabel[]
-  createdAt      DateTime     @default(now())
+  overallScore     Float? // Computed weighted average of all criteria
+  evalCost         Float? // Total OpenAI API cost for this run's evaluations (USD)
+  errorLog         String?
+  startedAt        DateTime?
+  completedAt      DateTime?
+  humanReviewNote  String?   // Context note written during human review (TECH_SUPPORT)
+  humanReviewedAt  DateTime? // When the human review was completed
+  humanReviewedBy  String?   // userId of reviewer
+  apiPayload       Json?     // Raw API response attached during human review
+  evalResults      EvalResult[]
+  wordLabels       WordLabel[]
+  techIssues       TechIssueRun[]
+  createdAt        DateTime     @default(now())
+  updatedAt        DateTime     @updatedAt
 
   @@unique([projectId, hamsaCallId])
   @@index([projectId])
@@ -170,6 +181,7 @@ enum RunSource {
 
 enum RunStatus {
   PENDING
+  PENDING_REVIEW
   RUNNING
   AWAITING_DATA
   EVALUATING
@@ -245,4 +257,85 @@ enum LabelType {
   LLM_ERROR
   TTS_ERROR
   ASR_ERROR
+}
+
+model SystemDocument {
+  id        String   @id @default(cuid())
+  projectId String
+  project   Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  name      String
+  docType   DocType  @default(DESCRIPTION)
+  content   String
+  order     Int      @default(0)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([projectId])
+}
+
+enum DocType {
+  DESCRIPTION
+  CODE_SNIPPET
+  ERROR_CODES
+  DATA_FLOW
+}
+
+model TechIssue {
+  id          String         @id @default(cuid())
+  projectId   String
+  project     Project        @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  title       String
+  issueType   IssueType
+  status      IssueStatus    @default(OPEN)
+  description String
+  rootCause   String?
+  fix         String?
+  component   String?
+  runs        TechIssueRun[]
+  fixes       TechIssueFix[]
+  createdAt   DateTime       @default(now())
+  updatedAt   DateTime       @updatedAt
+
+  @@index([projectId])
+}
+
+model TechIssueFix {
+  id          String    @id @default(cuid())
+  issueId     String
+  issue       TechIssue @relation(fields: [issueId], references: [id], onDelete: Cascade)
+  description String
+  nodeId      String?
+  oldPrompt   String?
+  newPrompt   String?
+  appliedAt   DateTime  @default(now())
+  appliedBy   String?
+
+  @@index([issueId])
+}
+
+model TechIssueRun {
+  id      String    @id @default(cuid())
+  issueId String
+  issue   TechIssue @relation(fields: [issueId], references: [id], onDelete: Cascade)
+  runId   String
+  run     Run       @relation(fields: [runId], references: [id], onDelete: Cascade)
+  addedAt DateTime  @default(now())
+
+  @@unique([issueId, runId])
+}
+
+enum IssueType {
+  AGENT_BEHAVIOR
+  BACKEND_FAILURE
+  DATA_MISMATCH
+  VARIABLE_SETTER
+  CONFIGURATION
+  OTHER
+}
+
+enum IssueStatus {
+  OPEN
+  IN_PROGRESS
+  RESOLVED
+  WONT_FIX
 }

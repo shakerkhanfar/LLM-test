@@ -9,7 +9,7 @@ interface AuthContextValue {
   user: User | null;
   token: string | null;
   login: (email: string, password: string) => Promise<void>;
-  logout: () => void;
+  logout: () => Promise<void>;
   /** true while verifying the stored token on first load */
   initializing: boolean;
 }
@@ -81,7 +81,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     localStorage.setItem(USER_KEY, JSON.stringify(u));
   }
 
-  function logout() {
+  async function logout() {
+    const t = localStorage.getItem(TOKEN_KEY);
+    if (t) {
+      try {
+        await fetch("/api/auth/logout", {
+          method: "POST",
+          headers: { Authorization: `Bearer ${t}` },
+        });
+      } catch { /* best-effort — still clear the local session */ }
+    }
     setToken(null);
     setUser(null);
     localStorage.removeItem(TOKEN_KEY);

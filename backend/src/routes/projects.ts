@@ -1,5 +1,6 @@
 import prisma from "../lib/prisma";
 import { Router } from "express";
+import express from "express";
 import { CriterionType, Prisma } from "@prisma/client";
 import { z } from "zod";
 import { getAgent } from "../services/hamsaApi";
@@ -19,9 +20,16 @@ import { audit } from "../middleware/auditLog";
 const router = Router();
 
 const VALID_CRITERION_TYPES = new Set<string>(Object.values(CriterionType));
-const VALID_PROJECT_TYPES   = new Set(["LIVE", "HISTORY", "WEBHOOK"]);
+const VALID_PROJECT_TYPES   = new Set(["LIVE", "HISTORY", "WEBHOOK", "TECH_SUPPORT"]);
 const VALID_RUN_STATUSES    = new Set(["PENDING","RUNNING","AWAITING_DATA","EVALUATING","COMPLETE","FAILED"]);
 const VALID_RUN_SOURCES     = new Set(["LIVE","HISTORY","WEBHOOK"]);
+
+// Strip sensitive credentials from project objects before sending to the client.
+// hamsaApiKey and webhookSecret are server-side secrets — the frontend never needs them.
+function stripSecrets<T extends Record<string, unknown>>(p: T): Omit<T, "hamsaApiKey" | "webhookSecret"> {
+  const { hamsaApiKey: _k, webhookSecret: _w, ...rest } = p as any;
+  return rest;
+}
 
 // ─── Criterion expectedValue schemas ──────────────────────────────
 // Validate the shape of each criterion type's expectedValue to prevent
@@ -93,7 +101,7 @@ router.get("/", async (req: AuthRequest, res) => {
     },
     orderBy: { createdAt: "desc" },
   });
-  res.json(projects);
+  res.json(projects.map(stripSecrets));
 });
 
 // Preview agent details from Hamsa API (before creating a project)
@@ -262,8 +270,10 @@ router.get("/:id/full-export", async (req: AuthRequest, res) => {
   }
 });
 
-// Import a full project bundle — rate-limited to prevent abuse
-router.post("/import-bundle", evalRateLimit, async (req: AuthRequest, res) => {
+// Import a full project bundle — rate-limited to prevent abuse.
+// The 50mb body parser is scoped to this route only so the global 1mb cap
+// is not inadvertently raised for the rest of the API.
+router.post("/import-bundle", express.json({ limit: "50mb" }), evalRateLimit, async (req: AuthRequest, res) => {
   try {
     // Auth check before any processing
     if (!req.userId) return res.status(401).json({ error: "Unauthorized" });
@@ -598,24 +608,27 @@ router.get("/:id", async (req: AuthRequest, res) => {
       };
     });
     const hasMoreRuns = lightRuns.length === PAGE_SIZE;
-    const responseSize = JSON.stringify({ ...project, runs: lightRuns }).length;
+    const safeProject = stripSecrets(project as any);
+    const responseSize = JSON.stringify({ ...safeProject, runs: lightRuns }).length;
     console.log(`[Projects] Returning project ${project.name} with ${lightRuns.length} runs (~${(responseSize / 1024).toFixed(0)}KB)`);
-    res.json({ ...project, runs: lightRuns, failedRunCount, errorRunCount, hasMoreRuns });
+    res.json({ ...safeProject, runs: lightRuns, failedRunCount, errorRunCount, hasMoreRuns });
   } catch (err) {
     console.error("[Projects] GET /:id error:", (err as Error).message, (err as Error).stack?.slice(0, 300));
     res.status(500).json({ error: "Failed to fetch project" });
   }
 });
 
-// Fetch specific runs by IDs — used when a filter (issue/node) references runs not in the loaded 200
-router.get("/:id/runs-by-ids", async (req: AuthRequest, res) => {
+// Fetch specific runs by IDs — used when a filter (issue/node) references runs not in the loaded 200.
+// POST is preferred: a comma-joined query param breaks at ~100 CUIDs (URL length limits).
+router.post("/:id/runs-by-ids", async (req: AuthRequest, res) => {
   try {
     const project = await prisma.project.findUnique({ where: { id: req.params.id }, select: { userId: true } });
     if (!project) return res.status(404).json({ error: "Project not found" });
     if (!await canAccess(project.userId ?? null, req)) return res.status(403).json({ error: "Access denied" });
 
-    const raw = typeof req.query.ids === "string" ? req.query.ids : "";
-    const ids = raw.split(",").map(s => s.trim()).filter(Boolean).slice(0, 500);
+    const rawIds: unknown = req.body?.ids;
+    if (!Array.isArray(rawIds)) return res.status(400).json({ error: "ids must be an array" });
+    const ids = (rawIds as unknown[]).filter((id): id is string => typeof id === "string" && !!id).slice(0, 500);
     if (ids.length === 0) return res.json([]);
 
     const runs = await prisma.run.findMany({
@@ -1371,7 +1384,7 @@ router.post("/", async (req: AuthRequest, res) => {
     return res.status(400).json({ error: "Agent ID is required" });
   }
   if (projectType && !VALID_PROJECT_TYPES.has(projectType)) {
-    return res.status(400).json({ error: `Invalid projectType. Must be LIVE, HISTORY, or WEBHOOK` });
+    return res.status(400).json({ error: `Invalid projectType. Must be LIVE, HISTORY, WEBHOOK, or TECH_SUPPORT` });
   }
   if (criteria?.length) {
     for (const c of criteria) {
@@ -1427,7 +1440,22 @@ router.post("/", async (req: AuthRequest, res) => {
       include: { criteria: true },
     });
 
-    res.status(201).json(project);
+    // Auto-create TECH_SUPPORT_ANALYSIS criterion unless the caller already provided one
+    const hasTsAnalysis = criteria?.some((c: any) => c.type === "TECH_SUPPORT_ANALYSIS");
+    if ((projectType || "LIVE") === "TECH_SUPPORT" && !hasTsAnalysis) {
+      await prisma.criterion.create({
+        data: {
+          projectId: project.id,
+          key: "tech_support_analysis",
+          label: "Technical Issue Analysis",
+          type: "TECH_SUPPORT_ANALYSIS" as CriterionType,
+          expectedValue: {},
+          weight: 1.0,
+        },
+      });
+    }
+
+    res.status(201).json(stripSecrets(project as any));
 
     // Fire-and-forget: generate and store agent summary after responding
     if (resolvedAgentStructure) {
@@ -1472,7 +1500,7 @@ router.patch("/:id", async (req: AuthRequest, res) => {
       data,
       include: { criteria: true },
     });
-    res.json(project);
+    res.json(stripSecrets(project as any));
   } catch (err: any) {
     if (err?.code === "P2025") return res.status(404).json({ error: "Project not found" });
     res.status(500).json({ error: "Failed to update project" });
@@ -1497,7 +1525,7 @@ router.post("/:id/refresh-agent", async (req: AuthRequest, res) => {
       },
       include: { criteria: true },
     });
-    res.json({ ok: true, agentName: agent.name, project: updated });
+    res.json({ ok: true, agentName: agent.name, project: stripSecrets(updated as any) });
 
     // Regenerate agent summary in background
     generateAgentSummary(agent)
