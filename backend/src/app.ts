@@ -18,7 +18,13 @@ import historyRouter from "./routes/history";
 import authRouter from "./routes/auth";
 import usersRouter from "./routes/users";
 import techSupportRouter from "./routes/techSupport";
-import mcpRouter from "./mcp/server";
+let mcpRouter: express.Router | null = null;
+try {
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  mcpRouter = require("./mcp/server").default;
+} catch (e) {
+  console.warn("[MCP] Failed to load MCP server module — /api/mcp will be unavailable:", (e as Error).message);
+}
 import { requireAuth } from "./middleware/auth";
 import { requestIdMiddleware } from "./middleware/requestId";
 import { errorHandler } from "./middleware/errorHandler";
@@ -70,7 +76,7 @@ app.use("/api/auth", authRouter);
 // Webhooks: no user auth but rate-limited per IP
 app.use("/api/webhooks", webhookRateLimit, webhooksRouter);
 // MCP server: token-authenticated (NOT JWT) — see backend/src/mcp/auth.ts
-app.use("/api/mcp", mcpRouter);
+if (mcpRouter) app.use("/api/mcp", mcpRouter);
 // All other routes require a valid JWT
 app.use("/api/projects", requireAuth, projectsRouter);
 app.use("/api/runs", requireAuth, runsRouter);
