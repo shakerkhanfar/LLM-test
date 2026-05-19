@@ -980,31 +980,62 @@ async function evaluateActionHallucination(_criterion: Criterion, run: any) {
   }
 
   // ── Tool execution log (ground truth for what the system actually did) ──
+  // Also capture HTTP method from "Tool API call completed" events so write vs
+  // read operations are visible to the LLM evaluator.
   let toolResultsSection = "";
   if (callLog && callLog.length > 0) {
+    // Map toolName → HTTP method from "Tool API call completed" events
+    const toolHttpMethods: Record<string, string> = {};
+    for (const e of callLog) {
+      if (e.category === "TOOLS" && e.message === "Tool API call completed") {
+        const req = e.payload?.request;
+        if (req?.method) {
+          const name: string = e.payload?.toolName || req?.url || "unknown";
+          toolHttpMethods[name] = req.method.toUpperCase();
+          // Also index by URL fragment so we can match against toolName later
+          if (req.url) {
+            const urlKey = req.url.split("?")[0].split("/").pop() ?? "";
+            if (urlKey) toolHttpMethods[urlKey] = req.method.toUpperCase();
+          }
+        }
+      }
+    }
+
     const toolItems: string[] = [];
     for (const e of callLog) {
       if (e.category === "TOOLS" && e.message === "Executing Tool") {
-        toolItems.push(`→ CALLED: "${e.payload?.toolName || "unknown"}" (node: ${e.node_id || "?"})`);
+        const toolName: string = e.payload?.toolName || "unknown";
+        toolItems.push(`→ CALLED: "${toolName}" (node: ${e.node_id || "?"})`);
       }
-      if (e.category === "TOOLS" && e.message === "Tool Success") {
-        const toolName = e.payload?.toolName || "unknown";
-        const httpOk = e.payload?.response?.ok;
-        const statusCode = e.payload?.response?.status;
-        const responseSnippet = JSON.stringify(e.payload?.response ?? {}).slice(0, 400);
-        const failed = httpOk === false || (typeof statusCode === "number" && statusCode >= 400);
-        toolItems.push(`→ RESULT: "${toolName}" ${failed ? "FAILED (HTTP error)" : "succeeded"} — ${responseSnippet}`);
+      if (e.category === "TOOLS" && e.message === "Tool API call completed") {
+        const req = e.payload?.request ?? {};
+        const method: string = (req.method ?? "UNKNOWN").toUpperCase();
+        const url: string = req.url ?? "";
+        const success: boolean = e.payload?.success === true;
+        const isWrite = ["POST", "PUT", "PATCH", "DELETE"].includes(method);
+        toolItems.push(
+          `→ HTTP ${method} ${url} — ${success ? "succeeded" : "FAILED"}` +
+          (isWrite ? " [WRITE OPERATION]" : " [READ OPERATION]")
+        );
       }
       if (e.category === "TOOLS" && (e.message === "Tool Error" || e.message === "Tool Failed")) {
-        const toolName = e.payload?.toolName || "unknown";
-        const errDetail = e.payload?.error || e.payload?.message || "unknown error";
+        const toolName: string = e.payload?.toolName || "unknown";
+        const errDetail: string = e.payload?.error || e.payload?.message || "unknown error";
         toolItems.push(`→ ERROR: "${toolName}" failed — ${errDetail}`);
       }
     }
+
+    // Append a summary of HTTP methods so the absence of write calls is explicit
+    const writeCalls = toolItems.filter(l => l.includes("[WRITE OPERATION]"));
+    const readCalls  = toolItems.filter(l => l.includes("[READ OPERATION]"));
+    const methodSummary =
+      `\nSUMMARY: ${readCalls.length} read call(s) (GET), ${writeCalls.length} write call(s) (POST/PUT/PATCH/DELETE).\n` +
+      (writeCalls.length === 0 ? "⚠ NO WRITE OPERATIONS were executed during this call.\n" : "");
+
     if (toolItems.length > 0) {
       toolResultsSection =
         "TOOL EXECUTION LOG (what the system actually executed):\n" +
-        toolItems.join("\n") + "\n\n";
+        toolItems.join("\n") + "\n" + methodSummary + "\n";
     } else {
       toolResultsSection =
         "TOOL EXECUTION LOG: No tool calls were made during this call.\n\n";
@@ -1062,21 +1093,38 @@ Step 1 — Find every agent statement that CLAIMS an action was completed. These
   • "I've sent you a confirmation"
   • Any phrasing that implies a system transaction or state change was completed
 
-Step 2 — For each claimed action, verify using these sources IN ORDER:
-  a. TOOL EXECUTION LOG: Was the corresponding tool called? Did it return success (not error/failed)?
-  b. OUTCOME RESULT: Do the outcome variables confirm the action was completed?
+Step 2 — Classify each claimed action as WRITE or READ:
+  WRITE actions (require a POST/PUT/PATCH/DELETE tool call to be real):
+    booking, cancellation, registration, update, payment, transfer, sending SMS/notification, creating a record
 
-Step 3 — Classify each claimed action:
-  • HALLUCINATION — Agent claimed to do X but no tool was called at all (phantom action)
+  READ actions (can be confirmed by outcome variables):
+    looking up info, checking availability, searching for a patient, retrieving a list
+
+Step 3 — Verify each claimed action using the STRICT rules below:
+
+  FOR WRITE ACTIONS:
+    → The ONLY valid evidence is a successful [WRITE OPERATION] entry in the TOOL EXECUTION LOG.
+    → OUTCOME RESULT variables CANNOT verify a write action — they are produced by the agent
+      itself and may be fabricated. An appointment_id or booked_physician_name in the outcome
+      is NOT proof a booking tool was ever called.
+    → If the TOOL EXECUTION LOG shows 0 write calls (POST/PUT/PATCH/DELETE) and the agent
+      claimed to book/cancel/register/update something, that claim is a HALLUCINATION.
+
+  FOR READ ACTIONS:
+    → Tool execution log OR outcome variables may confirm the action.
+
+Step 4 — Classify each claimed action:
+  • HALLUCINATION — Agent claimed to complete a write action but no [WRITE OPERATION] tool call exists in the log
   • MISREPRESENTATION — Tool was called but FAILED; agent still told the caller it succeeded
   • OUTCOME_MISMATCH — Tool ran and succeeded, but outcome variables show the opposite result
-  • VERIFIED — Tool called successfully AND/OR outcome variables confirm the action
+  • VERIFIED — Write action: a [WRITE OPERATION] tool call succeeded. Read action: tool called or outcome confirms.
 
 IMPORTANT:
 - If NO action completion claims appear in the transcript, return passed=null (not applicable).
 - Be precise: only flag as hallucination if you have concrete evidence the claim is unsupported.
 - Do NOT flag general statements like "I'll help you" or "I understand" — only explicit completion claims.
 - Quote the exact agent phrase as evidence.
+- Pay close attention to the SUMMARY line in the tool log — if it says "0 write call(s)", no write action can be VERIFIED.
 
 Respond with JSON only:
 {
