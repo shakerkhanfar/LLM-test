@@ -180,10 +180,28 @@ async function ensureDemoUser() {
   }
 }
 
-app.listen(PORT, () => {
-  console.log(`[App] Hamsa Eval API running on http://localhost:${PORT}`);
-  initQueue();
-  ensureDemoUser();
+// Idempotent schema patches — catches cases where prisma db push fails at startup
+// (e.g. the Prisma CLI is unavailable or the DB URL differs between contexts).
+async function ensureSchema() {
+  try {
+    await prisma.$executeRaw`ALTER TABLE "User" ADD COLUMN IF NOT EXISTS "tokenVersion" INTEGER NOT NULL DEFAULT 0`;
+    console.log("[Schema] tokenVersion column OK");
+  } catch (err) {
+    console.error("[Schema] Failed to ensure tokenVersion column:", (err as Error).message);
+  }
+}
+
+// Run schema migration before opening the port — ensures tokenVersion
+// column exists before any login request can arrive.
+ensureSchema().then(() => {
+  app.listen(PORT, () => {
+    console.log(`[App] Hamsa Eval API running on http://localhost:${PORT}`);
+    initQueue();
+    ensureDemoUser();
+  });
+}).catch((err) => {
+  console.error("[Schema] Fatal error during startup migration:", err);
+  process.exit(1);
 });
 
 export default app;
