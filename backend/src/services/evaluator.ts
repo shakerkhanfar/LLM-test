@@ -105,7 +105,7 @@ export async function evaluateRun(runId: string) {
       if (layeredResult?.detail) {
         try {
           const parsed = JSON.parse(layeredResult.detail);
-          if (parsed.objectiveAchieved === true) {
+          if (parsed.objectiveAchieved !== false) {
             parsed.objectiveAchieved = false;
             parsed.summary = `[Overridden] Agent claimed a completed action that was never executed (ACTION_HALLUCINATION). ` + (parsed.summary ?? "");
             layeredResult.detail = JSON.stringify(parsed);
