@@ -35,7 +35,53 @@ export async function initQueue() {
     useQueue = false;
     setQueueHealth(false);
     console.warn("[Eval] Redis not available — evaluations will run inline (no persistence)");
+    // Recover any runs left in PENDING/AWAITING_DATA/EVALUATING from a previous crash.
+    // Run in background so startup is not blocked.
+    recoverInlineRuns().catch((err) =>
+      console.error("[Eval] Inline recovery sweep failed:", err)
+    );
   }
+}
+
+/**
+ * Sweep runs that have data but never reached COMPLETE — happens when the
+ * process restarts mid-evaluation in inline (no-Redis) mode.
+ */
+async function recoverInlineRuns() {
+  // Reset stuck EVALUATING → PENDING so the claim guard below can re-claim them.
+  await prisma.run.updateMany({
+    where: { status: "EVALUATING" },
+    data: { status: "PENDING" },
+  });
+
+  const stuck = await prisma.run.findMany({
+    where: {
+      status: { in: ["PENDING", "AWAITING_DATA"] },
+      OR: [
+        { callLog: { not: null } },
+        { transcript: { not: null } },
+        { webhookData: { not: null } },
+      ],
+    },
+    select: { id: true },
+  });
+
+  if (stuck.length === 0) return;
+  console.log(`[Eval] Inline sweep: recovering ${stuck.length} stuck run(s)`);
+
+  // Process up to 3 concurrently to avoid hammering the LLM API.
+  const CONCURRENCY = 3;
+  for (let i = 0; i < stuck.length; i += CONCURRENCY) {
+    const batch = stuck.slice(i, i + CONCURRENCY);
+    await Promise.allSettled(
+      batch.map(({ id }) =>
+        runEvaluationCheck(id).catch((err) =>
+          console.error(`[Eval] Inline sweep failed for run ${id}:`, err)
+        )
+      )
+    );
+  }
+  console.log("[Eval] Inline sweep complete");
 }
 
 /**
