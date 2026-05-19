@@ -80,6 +80,7 @@ export interface NodeVisit {
     success: boolean;
     request?: any;                  // Parameters sent to the tool
     response?: any;                 // Response from the tool
+    httpMethod?: string;            // HTTP method (GET/POST/PUT/PATCH/DELETE) when available
   }>;
   durationMs: number;               // Time spent on this node
   entryTimestamp: string;
@@ -184,7 +185,7 @@ export function mapNodeVisits(
     promptMessage: string;
     variablesExtracted: string[];
     toolsCalled: string[];
-    toolResults: Array<{ toolName: string; success: boolean; request?: any; response?: any }>;
+    toolResults: Array<{ toolName: string; success: boolean; request?: any; response?: any; httpMethod?: string }>;
   }
 
   // Pass 1: Find all transition targets (TRANSITION.Tool result events with next_node)
@@ -240,7 +241,14 @@ export function mapNodeVisits(
     }
     if (event.category === "TOOLS" && (event.message === "Tool Success" || event.message === "Tool API call completed")) {
       const last = currentSegment.toolResults[currentSegment.toolResults.length - 1];
-      if (last) { last.success = event.message === "Tool Success" || event.payload?.response?.ok !== false; last.response = event.payload?.response || event.payload; }
+      if (last) {
+        last.success = event.message === "Tool Success" || event.payload?.response?.ok !== false;
+        last.response = event.payload?.response || event.payload;
+        // Capture HTTP method so Layer 4 can distinguish write vs read calls
+        if (event.message === "Tool API call completed" && event.payload?.request?.method) {
+          last.httpMethod = (event.payload.request.method as string).toUpperCase();
+        }
+      }
     }
     if (event.category === "TOOLS" && (event.message === "Tool Error" || event.message === "Tool Failed")) {
       const last = currentSegment.toolResults[currentSegment.toolResults.length - 1];
@@ -988,21 +996,33 @@ export async function evaluateOverall(
 
   // Build tool execution summary from node visits
   const toolSections: string[] = [];
+  let writeOpCount = 0;
+  let readOpCount = 0;
   for (const v of visits) {
     if (v.toolResults.length === 0) continue;
     for (const tr of v.toolResults) {
       const status = tr.success ? "SUCCESS" : "FAILED";
+      const method: string = (tr as any).httpMethod ?? "GET";
+      const isWrite = ["POST", "PUT", "PATCH", "DELETE"].includes(method);
+      if (isWrite) writeOpCount++; else readOpCount++;
+      const opTag = isWrite ? "[WRITE OPERATION]" : "[READ OPERATION]";
       let responseSummary = "no response";
       if (tr.response) {
         try {
           responseSummary = safeTruncate(typeof tr.response === "string" ? tr.response : JSON.stringify(tr.response), 500);
         } catch { responseSummary = "[response not serializable]"; }
       }
-      toolSections.push(`  [${v.nodeLabel}] ${tr.toolName}: ${status} → ${responseSummary}`);
+      toolSections.push(`  [${v.nodeLabel}] ${tr.toolName} ${opTag}: ${status} → ${responseSummary}`);
     }
   }
+  const writeWarning = writeOpCount === 0 && toolSections.length > 0
+    ? `\n⚠ NO WRITE OPERATIONS (POST/PUT/PATCH/DELETE) were executed. Any agent claim of booking, cancellation, registration, or other write action is unverified.\n`
+    : "";
+  const methodSummary = toolSections.length > 0
+    ? `\nTool summary: ${readOpCount} read call(s) (GET), ${writeOpCount} write call(s) (POST/PUT/PATCH/DELETE).${writeWarning}`
+    : "";
   const toolSection = toolSections.length > 0
-    ? safeTruncate(toolSections.join("\n"), 3000)
+    ? safeTruncate(toolSections.join("\n"), 3000) + methodSummary
     : "No tools were called during this call.";
 
   // Always inject the turn count so Layer 4 can use context to judge abandonment vs. agent failure
@@ -1025,7 +1045,7 @@ Only treat a dead-end as an agent failure if the agent was genuinely stuck (repe
 ${shortCallBlock}
 SCORING RULES:
 - PRIMARY METRIC: Did the agent accomplish the call's objective? Read the transcript yourself and determine: was the user's need met? This is what quality_score primarily reflects.
-- GROUND TRUTH: The SYSTEM-RECORDED OUTCOME section (if present) contains facts recorded by the platform (e.g., objective_met, booked appointment details). These are authoritative. If the system says the objective was met, the call SUCCEEDED regardless of compliance scores.
+- AGENT SELF-REPORT WARNING: The SYSTEM-RECORDED OUTCOME section contains values filled in by the agent itself at the end of the call (objective_met, appointment_id, etc.). These are the agent's own claims — NOT independent platform measurements. Do NOT treat them as authoritative for whether write actions (booking, cancellation, registration, payment) actually occurred. Instead, verify write actions against the TOOL EXECUTIONS section: if no write operation (non-GET HTTP call) appears in the tool log, the agent could not have completed a booking or other mutation regardless of what it says in its outcome fields.
 - SCORE HIGH (7-10) when: objective achieved, user served well, smooth interaction, correct escalations/transfers for out-of-scope requests.
 - SCORE LOW (1-4) only for genuine agent FAILURES: hallucinating information, getting stuck/looping, ignoring user input, providing wrong information, failing to progress despite clear user intent.
 - SCORE MEDIUM (5-6) for: partial success, some issues but user was mostly served.

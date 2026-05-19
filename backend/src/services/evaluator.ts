@@ -85,6 +85,42 @@ export async function evaluateRun(runId: string) {
     });
   }
 
+  // ── Post-processing: if ACTION_HALLUCINATION detected critical hallucinations,
+  // force LAYERED_EVALUATION's objectiveAchieved to false so the dashboard and
+  // run detail page reflect reality rather than the agent's self-report.
+  const hallucinationResult = results.find((r) => {
+    const criterion = run.project.criteria.find((c: any) => c.id === r.criterionId);
+    return criterion?.type === "ACTION_HALLUCINATION" && r.passed === false;
+  });
+  if (hallucinationResult) {
+    const hallucinatedActions: any[] = (hallucinationResult.metadata as any)?.hallucinated_actions ?? [];
+    const hasCritical = hallucinatedActions.some(
+      (a: any) => a.severity === "critical" || a.error_type === "HALLUCINATION"
+    );
+    if (hasCritical) {
+      const layeredResult = results.find((r) => {
+        const criterion = run.project.criteria.find((c: any) => c.id === r.criterionId);
+        return criterion?.type === "LAYERED_EVALUATION";
+      });
+      if (layeredResult?.detail) {
+        try {
+          const parsed = JSON.parse(layeredResult.detail);
+          if (parsed.objectiveAchieved === true) {
+            parsed.objectiveAchieved = false;
+            parsed.summary = `[Overridden] Agent claimed a completed action that was never executed (ACTION_HALLUCINATION). ` + (parsed.summary ?? "");
+            layeredResult.detail = JSON.stringify(parsed);
+            // Update the already-upserted DB record
+            const layeredCriterionId = layeredResult.criterionId;
+            await prisma.evalResult.update({
+              where: { runId_criterionId: { runId: run.id, criterionId: layeredCriterionId } },
+              data: { detail: layeredResult.detail, evaluatedAt: new Date() },
+            });
+          }
+        } catch {}
+      }
+    }
+  }
+
   // Compute overall weighted score
   const criteria = run.project.criteria;
   let totalWeight = 0;
