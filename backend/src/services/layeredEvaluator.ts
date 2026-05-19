@@ -994,6 +994,15 @@ export async function evaluateOverall(
     transcriptSection = safeTruncate(lines.join("\n"), 20000);
   }
 
+  // Keywords in tool names that reliably indicate write (mutating) operations.
+  // Used as a fallback when the HTTP method wasn't captured from the call log.
+  const WRITE_TOOL_KEYWORDS = [
+    "cancel", "book", "creat", "register", "update", "delete", "reschedule",
+    "send", "transfer", "submit", "add", "remov", "edit", "modify", "confirm",
+  ];
+  const isWriteToolName = (name: string) =>
+    WRITE_TOOL_KEYWORDS.some((kw) => name.toLowerCase().includes(kw));
+
   // Build tool execution summary from node visits
   const toolSections: string[] = [];
   let writeOpCount = 0;
@@ -1002,8 +1011,11 @@ export async function evaluateOverall(
     if (v.toolResults.length === 0) continue;
     for (const tr of v.toolResults) {
       const status = tr.success ? "SUCCESS" : "FAILED";
-      const method: string = (tr as any).httpMethod ?? "GET";
-      const isWrite = ["POST", "PUT", "PATCH", "DELETE"].includes(method);
+      const capturedMethod: string | undefined = (tr as any).httpMethod;
+      const isWrite = capturedMethod
+        ? ["POST", "PUT", "PATCH", "DELETE"].includes(capturedMethod)
+        : isWriteToolName(tr.toolName);
+      const method = capturedMethod ?? (isWrite ? "POST/DELETE" : "GET");
       if (isWrite) writeOpCount++; else readOpCount++;
       const opTag = isWrite ? "[WRITE OPERATION]" : "[READ OPERATION]";
       let responseSummary = "no response";
