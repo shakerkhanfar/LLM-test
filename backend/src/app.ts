@@ -183,11 +183,31 @@ async function ensureDemoUser() {
 // Idempotent schema patches — catches cases where prisma db push fails at startup
 // (e.g. the Prisma CLI is unavailable or the DB URL differs between contexts).
 async function ensureSchema() {
-  try {
-    await prisma.$executeRaw`ALTER TABLE "User" ADD COLUMN IF NOT EXISTS "tokenVersion" INTEGER NOT NULL DEFAULT 0`;
-    console.log("[Schema] tokenVersion column OK");
-  } catch (err) {
-    console.error("[Schema] Failed to ensure tokenVersion column:", (err as Error).message);
+  const patches: Array<{ sql: string; label: string }> = [
+    { sql: `ALTER TABLE "User" ADD COLUMN IF NOT EXISTS "tokenVersion" INTEGER NOT NULL DEFAULT 0`, label: "User.tokenVersion" },
+    { sql: `ALTER TABLE "User" ADD COLUMN IF NOT EXISTS "organizationId" TEXT`, label: "User.organizationId" },
+    { sql: `ALTER TABLE "Project" ADD COLUMN IF NOT EXISTS "updatedAt" TIMESTAMP(3) NOT NULL DEFAULT NOW()`, label: "Project.updatedAt" },
+    { sql: `ALTER TABLE "Project" ADD COLUMN IF NOT EXISTS "hamsaApiKey" TEXT`, label: "Project.hamsaApiKey" },
+    { sql: `ALTER TABLE "Project" ADD COLUMN IF NOT EXISTS "evalContext" TEXT`, label: "Project.evalContext" },
+    { sql: `ALTER TABLE "Project" ADD COLUMN IF NOT EXISTS "webhookSecret" TEXT`, label: "Project.webhookSecret" },
+    { sql: `ALTER TABLE "Project" ADD COLUMN IF NOT EXISTS "agentStructure" JSONB`, label: "Project.agentStructure" },
+    { sql: `ALTER TABLE "Project" ADD COLUMN IF NOT EXISTS "agentSummary" TEXT`, label: "Project.agentSummary" },
+    { sql: `ALTER TABLE "Project" ADD COLUMN IF NOT EXISTS "historyStartDate" TIMESTAMP(3)`, label: "Project.historyStartDate" },
+    { sql: `ALTER TABLE "Project" ADD COLUMN IF NOT EXISTS "historyEndDate" TIMESTAMP(3)`, label: "Project.historyEndDate" },
+    { sql: `ALTER TABLE "Run" ADD COLUMN IF NOT EXISTS "updatedAt" TIMESTAMP(3) NOT NULL DEFAULT NOW()`, label: "Run.updatedAt" },
+    { sql: `ALTER TABLE "Run" ADD COLUMN IF NOT EXISTS "humanReviewNote" TEXT`, label: "Run.humanReviewNote" },
+    { sql: `ALTER TABLE "Run" ADD COLUMN IF NOT EXISTS "humanReviewedAt" TIMESTAMP(3)`, label: "Run.humanReviewedAt" },
+    { sql: `ALTER TABLE "Run" ADD COLUMN IF NOT EXISTS "humanReviewedBy" TEXT`, label: "Run.humanReviewedBy" },
+    { sql: `ALTER TABLE "Run" ADD COLUMN IF NOT EXISTS "apiPayload" JSONB`, label: "Run.apiPayload" },
+  ];
+
+  for (const { sql, label } of patches) {
+    try {
+      await prisma.$executeRawUnsafe(sql);
+      console.log(`[Schema] ${label} OK`);
+    } catch (err) {
+      console.error(`[Schema] Failed to patch ${label}:`, (err as Error).message);
+    }
   }
 }
 
