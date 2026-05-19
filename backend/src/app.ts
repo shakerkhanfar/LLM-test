@@ -184,6 +184,16 @@ async function ensureDemoUser() {
 // (e.g. the Prisma CLI is unavailable or the DB URL differs between contexts).
 async function ensureSchema() {
   const patches: Array<{ sql: string; label: string }> = [
+    // ── Enum values (must come before column additions that use these types) ──
+    { sql: `ALTER TYPE "RunStatus"   ADD VALUE IF NOT EXISTS 'PENDING_REVIEW'`, label: "RunStatus.PENDING_REVIEW" },
+    { sql: `ALTER TYPE "RunStatus"   ADD VALUE IF NOT EXISTS 'AWAITING_DATA'`,  label: "RunStatus.AWAITING_DATA" },
+    { sql: `ALTER TYPE "RunStatus"   ADD VALUE IF NOT EXISTS 'RUNNING'`,        label: "RunStatus.RUNNING" },
+    { sql: `ALTER TYPE "RunSource"   ADD VALUE IF NOT EXISTS 'HISTORY'`,        label: "RunSource.HISTORY" },
+    { sql: `ALTER TYPE "RunSource"   ADD VALUE IF NOT EXISTS 'WEBHOOK'`,        label: "RunSource.WEBHOOK" },
+    { sql: `ALTER TYPE "ProjectType" ADD VALUE IF NOT EXISTS 'HISTORY'`,        label: "ProjectType.HISTORY" },
+    { sql: `ALTER TYPE "ProjectType" ADD VALUE IF NOT EXISTS 'WEBHOOK'`,        label: "ProjectType.WEBHOOK" },
+    { sql: `ALTER TYPE "ProjectType" ADD VALUE IF NOT EXISTS 'TECH_SUPPORT'`,   label: "ProjectType.TECH_SUPPORT" },
+    // ── Column additions ──────────────────────────────────────────────────────
     { sql: `ALTER TABLE "User" ADD COLUMN IF NOT EXISTS "tokenVersion" INTEGER NOT NULL DEFAULT 0`, label: "User.tokenVersion" },
     { sql: `ALTER TABLE "User" ADD COLUMN IF NOT EXISTS "organizationId" TEXT`, label: "User.organizationId" },
     { sql: `ALTER TABLE "Project" ADD COLUMN IF NOT EXISTS "updatedAt" TIMESTAMP(3) NOT NULL DEFAULT NOW()`, label: "Project.updatedAt" },
