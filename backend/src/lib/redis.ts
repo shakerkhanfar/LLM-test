@@ -9,6 +9,7 @@ const redis = new IORedis(process.env.REDIS_URL || "redis://localhost:6379", {
   maxRetriesPerRequest: 0,
   lazyConnect: true,
   enableOfflineQueue: false, // reject commands immediately when not connected
+  retryStrategy: (times) => Math.min(times * 500, 30_000), // cap at 30s between retries
 });
 
 redis.on("error", (err) => {

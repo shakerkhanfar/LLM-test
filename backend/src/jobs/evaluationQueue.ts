@@ -10,6 +10,9 @@ import { fetchCallLog } from "../services/hamsaApi";
 const connection = new IORedis(process.env.REDIS_URL || "redis://localhost:6379", {
   maxRetriesPerRequest: null,
 });
+connection.on("error", (err) => {
+  console.warn("[BullMQ] Redis connection error:", err.message);
+});
 
 export const evaluationQueue = new Queue("evaluation", { connection });
 

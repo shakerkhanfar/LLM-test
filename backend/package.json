@@ -5,7 +5,7 @@
   "scripts": {
     "dev": "tsx watch src/app.ts",
     "build": "prisma generate && tsc",
-    "start": "prisma migrate deploy && node dist/app.js",
+    "start": "prisma migrate resolve --rolled-back 20260518000000_add_tech_support; prisma migrate deploy && node dist/app.js",
     "db:migrate": "prisma migrate dev",
     "db:generate": "prisma generate",
     "db:studio": "prisma studio",
