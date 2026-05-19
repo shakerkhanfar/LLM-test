@@ -30,6 +30,31 @@ async function fetchWithTimeout(
 }
 
 /**
+ * Fetch with retries and exponential backoff. Retries on network errors and
+ * 5xx responses (4xx are permanent failures and are returned immediately).
+ * Delays: 1s after attempt 1, 2s after attempt 2.
+ */
+async function fetchWithRetry(
+  url: string,
+  options: RequestInit & { timeoutMs?: number } = {},
+  maxAttempts = 3
+): Promise<Response> {
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      const res = await fetchWithTimeout(url, options);
+      if (res.ok || res.status < 500) return res;
+      if (attempt === maxAttempts) return res;
+      console.warn(`[HamsaAPI] HTTP ${res.status} on attempt ${attempt}/${maxAttempts}, retrying...`);
+    } catch (err) {
+      if (attempt === maxAttempts) throw err;
+      console.warn(`[HamsaAPI] Request error on attempt ${attempt}/${maxAttempts}: ${(err as Error).message}`);
+    }
+    await new Promise<void>((resolve) => setTimeout(resolve, 1000 * 2 ** (attempt - 1)));
+  }
+  throw new Error("unreachable");
+}
+
+/**
  * Update the LLM model on a Hamsa voice agent.
  * Docs: https://docs.tryhamsa.com/api-reference/endpoint/update-voice-agent-v2
  */
@@ -157,7 +182,7 @@ export async function fetchCallLog(callId: string, apiKey?: string, baseUrl?: st
 
   console.log(`[HamsaAPI] Fetching call log: ${url}`);
 
-  const res = await fetchWithTimeout(url, {
+  const res = await fetchWithRetry(url, {
     method: "GET",
     headers: headers(apiKey),
   });
@@ -205,7 +230,7 @@ export async function fetchConversation(conversationId: string, apiKey?: string,
 
   console.log(`[HamsaAPI] Fetching conversation: ${conversationId}`);
 
-  const res = await fetchWithTimeout(url, {
+  const res = await fetchWithRetry(url, {
     method: "GET",
     headers: headers(apiKey),
   });

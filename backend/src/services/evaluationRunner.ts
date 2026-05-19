@@ -58,9 +58,9 @@ async function recoverInlineRuns() {
     where: {
       status: { in: ["PENDING", "AWAITING_DATA"] },
       OR: [
-        { callLog: { not: null } },
-        { transcript: { not: null } },
-        { webhookData: { not: null } },
+        { callLog: { not: "DbNull" } },
+        { transcript: { not: "DbNull" } },
+        { webhookData: { not: "DbNull" } },
       ],
     },
     select: { id: true },
@@ -124,8 +124,14 @@ export async function runEvaluationCheck(runId: string) {
     return;
   }
 
+  const EVAL_TIMEOUT_MS = 5 * 60 * 1000;
   try {
-    const result = await evaluateRun(runId);
+    const result = await Promise.race([
+      evaluateRun(runId),
+      new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error("Evaluation timed out after 5 minutes")), EVAL_TIMEOUT_MS)
+      ),
+    ]);
     console.log(`[Eval] Run ${runId} complete. Score: ${result.overallScore}`);
   } catch (err) {
     console.error(`[Eval] Run ${runId} failed: ${err}`);
