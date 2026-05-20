@@ -20,7 +20,7 @@ import { audit } from "../middleware/auditLog";
 const router = Router();
 
 const VALID_CRITERION_TYPES = new Set<string>(Object.values(CriterionType));
-const VALID_PROJECT_TYPES   = new Set(["LIVE", "HISTORY", "WEBHOOK", "TECH_SUPPORT"]);
+const VALID_PROJECT_TYPES   = new Set(["LIVE", "HISTORY", "WEBHOOK", "TECH_SUPPORT", "INGEST"]);
 const VALID_RUN_STATUSES    = new Set(["PENDING","RUNNING","AWAITING_DATA","EVALUATING","COMPLETE","FAILED"]);
 const VALID_RUN_SOURCES     = new Set(["LIVE","HISTORY","WEBHOOK"]);
 
@@ -1384,7 +1384,7 @@ router.post("/", async (req: AuthRequest, res) => {
     return res.status(400).json({ error: "Agent ID is required" });
   }
   if (projectType && !VALID_PROJECT_TYPES.has(projectType)) {
-    return res.status(400).json({ error: `Invalid projectType. Must be LIVE, HISTORY, WEBHOOK, or TECH_SUPPORT` });
+    return res.status(400).json({ error: `Invalid projectType. Must be LIVE, HISTORY, WEBHOOK, TECH_SUPPORT, or INGEST` });
   }
   if (criteria?.length) {
     for (const c of criteria) {

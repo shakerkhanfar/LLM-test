@@ -72,6 +72,7 @@ enum ProjectType {
   HISTORY
   WEBHOOK
   TECH_SUPPORT
+  INGEST
 }
 
 // MCP access token — used by AI agents (via Model Context Protocol) to access

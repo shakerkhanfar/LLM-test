@@ -113,8 +113,8 @@ router.post("/hamsa/:projectId", async (req, res) => {
   if (!project) {
     return res.status(404).json({ error: "Project not found" });
   }
-  if (project.projectType !== "WEBHOOK" && project.projectType !== "TECH_SUPPORT") {
-    return res.status(400).json({ error: "Project is not a webhook or tech-support project" });
+  if (project.projectType !== "WEBHOOK" && project.projectType !== "TECH_SUPPORT" && project.projectType !== "INGEST") {
+    return res.status(400).json({ error: "Project is not a webhook-type project" });
   }
 
   // Check for duplicate by callId
@@ -167,7 +167,7 @@ router.post("/hamsa/:projectId", async (req, res) => {
   const outcomeResult = payload.data?.outcomeResult ?? null;
   const callOutcome = outcomeResult?.call_outcome ?? null;
 
-  // TECH_SUPPORT projects land in PENDING_REVIEW — human must review before eval
+  // TECH_SUPPORT: human must review before eval; INGEST: no eval at all; WEBHOOK: auto-evaluate
   const initialStatus = project.projectType === "TECH_SUPPORT" ? "PENDING_REVIEW" : "AWAITING_DATA";
 
   let newRun;
@@ -204,6 +204,10 @@ router.post("/hamsa/:projectId", async (req, res) => {
     // Fetch call logs in background but do NOT evaluate — wait for human review
     fetchWebhookCallLogs(newRun.id, callId, conversationId, project.hamsaApiKey || undefined)
       .catch(err => console.error(`[Webhook] Log fetch error for run ${newRun.id}:`, err));
+  } else if (project.projectType === "INGEST") {
+    // Fetch call logs then mark COMPLETE — no AI evaluation
+    ingestWebhookRun(newRun.id, conversationId, project.hamsaApiKey || undefined)
+      .catch(err => console.error(`[Webhook] Ingest error for run ${newRun.id}:`, err));
   } else {
     // Fire-and-forget: evaluate in background
     hydrateWebhookRun(newRun.id, callId, project.hamsaApiKey || undefined)
@@ -326,6 +330,40 @@ async function fetchWebhookCallLogs(
     }
   } catch (err) {
     console.warn(`[Webhook] Log fetch failed for TECH_SUPPORT run ${runId}: ${(err as Error).message}`);
+  }
+}
+
+/**
+ * Ingest-only run hydration: fetch call logs then mark COMPLETE.
+ * No evaluation is triggered — the project is configured to collect data only.
+ */
+async function ingestWebhookRun(
+  runId: string,
+  conversationId: string | null,
+  apiKey: string | undefined
+) {
+  if (!conversationId || !apiKey) {
+    await prisma.run.update({ where: { id: runId }, data: { status: "COMPLETE" } });
+    return;
+  }
+  try {
+    let convLogs: any[] | null = null;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const conv = await fetchConversation(conversationId, apiKey);
+      convLogs = Array.isArray(conv?.logs) && conv.logs.length > 0 ? conv.logs : null;
+      if (convLogs) break;
+      if (attempt < 2) await new Promise(r => setTimeout(r, 5000));
+    }
+    await prisma.run.update({
+      where: { id: runId },
+      data: { ...(convLogs ? { callLog: convLogs as any } : {}), status: "COMPLETE" },
+    });
+    console.log(`[Webhook] Ingested run ${runId} — ${convLogs ? convLogs.length + " log entries" : "no logs"}`);
+  } catch (err) {
+    await prisma.run.update({
+      where: { id: runId },
+      data: { status: "FAILED", errorLog: (err as Error).message },
+    }).catch(() => {});
   }
 }
 
