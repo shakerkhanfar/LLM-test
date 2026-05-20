@@ -610,8 +610,12 @@ export default function RunDetail() {
   }, [audioTime, callStartMs, nodeMovementsForSync]);
 
   // Per-utterance audio offsets derived from CONVERSATION events in the call log.
-  // Agent turns are matched to "Playing message" events; user turns to STT/recognition events.
-  // Index matches transcript[i] — null when no timestamp can be derived.
+  // Primary: "Playing message" log events for agent turns, STT events for user turns.
+  // Fallback for user turns: metadata.created_at (Unix seconds) attached by Hamsa to every
+  // user transcript entry — reliable and covers calls where log events are missing.
+  // Fallback for agent turns with no log match: nearest preceding known timestamp + 0.3s
+  // so every turn gets a seek point, not just the first node's opening message.
+  // Index matches transcript[i] — null only when no timestamp can be derived at all.
   const transcriptTimestamps = useMemo((): (number | null)[] => {
     const tArr = Array.isArray((run as any)?.transcript) ? (run as any).transcript : [];
     if (!callStartMs || tArr.length === 0) return tArr.map(() => null);
@@ -628,18 +632,63 @@ export default function RunDetail() {
       const msgLower = String(e.message ?? "").toLowerCase();
       if (role === "agent" || msgLower.includes("playing message") || msgLower.includes("agent said") || msgLower.includes("agent response")) {
         agentTimes.push(ts);
-      } else if (role === "user" || msgLower.includes("user said") || msgLower.includes("user input") || msgLower.includes("recognition") || msgLower.includes("stt")) {
+      } else if (role === "user" || msgLower.includes("user said") || msgLower.includes("recognition") || msgLower.includes("stt")) {
+        // "user input" intentionally excluded: "Waiting for user input" contains that
+        // substring but represents when the system started listening, not when the user
+        // actually spoke — using it gives timestamps seconds too early.
         userTimes.push(ts);
       }
     }
 
+    // Pass 1: fill from CONVERSATION log events (existing sequential mapping)
     let ai = 0, ui = 0;
-    return tArr.map((utt: any) => {
+    const result: (number | null)[] = tArr.map((utt: any) => {
       const ts = utt.Agent ? agentTimes[ai++] : userTimes[ui++];
       if (ts == null) return null;
       const offset = (ts - callStartMs) / 1000;
       return Number.isFinite(offset) && offset >= 0 ? offset : null;
     });
+
+    // Pass 2: fill user turn gaps from metadata.created_at (Unix seconds from Hamsa).
+    // callStartMs is ms, created_at is seconds — divide callStartMs before subtracting.
+    const callStartSec = callStartMs / 1000;
+    for (let i = 0; i < result.length; i++) {
+      if (result[i] !== null) continue;
+      const utt = tArr[i];
+      const createdAt = utt?.metadata?.created_at;
+      if (createdAt != null) {
+        const offset = createdAt - callStartSec;
+        if (Number.isFinite(offset) && offset >= 0) result[i] = offset;
+      }
+    }
+
+    // Ordering validation: CONVERSATION log sequential mapping can assign the wrong
+    // "Playing message" event to an agent turn (e.g., the next node's opening message
+    // gets mapped to the current node's final agent turn). The metadata.created_at user
+    // timestamps from Pass 2 are ground truth — if an agent turn's timestamp is later
+    // than the immediately following non-null timestamp, the mapping is wrong; clear it
+    // so the gap-fill pass below can derive a better estimate from surrounding context.
+    for (let i = 0; i < result.length; i++) {
+      if (result[i] === null || !tArr[i]?.Agent) continue;
+      for (let j = i + 1; j < result.length; j++) {
+        if (result[j] === null) continue;
+        if (result[i]! > result[j]!) result[i] = null;
+        break;
+      }
+    }
+
+    // Pass 3: fill remaining agent turn gaps with nearest preceding timestamp + 0.3s.
+    // O(N) forward scan — lastKnown advances per agent turn so consecutive gap-filled
+    // turns don't all collapse onto the same seek point.
+    let lastKnown: number | null = null;
+    for (let i = 0; i < result.length; i++) {
+      if (result[i] !== null) { lastKnown = result[i]!; continue; }
+      if (!tArr[i]?.Agent) continue;
+      if (lastKnown !== null) result[i] = lastKnown + 0.3;
+      lastKnown = result[i];
+    }
+
+    return result;
   }, [(run as any)?.transcript, (run as any)?.callLog, callStartMs]);
 
   if (loading) return <p>Loading...</p>;
