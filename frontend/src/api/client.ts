@@ -58,7 +58,7 @@ export function createProject(data: {
   description?: string;
   agentStructure?: any;
   criteria?: any[];
-  projectType?: "LIVE" | "HISTORY" | "WEBHOOK" | "TECH_SUPPORT";
+  projectType?: "LIVE" | "HISTORY" | "WEBHOOK" | "TECH_SUPPORT" | "INGEST";
   historyStartDate?: string;
   historyEndDate?: string;
 }) {

@@ -1140,6 +1140,14 @@ export default function RunDetail() {
         </div>
       )}
 
+      {/* Webhook Data panel — INGEST projects have no eval, show full call data instead */}
+      {(run as any)?.project?.projectType === "INGEST" && (run as any)?.webhookData && (
+        <WebhookDataPanel
+          webhookData={(run as any).webhookData}
+          outcomeResult={run.outcomeResult}
+        />
+      )}
+
       {/* Per-criterion breakdown */}
       {evalResults.length > 0 && (
         <div style={{ marginBottom: 32 }}>
@@ -3352,6 +3360,178 @@ function CallLogViewer({ callLog }: { callLog: any[] }) {
         ))}
         {filtered.length === 0 && <div style={{ color: T.textMuted, fontSize: 12, padding: 8 }}>No events match the current filter.</div>}
       </div>
+    </div>
+  );
+}
+
+// ─── Webhook Data Panel ────────────────────────────────────────────
+// Dynamically renders any shape of Hamsa webhookData without hardcoding field names.
+// New fields Hamsa adds to the payload show up automatically.
+
+function WebhookDataPanel({ webhookData, outcomeResult }: { webhookData: any; outcomeResult: any }) {
+  const [showRaw, setShowRaw] = useState(false);
+
+  const fmt = (k: string) => k.replace(/_/g, " ").replace(/\b\w/g, c => c.toUpperCase());
+
+  function renderValue(v: any, depth = 0): React.ReactNode {
+    if (v == null || v === "") return <span style={{ color: T.textMuted, fontSize: 11 }}>—</span>;
+    if (typeof v === "boolean") return <span style={{ color: v ? T.success : T.error, fontWeight: 600 }}>{v ? "Yes" : "No"}</span>;
+    if (typeof v === "number" || typeof v === "string") return <span>{String(v)}</span>;
+    if (Array.isArray(v)) {
+      if (v.length === 0) return <span style={{ color: T.textMuted, fontSize: 11 }}>empty</span>;
+      if (v.every(x => typeof x !== "object")) {
+        return <span>{v.join(", ")}</span>;
+      }
+      return (
+        <div style={{ paddingLeft: 10, borderLeft: `2px solid ${T.border}`, marginTop: 4 }}>
+          {v.map((item, i) => <div key={i} style={{ marginBottom: 4 }}>{renderValue(item, depth + 1)}</div>)}
+        </div>
+      );
+    }
+    if (typeof v === "object") {
+      const entries = Object.entries(v).filter(([, val]) => val != null && val !== "");
+      if (entries.length === 0) return <span style={{ color: T.textMuted, fontSize: 11 }}>—</span>;
+      if (depth >= 2) return <span style={{ fontSize: 11, color: T.textMuted }}>{JSON.stringify(v)}</span>;
+      return (
+        <div style={{ paddingLeft: 10, borderLeft: `2px solid ${T.border}`, marginTop: 4 }}>
+          {entries.map(([k, val]) => (
+            <div key={k} style={{ display: "flex", gap: 8, marginBottom: 3, fontSize: 12 }}>
+              <span style={{ color: T.textMuted, minWidth: 110, flexShrink: 0 }}>{fmt(k)}</span>
+              <span style={{ color: T.text }}>{renderValue(val, depth + 1)}</span>
+            </div>
+          ))}
+        </div>
+      );
+    }
+    return <span>{String(v)}</span>;
+  }
+
+  const SKIP_OUTCOME = new Set(["call_outcome", "default_params", "summary", "Sunnary"]);
+  const SKIP_DATA = new Set(["transcription", "conversationId", "callStartedAt", "callEndedAt", "outcomeResult"]);
+  const SKIP_CALLER = new Set(["call_id", "call_start_time"]);
+
+  const summary = outcomeResult?.summary || outcomeResult?.Sunnary || null;
+  const outcomeEntries = outcomeResult
+    ? Object.entries(outcomeResult as Record<string, any>).filter(([k, v]) => !SKIP_OUTCOME.has(k) && v != null && v !== "")
+    : [];
+  const callerEntries = webhookData?.caller_info
+    ? Object.entries(webhookData.caller_info as Record<string, any>).filter(([k, v]) => !SKIP_CALLER.has(k) && v != null && v !== "")
+    : [];
+  const dataEntries = webhookData?.data
+    ? Object.entries(webhookData.data as Record<string, any>).filter(([k, v]) => !SKIP_DATA.has(k) && v != null && v !== "")
+    : [];
+  const otherEntries = webhookData
+    ? Object.entries(webhookData as Record<string, any>).filter(([k, v]) => !["event_type", "caller_info", "data"].includes(k) && v != null)
+    : [];
+
+  const sectionStyle: React.CSSProperties = {
+    background: T.card, border: `1px solid ${T.border}`, borderRadius: 8, padding: 16,
+  };
+  const sectionLabel: React.CSSProperties = {
+    fontSize: 11, color: T.textMuted, marginBottom: 12,
+    textTransform: "uppercase", letterSpacing: "0.06em", fontWeight: 600,
+  };
+  const grid: React.CSSProperties = {
+    display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(180px, 1fr))", gap: 12,
+  };
+
+  return (
+    <div style={{ marginBottom: 32 }}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12 }}>
+        <h2 style={{ fontSize: 16, margin: 0 }}>Call Data</h2>
+        <button
+          onClick={() => setShowRaw(r => !r)}
+          style={{
+            fontSize: 11, color: T.textMuted, background: "none",
+            border: `1px solid ${T.border}`, borderRadius: 4,
+            padding: "3px 8px", cursor: "pointer",
+          }}
+        >
+          {showRaw ? "Structured" : "Raw JSON"}
+        </button>
+      </div>
+
+      {showRaw ? (
+        <pre style={{
+          background: T.card, border: `1px solid ${T.border}`, borderRadius: 8,
+          padding: 16, fontSize: 11, overflow: "auto", maxHeight: 500, color: T.text, margin: 0,
+        }}>
+          {JSON.stringify(webhookData, null, 2)}
+        </pre>
+      ) : (
+        <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+          {summary && (
+            <div style={sectionStyle}>
+              <div style={sectionLabel}>Summary</div>
+              <p style={{ margin: 0, fontSize: 13, color: T.text, lineHeight: 1.6 }}>{summary}</p>
+            </div>
+          )}
+
+          {outcomeEntries.length > 0 && (
+            <div style={sectionStyle}>
+              <div style={sectionLabel}>Outcome</div>
+              <div style={grid}>
+                {outcomeEntries.map(([k, v]) => (
+                  <div key={k}>
+                    <div style={{ fontSize: 11, color: T.textSecondary, marginBottom: 3 }}>{fmt(k)}</div>
+                    <div style={{ fontSize: 13, color: T.text, fontWeight: 500 }}>
+                      {typeof v === "object" ? renderValue(v) : String(v)}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {callerEntries.length > 0 && (
+            <div style={sectionStyle}>
+              <div style={sectionLabel}>Caller Info</div>
+              <div style={grid}>
+                {callerEntries.map(([k, v]) => (
+                  <div key={k}>
+                    <div style={{ fontSize: 11, color: T.textSecondary, marginBottom: 3 }}>{fmt(k)}</div>
+                    <div style={{ fontSize: 13, color: T.text, fontWeight: 500 }}>
+                      {typeof v === "object" ? renderValue(v) : String(v)}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {dataEntries.length > 0 && (
+            <div style={sectionStyle}>
+              <div style={sectionLabel}>Call Details</div>
+              <div style={grid}>
+                {dataEntries.map(([k, v]) => (
+                  <div key={k}>
+                    <div style={{ fontSize: 11, color: T.textSecondary, marginBottom: 3 }}>{fmt(k)}</div>
+                    <div style={{ fontSize: 13, color: T.text, fontWeight: 500 }}>
+                      {typeof v === "object" ? renderValue(v) : String(v)}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {otherEntries.length > 0 && (
+            <div style={sectionStyle}>
+              <div style={sectionLabel}>Additional Data</div>
+              <div style={grid}>
+                {otherEntries.map(([k, v]) => (
+                  <div key={k}>
+                    <div style={{ fontSize: 11, color: T.textSecondary, marginBottom: 3 }}>{fmt(k)}</div>
+                    <div style={{ fontSize: 13, color: T.text, fontWeight: 500 }}>
+                      {typeof v === "object" ? renderValue(v) : String(v)}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }
