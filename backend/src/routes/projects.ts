@@ -835,6 +835,7 @@ router.get("/:id/dashboard", async (req: AuthRequest, res) => {
     // Outcome-extractor objective — from outcomeResult.objective_met ("yes"/"no"/bool)
     let outcomeObjCount = 0;
     let outcomeObjTotal = 0;
+    let outcomeObjNa = 0; // outcomeResult present but objective_met is "n/a"/null/empty
     // Criteria performance — per-criterion pass/fail stats + failed run IDs
     const criteriaPerf: Record<string, { name: string; type: string; total: number; passed: number; failedRunIds: string[] }> = {};
     // Compliance and experience scores — extracted from layered eval detail
@@ -964,11 +965,13 @@ router.get("/:id/dashboard", async (req: AuthRequest, res) => {
       const or = run.outcomeResult as any;
       if (or != null) {
         const raw = or.objective_met;
-        if (raw != null && raw !== "" && raw !== "n/a") {
+        if (raw != null && raw !== "" && String(raw).toLowerCase() !== "n/a") {
           outcomeObjTotal++;
           if (raw === true || raw === 1 || (typeof raw === "string" && raw.toLowerCase() === "yes")) {
             outcomeObjCount++;
           }
+        } else {
+          outcomeObjNa++;
         }
       }
     }
@@ -1068,6 +1071,7 @@ router.get("/:id/dashboard", async (req: AuthRequest, res) => {
       objectiveRate: objectiveTotal > 0 ? Math.round((objectiveCount / objectiveTotal) * 100) / 100 : null,
       outcomeObjectiveRate: outcomeObjTotal > 0 ? Math.round((outcomeObjCount / outcomeObjTotal) * 100) / 100 : null,
       outcomeObjectiveTotal: outcomeObjTotal,
+      outcomeObjectiveNa: outcomeObjNa,
       achievedRunIds,
       notAchievedRunIds,
       indeterminateRunIds,

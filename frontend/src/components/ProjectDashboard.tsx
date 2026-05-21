@@ -28,6 +28,8 @@ interface DashData {
   outcomeObjectiveRate: number | null;
   /** Number of calls that had an objective_met field (denominator for outcomeObjectiveRate) */
   outcomeObjectiveTotal?: number;
+  /** Number of calls where outcomeResult was present but objective_met was N/A / empty */
+  outcomeObjectiveNa?: number;
   nodePerformance: Array<{ label: string; avg: number; count: number; runIds: string[] }>;
   topIssues: Array<{ text: string; severity: string; count: number; runIds: string[] }>;
   achievedRunIds: string[];
@@ -254,7 +256,7 @@ export default function ProjectDashboard({ project, onDashLoaded, onLoadMore, ha
   }, [project.id]);
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [selectedOutcome, setSelectedOutcome] = useState<string | null>(null);
-  const [objectiveFilter, setObjectiveFilter] = useState<"achieved" | "not_achieved" | null>(null);
+  const [objectiveFilter, setObjectiveFilter] = useState<"achieved" | "not_achieved" | "na" | null>(null);
   const [scoreFilter, setScoreFilter] = useState<{ min: number; max: number; label: string } | null>(null);
   const [nodeFilter, setNodeFilter] = useState<{ label: string; runIds: string[] } | null>(null);
   const [issueFilter, setIssueFilter] = useState<{ text: string; outcome: string; runIds: string[] } | null>(null);
@@ -424,7 +426,7 @@ export default function ProjectDashboard({ project, onDashLoaded, onLoadMore, ha
     setTimeout(() => tableRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }), 50);
   }
 
-  function selectObjective(filter: "achieved" | "not_achieved") {
+  function selectObjective(filter: "achieved" | "not_achieved" | "na") {
     setObjectiveFilter(prev => prev === filter ? null : filter);
     setSelectedOutcome(null);
     setScoreFilter(null);
@@ -729,8 +731,10 @@ export default function ProjectDashboard({ project, onDashLoaded, onLoadMore, ha
       if (dashData) {
         if (objectiveFilter === "achieved") {
           sorted = sorted.filter((r: any) => dashData.achievedRunIds.includes(r.id));
-        } else {
+        } else if (objectiveFilter === "not_achieved") {
           sorted = sorted.filter((r: any) => dashData.notAchievedRunIds.includes(r.id));
+        } else {
+          sorted = sorted.filter((r: any) => dashData.indeterminateRunIds?.includes(r.id));
         }
       }
     }
@@ -921,8 +925,27 @@ export default function ProjectDashboard({ project, onDashLoaded, onLoadMore, ha
             tip: "Average call duration across completed calls. Unusually long calls may indicate the agent got stuck or the user was unresponsive." },
         ] as const).map(({ label, value, color, tip }) => {
           if (label === "Objective Achieved") {
-            const achPct = dashData?.objectiveRate != null ? Math.round(dashData.objectiveRate * 100) : null;
-            const outcomePct = dashData?.outcomeObjectiveRate != null ? Math.round(dashData.outcomeObjectiveRate * 100) : null;
+            // Node evaluation breakdown — N/A included in the denominator so percentages sum to 100%
+            const metCount = dashData?.achievedRunIds?.length ?? 0;
+            const notMetCount = dashData?.notAchievedRunIds?.length ?? 0;
+            const naCount = dashData?.indeterminateRunIds?.length ?? 0;
+            const nodeTotal = metCount + notMetCount + naCount;
+            const metPct = nodeTotal > 0 ? Math.round((metCount / nodeTotal) * 100) : null;
+            const notMetPct = nodeTotal > 0 ? Math.round((notMetCount / nodeTotal) * 100) : null;
+            const naPct = nodeTotal > 0 && metPct != null && notMetPct != null ? 100 - metPct - notMetPct : null;
+
+            // Outcome extractor breakdown — same 3-way split
+            const oMet = dashData?.outcomeObjectiveRate != null && dashData?.outcomeObjectiveTotal != null
+              ? Math.round(dashData.outcomeObjectiveRate * dashData.outcomeObjectiveTotal) : 0;
+            const oTotalKnown = dashData?.outcomeObjectiveTotal ?? 0;
+            const oNotMet = oTotalKnown - oMet;
+            const oNa = dashData?.outcomeObjectiveNa ?? 0;
+            const outcomeTotal = oTotalKnown + oNa;
+            const oMetPct = outcomeTotal > 0 ? Math.round((oMet / outcomeTotal) * 100) : null;
+            const oNotMetPct = outcomeTotal > 0 ? Math.round((oNotMet / outcomeTotal) * 100) : null;
+            const oNaPct = outcomeTotal > 0 && oMetPct != null && oNotMetPct != null ? 100 - oMetPct - oNotMetPct : null;
+
+            const naColor = "#9ca3af";
             return (
               <div key={label} style={CARD_STYLE}>
                 <div style={{ ...SECTION_LABEL_STYLE, display: "flex", alignItems: "center", marginBottom: 8 }}>
@@ -930,13 +953,13 @@ export default function ProjectDashboard({ project, onDashLoaded, onLoadMore, ha
                 </div>
                 {/* Row 1: Layered eval objectiveAchieved */}
                 <div style={{ fontSize: 10, color: T.textMuted, marginBottom: 4 }}>Node evaluation</div>
-                {achPct == null ? (
+                {metPct == null ? (
                   <div style={{ fontSize: 28, fontWeight: 700, color: T.text }}>—</div>
                 ) : (
                   <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 10 }}>
                     <button
                       onClick={() => selectObjective("achieved")}
-                      title="View calls where objective was met"
+                      title={`View ${metCount} calls where objective was met`}
                       style={{
                         background: objectiveFilter === "achieved" ? "#17B26A" : "#17B26A18",
                         color: objectiveFilter === "achieved" ? "#fff" : "#17B26A",
@@ -944,11 +967,11 @@ export default function ProjectDashboard({ project, onDashLoaded, onLoadMore, ha
                         cursor: "pointer", fontWeight: 700, fontSize: 22,
                       }}
                     >
-                      {achPct}%
+                      {metPct}%
                     </button>
                     <button
                       onClick={() => selectObjective("not_achieved")}
-                      title="View calls where objective was NOT met"
+                      title={`View ${notMetCount} calls where objective was NOT met`}
                       style={{
                         background: objectiveFilter === "not_achieved" ? "#ef4444" : "#ef444418",
                         color: objectiveFilter === "not_achieved" ? "#fff" : "#ef4444",
@@ -956,19 +979,33 @@ export default function ProjectDashboard({ project, onDashLoaded, onLoadMore, ha
                         cursor: "pointer", fontWeight: 700, fontSize: 22,
                       }}
                     >
-                      {`${100 - achPct}%`}
+                      {notMetPct}%
                     </button>
+                    {naCount > 0 && (
+                      <button
+                        onClick={() => selectObjective("na")}
+                        title={`View ${naCount} calls where objective was indeterminate (e.g. caller hangup)`}
+                        style={{
+                          background: objectiveFilter === "na" ? naColor : naColor + "22",
+                          color: objectiveFilter === "na" ? "#fff" : naColor,
+                          border: "none", borderRadius: 7, padding: "4px 10px",
+                          cursor: "pointer", fontWeight: 700, fontSize: 22,
+                        }}
+                      >
+                        {naPct}%
+                      </button>
+                    )}
                   </div>
                 )}
                 {/* Row 2: Outcome extractor objective_met */}
-                {outcomePct != null && (
+                {oMetPct != null && (
                   <>
                     <div style={{ fontSize: 10, color: T.textMuted, marginBottom: 4 }}>
                       Outcome extractor
-                      {dashData?.outcomeObjectiveTotal != null && dashData.outcomeObjectiveTotal < (dashData.totalComplete || 0) && (
-                        <span title={`Only ${dashData.outcomeObjectiveTotal} of ${dashData.totalComplete} calls had this field`}
+                      {outcomeTotal < (dashData?.totalComplete || 0) && (
+                        <span title={`Only ${outcomeTotal} of ${dashData?.totalComplete} calls had this field`}
                           style={{ marginLeft: 4, color: "#f59e0b" }}>
-                          ({dashData.outcomeObjectiveTotal} calls)
+                          ({outcomeTotal} calls)
                         </span>
                       )}
                     </div>
@@ -977,14 +1014,22 @@ export default function ProjectDashboard({ project, onDashLoaded, onLoadMore, ha
                         background: "#17B26A18", color: "#17B26A",
                         borderRadius: 7, padding: "4px 10px", fontWeight: 700, fontSize: 22,
                       }}>
-                        {outcomePct}%
+                        {oMetPct}%
                       </span>
                       <span style={{
                         background: "#ef444418", color: "#ef4444",
                         borderRadius: 7, padding: "4px 10px", fontWeight: 700, fontSize: 22,
                       }}>
-                        {100 - outcomePct}%
+                        {oNotMetPct}%
                       </span>
+                      {oNa > 0 && (
+                        <span style={{
+                          background: naColor + "22", color: naColor,
+                          borderRadius: 7, padding: "4px 10px", fontWeight: 700, fontSize: 22,
+                        }}>
+                          {oNaPct}%
+                        </span>
+                      )}
                     </div>
                   </>
                 )}
@@ -992,7 +1037,7 @@ export default function ProjectDashboard({ project, onDashLoaded, onLoadMore, ha
                   {objectiveFilter ? (
                     <span style={{ color: T.primary, cursor: "pointer" }} onClick={() => setObjectiveFilter(null)}>✕ Clear filter</span>
                   ) : (
-                    <span style={{ color: T.textMuted }}>green = met · red = not met</span>
+                    <span style={{ color: T.textMuted }}>green = met · red = not met · gray = N/A</span>
                   )}
                 </div>
               </div>
@@ -2113,19 +2158,25 @@ export default function ProjectDashboard({ project, onDashLoaded, onLoadMore, ha
                 <button onClick={() => setSelectedOutcome(null)} style={{ background: "none", border: "none", cursor: "pointer", padding: 0, fontSize: 12, color: "inherit", lineHeight: 1 }}>×</button>
               </span>
             )}
-            {objectiveFilter && (
-              <span style={{
-                display: "inline-flex", alignItems: "center", gap: 5,
-                fontSize: 11, fontWeight: 600,
-                color: objectiveFilter === "achieved" ? "#17B26A" : "#ef4444",
-                background: objectiveFilter === "achieved" ? "#17B26A18" : "#ef444418",
-                border: `1px solid ${objectiveFilter === "achieved" ? "#17B26A44" : "#ef444444"}`,
-                borderRadius: 20, padding: "2px 10px",
-              }}>
-                Objective {objectiveFilter === "achieved" ? "met" : "not met"}
-                <button onClick={() => setObjectiveFilter(null)} style={{ background: "none", border: "none", cursor: "pointer", padding: 0, fontSize: 12, color: "inherit", lineHeight: 1 }}>×</button>
-              </span>
-            )}
+            {objectiveFilter && (() => {
+              const cfg = objectiveFilter === "achieved"
+                ? { color: "#17B26A", bg: "#17B26A18", border: "#17B26A44", label: "met" }
+                : objectiveFilter === "not_achieved"
+                  ? { color: "#ef4444", bg: "#ef444418", border: "#ef444444", label: "not met" }
+                  : { color: "#9ca3af", bg: "#9ca3af22", border: "#9ca3af55", label: "N/A" };
+              return (
+                <span style={{
+                  display: "inline-flex", alignItems: "center", gap: 5,
+                  fontSize: 11, fontWeight: 600,
+                  color: cfg.color, background: cfg.bg,
+                  border: `1px solid ${cfg.border}`,
+                  borderRadius: 20, padding: "2px 10px",
+                }}>
+                  Objective {cfg.label}
+                  <button onClick={() => setObjectiveFilter(null)} style={{ background: "none", border: "none", cursor: "pointer", padding: 0, fontSize: 12, color: "inherit", lineHeight: 1 }}>×</button>
+                </span>
+              );
+            })()}
             {scoreFilter && (
               <span style={{
                 display: "inline-flex", alignItems: "center", gap: 5,
