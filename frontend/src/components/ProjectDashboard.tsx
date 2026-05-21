@@ -26,9 +26,11 @@ interface DashData {
   objectiveRate: number | null;
   /** Objective rate from outcome extractor LLM (outcomeResult.objective_met) */
   outcomeObjectiveRate: number | null;
-  /** Number of calls that had an objective_met field (denominator for outcomeObjectiveRate) */
+  /** Number of calls that had a definitive yes/no objective_met value */
   outcomeObjectiveTotal?: number;
-  /** Number of calls where outcomeResult was present but objective_met was N/A / empty */
+  /** Raw met count — avoids reconstructing from rounded rate × total */
+  outcomeObjectiveCount?: number;
+  /** Calls where outcomeResult existed and objective_met was explicitly "n/a" */
   outcomeObjectiveNa?: number;
   nodePerformance: Array<{ label: string; avg: number; count: number; runIds: string[] }>;
   topIssues: Array<{ text: string; severity: string; count: number; runIds: string[] }>;
@@ -925,25 +927,28 @@ export default function ProjectDashboard({ project, onDashLoaded, onLoadMore, ha
             tip: "Average call duration across completed calls. Unusually long calls may indicate the agent got stuck or the user was unresponsive." },
         ] as const).map(({ label, value, color, tip }) => {
           if (label === "Objective Achieved") {
-            // Node evaluation breakdown — N/A included in the denominator so percentages sum to 100%
+            // Node evaluation breakdown — N/A included in denominator so percentages sum to ~100%
             const metCount = dashData?.achievedRunIds?.length ?? 0;
             const notMetCount = dashData?.notAchievedRunIds?.length ?? 0;
             const naCount = dashData?.indeterminateRunIds?.length ?? 0;
             const nodeTotal = metCount + notMetCount + naCount;
+            // Compute each pct independently — they may sum to 99/101 due to rounding but
+            // each individual badge shows the accurate value. Avoids 0% N/A badge when
+            // rounding "steals" the last percent from a non-zero naCount.
             const metPct = nodeTotal > 0 ? Math.round((metCount / nodeTotal) * 100) : null;
             const notMetPct = nodeTotal > 0 ? Math.round((notMetCount / nodeTotal) * 100) : null;
-            const naPct = nodeTotal > 0 && metPct != null && notMetPct != null ? 100 - metPct - notMetPct : null;
+            const naPct = nodeTotal > 0 ? Math.round((naCount / nodeTotal) * 100) : null;
 
-            // Outcome extractor breakdown — same 3-way split
-            const oMet = dashData?.outcomeObjectiveRate != null && dashData?.outcomeObjectiveTotal != null
-              ? Math.round(dashData.outcomeObjectiveRate * dashData.outcomeObjectiveTotal) : 0;
+            // Outcome extractor breakdown — use raw outcomeObjectiveCount to avoid off-by-1
+            // from reconstructing count via Math.round(rate × total) with a rounded rate.
+            const oMet = dashData?.outcomeObjectiveCount ?? 0;
             const oTotalKnown = dashData?.outcomeObjectiveTotal ?? 0;
             const oNotMet = oTotalKnown - oMet;
             const oNa = dashData?.outcomeObjectiveNa ?? 0;
             const outcomeTotal = oTotalKnown + oNa;
             const oMetPct = outcomeTotal > 0 ? Math.round((oMet / outcomeTotal) * 100) : null;
             const oNotMetPct = outcomeTotal > 0 ? Math.round((oNotMet / outcomeTotal) * 100) : null;
-            const oNaPct = outcomeTotal > 0 && oMetPct != null && oNotMetPct != null ? 100 - oMetPct - oNotMetPct : null;
+            const oNaPct = outcomeTotal > 0 ? Math.round((oNa / outcomeTotal) * 100) : null;
 
             const naColor = "#9ca3af";
             return (
@@ -981,7 +986,7 @@ export default function ProjectDashboard({ project, onDashLoaded, onLoadMore, ha
                     >
                       {notMetPct}%
                     </button>
-                    {naCount > 0 && (
+                    {naCount > 0 && naPct != null && naPct > 0 && (
                       <button
                         onClick={() => selectObjective("na")}
                         title={`View ${naCount} calls where objective was indeterminate (e.g. caller hangup)`}
@@ -1022,7 +1027,7 @@ export default function ProjectDashboard({ project, onDashLoaded, onLoadMore, ha
                       }}>
                         {oNotMetPct}%
                       </span>
-                      {oNa > 0 && (
+                      {oNa > 0 && oNaPct != null && oNaPct > 0 && (
                         <span style={{
                           background: naColor + "22", color: naColor,
                           borderRadius: 7, padding: "4px 10px", fontWeight: 700, fontSize: 22,

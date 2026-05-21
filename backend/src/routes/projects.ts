@@ -961,7 +961,7 @@ router.get("/:id/dashboard", async (req: AuthRequest, res) => {
         indeterminateRunIds.push(run.id);
       }
 
-      // Objective (outcome extractor — outcomeResult.objective_met = "yes"/"no"/bool)
+      // Objective (outcome extractor — outcomeResult.objective_met = "yes"/"no"/bool/"n/a")
       const or = run.outcomeResult as any;
       if (or != null) {
         const raw = or.objective_met;
@@ -970,7 +970,9 @@ router.get("/:id/dashboard", async (req: AuthRequest, res) => {
           if (raw === true || raw === 1 || (typeof raw === "string" && raw.toLowerCase() === "yes")) {
             outcomeObjCount++;
           }
-        } else {
+        } else if (typeof raw === "string" && raw.toLowerCase() === "n/a") {
+          // Only count explicit "n/a" strings — null/undefined/empty means the agent
+          // doesn't populate this field at all, which is different from "not applicable".
           outcomeObjNa++;
         }
       }
@@ -1071,6 +1073,7 @@ router.get("/:id/dashboard", async (req: AuthRequest, res) => {
       objectiveRate: objectiveTotal > 0 ? Math.round((objectiveCount / objectiveTotal) * 100) / 100 : null,
       outcomeObjectiveRate: outcomeObjTotal > 0 ? Math.round((outcomeObjCount / outcomeObjTotal) * 100) / 100 : null,
       outcomeObjectiveTotal: outcomeObjTotal,
+      outcomeObjectiveCount: outcomeObjCount,  // raw count — avoids lossy rate×total reconstruction on frontend
       outcomeObjectiveNa: outcomeObjNa,
       achievedRunIds,
       notAchievedRunIds,
