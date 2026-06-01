@@ -883,8 +883,14 @@ router.get("/:id/dashboard", async (req: AuthRequest, res) => {
         }
         continue;
       }
-      // Explicitly skip notApplicable or error entries — no valid metrics to extract
-      if (detail?.notApplicable === true || detail?.error === true) continue;
+      // notApplicable = call abandoned before user spoke (or no workflow/log available).
+      // Still add to indeterminateRunIds so the dashboard shows "—" / N/A instead of
+      // falling back to outcomeResult.objective_met which would show a false "Not met".
+      if (detail?.notApplicable === true) {
+        indeterminateRunIds.push(run.id);
+        continue;
+      }
+      if (detail?.error === true) continue;
 
       // Compliance score (from split eval: quality vs compliance)
       if (detail.complianceScore != null && typeof detail.complianceScore === "number") {
