@@ -1047,6 +1047,29 @@ export default function RunDetail() {
             Full Export
           </button>
         </>)}
+        {(run.webhookData || (Array.isArray(run.callLog) && run.callLog.length > 0)) && (
+          <button
+            onClick={() => {
+              const exportData = {
+                callId: run.hamsaCallId,
+                conversationId: run.conversationId,
+                callDate: run.callDate,
+                webhookData: run.webhookData ?? null,
+                callLog: Array.isArray(run.callLog) ? run.callLog : [],
+              };
+              const blob = new Blob([JSON.stringify(exportData, null, 2)], { type: "application/json" });
+              const url = URL.createObjectURL(blob);
+              const a = document.createElement("a");
+              a.href = url;
+              a.download = `webhook-logs-${run.conversationId || run.id}.json`;
+              a.click();
+              URL.revokeObjectURL(url);
+            }}
+            style={{ background: T.cardAlt, color: T.text, padding: "6px 12px", borderRadius: 4, border: "none", cursor: "pointer", fontSize: 12 }}
+          >
+            Export Webhook + Logs
+          </button>
+        )}
       </div>
 
       {/* Call outcome + score summary */}

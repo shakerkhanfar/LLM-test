@@ -51,6 +51,8 @@ model Project {
   description      String?
   agentStructure   Json? // Full agent JSON (workflow nodes, edges, tools)
   flowDefinition   Json? // Extracted expected node sequence + tool calls
+  intentionConfig  Json? // Intention funnel config: { intentField, successField, successMode, successValues? }
+  evaluationEnabled Boolean          @default(true) // When false, webhook/ingest data is still stored but AI evaluation is skipped
   agentSummary     String? // LLM-generated plain-text analysis: purpose, scenarios, success criteria
   evalContext      String? // User-defined evaluation rules injected into every eval for this project
   webhookSecret    String? // HMAC-SHA256 secret for verifying incoming webhook payloads

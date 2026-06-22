@@ -91,6 +91,13 @@ export function deleteProject(id: string) {
   return request<any>(`/projects/${id}`, { method: "DELETE" });
 }
 
+export function updateProject(
+  id: string,
+  data: { name?: string; description?: string; agentStructure?: any; evaluationEnabled?: boolean }
+) {
+  return request<any>(`/projects/${id}`, { method: "PATCH", body: JSON.stringify(data) });
+}
+
 export function addCriterion(projectId: string, data: any) {
   return request<any>(`/projects/${projectId}/criteria`, {
     method: "POST",
@@ -510,6 +517,119 @@ export function getObjectiveFailures(projectId: string, range?: { from?: string;
     failuresTruncated: boolean;
     reasonGroups: Array<{ reason: string; count: number; runIds: string[] }>;
   }>(`/projects/${projectId}/objective-failures${suffix}`);
+}
+
+// ─── Intention funnel ─────────────────────────────────────────────
+
+export type FunnelSuccessMode = "values" | "present" | "objective";
+export interface FunnelConfig {
+  intentField: string | null;
+  successField: string | null;
+  successMode: FunnelSuccessMode;
+  successValues: string[];
+}
+
+export function getFunnelConfig(projectId: string) {
+  return request<{
+    config: FunnelConfig;
+    columns: string[];
+    columnValues: Record<string, string[]>;
+    saved: boolean;
+  }>(`/projects/${projectId}/funnel-config`);
+}
+
+export function saveFunnelConfig(projectId: string, config: FunnelConfig) {
+  return request<{ config: FunnelConfig }>(`/projects/${projectId}/funnel-config`, {
+    method: "PUT",
+    body: JSON.stringify({ config }),
+  });
+}
+
+export interface OutcomeFunnelRow {
+  intention: string;
+  started: number;
+  succeeded: number;
+  failed: number;
+  incomplete: number;
+  successRate: number | null;
+}
+
+function funnelQuery(range?: { from?: string; to?: string }, config?: FunnelConfig | null): string {
+  const qs = new URLSearchParams();
+  if (range?.from) qs.set("from", range.from);
+  if (range?.to) qs.set("to", range.to);
+  if (config?.intentField) {
+    qs.set("intentField", config.intentField);
+    qs.set("successMode", config.successMode);
+    if (config.successField) qs.set("successField", config.successField);
+    if (config.successValues.length) qs.set("successValues", config.successValues.join(","));
+  }
+  return qs.toString() ? `?${qs}` : "";
+}
+
+export function getOutcomeFunnel(
+  projectId: string,
+  range?: { from?: string; to?: string },
+  config?: FunnelConfig | null
+) {
+  return request<{ config: FunnelConfig; rows: OutcomeFunnelRow[] }>(
+    `/projects/${projectId}/outcome-funnel${funnelQuery(range, config)}`
+  );
+}
+
+export interface NodeFunnelStage {
+  nodeLabel: string;
+  nodeType: string;
+  reached: number;
+  droppedAfter: number;
+  dropPct: number;
+  stuckCount: number;
+  hallucinationCount: number;
+}
+export interface NodeFunnelIntention {
+  intention: string;
+  total: number;
+  completed: number;
+  stages: NodeFunnelStage[];
+}
+
+export function getIntentionNodeFunnel(
+  projectId: string,
+  range?: { from?: string; to?: string },
+  config?: FunnelConfig | null
+) {
+  return request<{
+    intentField: string | null;
+    hasFlowGraph: boolean;
+    capped: boolean;
+    runWindow: number;
+    intentions: NodeFunnelIntention[];
+    note?: string;
+  }>(`/projects/${projectId}/intention-node-funnel${funnelQuery(range, config)}`);
+}
+
+// Full server-side CSV export of all complete runs in range (auth header → blob download).
+export async function exportOutcomesCsv(
+  projectId: string,
+  projectName: string,
+  range?: { from?: string; to?: string }
+) {
+  const token = getToken();
+  const qs = new URLSearchParams();
+  if (range?.from) qs.set("from", range.from);
+  if (range?.to) qs.set("to", range.to);
+  const suffix = qs.toString() ? `?${qs}` : "";
+  const res = await fetch(`/api/projects/${projectId}/outcomes.csv${suffix}`, {
+    headers: token ? { Authorization: `Bearer ${token}` } : {},
+  });
+  if (!res.ok) throw new Error(`Export failed: ${res.status}`);
+  const blob = await res.blob();
+  const url = window.URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `${projectName.replace(/[^a-zA-Z0-9]/g, "_")}_outcomes.csv`;
+  a.click();
+  window.URL.revokeObjectURL(url);
 }
 
 // ─── Comparison reports ───────────────────────────────────────────

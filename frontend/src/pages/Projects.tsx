@@ -1,6 +1,6 @@
 import { useEffect, useState, useRef } from "react";
 import { Link, useNavigate } from "react-router-dom";
-import { listProjects, deleteProject, importProjectBundle } from "../api/client";
+import { listProjects, deleteProject, importProjectBundle, updateProject } from "../api/client";
 import T from "../theme";
 
 export default function Projects() {
@@ -20,6 +20,19 @@ export default function Projects() {
       .then(setProjects)
       .finally(() => setLoading(false));
   }, []);
+
+  // Toggle AI evaluation for a project. When off, webhook/ingest data still flows in
+  // and is stored — only the AI evaluation step is skipped. Optimistic, reverts on error.
+  async function toggleEval(p: any) {
+    const next = !(p.evaluationEnabled !== false);
+    setProjects((prev) => prev.map((x) => (x.id === p.id ? { ...x, evaluationEnabled: next } : x)));
+    try {
+      await updateProject(p.id, { evaluationEnabled: next });
+    } catch (err) {
+      setProjects((prev) => prev.map((x) => (x.id === p.id ? { ...x, evaluationEnabled: !next } : x)));
+      alert(`Failed to update evaluation setting: ${(err as Error).message}`);
+    }
+  }
 
   async function handleImport(e: React.ChangeEvent<HTMLInputElement>) {
     const files = Array.from(e.target.files ?? []);
@@ -202,6 +215,7 @@ export default function Projects() {
               <th style={{ padding: "8px 12px" }}>Criteria</th>
               <th style={{ padding: "8px 12px" }}>Runs</th>
               <th style={{ padding: "8px 12px" }}>Last Run</th>
+              <th style={{ padding: "8px 12px" }}>AI Eval</th>
               <th style={{ padding: "8px 12px" }}></th>
             </tr>
           </thead>
@@ -231,6 +245,30 @@ export default function Projects() {
                   {p.runs?.[0]
                     ? `${p.runs[0].modelUsed || p.projectType || "—"} — ${new Date(p.runs[0].createdAt).toLocaleDateString()}`
                     : "—"}
+                </td>
+                <td style={{ padding: "8px 12px" }}>
+                  {(() => {
+                    const on = p.evaluationEnabled !== false;
+                    return (
+                      <button
+                        onClick={() => toggleEval(p)}
+                        title={on
+                          ? "AI evaluation is ON. Click to turn off — webhook data will still be stored, just not evaluated."
+                          : "AI evaluation is OFF. Webhook data is still being stored. Click to turn evaluation back on."}
+                        style={{
+                          display: "inline-flex", alignItems: "center", gap: 6,
+                          background: on ? T.successBg : T.cardAlt,
+                          border: `1px solid ${on ? "#22c55e" : T.borderDark}`,
+                          color: on ? "#15803d" : T.textSecondary,
+                          padding: "3px 10px", borderRadius: 999, cursor: "pointer",
+                          fontSize: 11, fontWeight: 600,
+                        }}
+                      >
+                        <span style={{ width: 7, height: 7, borderRadius: "50%", background: on ? "#22c55e" : T.textMuted }} />
+                        {on ? "On" : "Off"}
+                      </button>
+                    );
+                  })()}
                 </td>
                 <td style={{ padding: "8px 12px" }}>
                   <button

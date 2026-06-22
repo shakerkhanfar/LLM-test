@@ -3,7 +3,9 @@ import {
   LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer,
   PieChart, Pie, Cell, BarChart, Bar,
 } from "recharts";
-import { getProjectDashboard, getRunsByIds, reEvaluateRuns, rehydrateRuns, getObjectiveFailures } from "../api/client";
+import { getProjectDashboard, getRunsByIds, reEvaluateRuns, rehydrateRuns, getObjectiveFailures,
+  getFunnelConfig, saveFunnelConfig, getOutcomeFunnel, getIntentionNodeFunnel, exportOutcomesCsv } from "../api/client";
+import type { FunnelConfig, OutcomeFunnelRow, NodeFunnelIntention } from "../api/client";
 import { Link as RouterLink } from "react-router-dom";
 import T from "../theme";
 
@@ -182,6 +184,345 @@ function ScorePill({ score }: { score: number }) {
   );
 }
 
+// ─── Intention Funnel ──────────────────────────────────────────────
+// Two views of success-per-intention: (A) "Workflow steps" — node-by-node drop-off
+// from the layered eval path; (B) "Outcome data" — a cross-tab of a chosen intention
+// column × success column. The intention/success columns are configurable and saved
+// per project. Includes a full server-side CSV export of all runs in range.
+const FUNNEL_GREEN = "#17B26A";
+const FUNNEL_RED = "#ef4444";
+const FUNNEL_GRAY = "#9ca3af";
+const OBJECTIVE_SENTINEL = "__objective__";
+
+function IntentionFunnel({ projectId, projectName, dateFilter, onSelectIntent, tableIntentField }: {
+  projectId: string;
+  projectName: string;
+  dateFilter: { from: string; to: string } | null;
+  onSelectIntent: (intent: string) => void;
+  // The field the run table filters intent by (auto-detected). Click-to-filter is only
+  // wired when the funnel's configured intent column matches it — otherwise the table
+  // would filter by a different column and show wrong/empty results.
+  tableIntentField: string | null;
+}) {
+  const [config, setConfig] = useState<FunnelConfig | null>(null);
+  const [savedConfig, setSavedConfig] = useState<FunnelConfig | null>(null);
+  const [columns, setColumns] = useState<string[]>([]);
+  const [columnValues, setColumnValues] = useState<Record<string, string[]>>({});
+  const [view, setView] = useState<"outcome" | "orchestration">("outcome");
+  const [outcomeRows, setOutcomeRows] = useState<OutcomeFunnelRow[] | null>(null);
+  const [nodeData, setNodeData] = useState<{
+    hasFlowGraph: boolean; capped: boolean; runWindow: number; intentions: NodeFunnelIntention[]; note?: string;
+  } | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [saveMsg, setSaveMsg] = useState<string | null>(null);
+  const [csvBusy, setCsvBusy] = useState(false);
+  const [csvErr, setCsvErr] = useState<string | null>(null);
+
+  // Load the saved/auto-detected config + available columns once per project.
+  useEffect(() => {
+    let cancelled = false;
+    getFunnelConfig(projectId)
+      .then((res) => {
+        if (cancelled) return;
+        setConfig(res.config);
+        setSavedConfig(res.config);
+        setColumns(res.columns);
+        setColumnValues(res.columnValues);
+      })
+      .catch((e) => { if (!cancelled) setError(e.message); });
+    return () => { cancelled = true; };
+  }, [projectId]);
+
+  const configKey = config ? JSON.stringify(config) : "";
+  const range = dateFilter || undefined;
+
+  // Fetch the active view whenever the config / view / date range changes.
+  useEffect(() => {
+    if (!config?.intentField) { setOutcomeRows(null); setNodeData(null); return; }
+    let cancelled = false;
+    setLoading(true);
+    setError(null);
+    const fetcher = view === "outcome"
+      ? getOutcomeFunnel(projectId, range, config).then((r) => { if (!cancelled) { setOutcomeRows(r.rows); } })
+      : getIntentionNodeFunnel(projectId, range, config).then((r) => { if (!cancelled) { setNodeData(r); } });
+    fetcher.catch((e) => { if (!cancelled) setError(e.message); }).finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [projectId, view, configKey, range?.from, range?.to]);
+
+  const dirty = config && savedConfig ? JSON.stringify(config) !== JSON.stringify(savedConfig) : false;
+
+  function updateConfig(patch: Partial<FunnelConfig>) {
+    setConfig((prev) => (prev ? { ...prev, ...patch } : prev));
+    setSaveMsg(null);
+  }
+  function onSuccessSourceChange(value: string) {
+    if (value === OBJECTIVE_SENTINEL) {
+      updateConfig({ successField: null, successMode: "objective", successValues: [] });
+    } else {
+      // Default a freshly-picked column to "has value" so the funnel shows something immediately.
+      updateConfig({ successField: value, successMode: "present", successValues: [] });
+    }
+  }
+  function toggleSuccessValue(v: string) {
+    if (!config) return;
+    const set = new Set(config.successValues);
+    if (set.has(v)) set.delete(v); else set.add(v);
+    updateConfig({ successValues: [...set] });
+  }
+  async function persist() {
+    if (!config) return;
+    setSaving(true); setSaveMsg(null); setError(null);
+    try {
+      const res = await saveFunnelConfig(projectId, config);
+      setSavedConfig(res.config);
+      setConfig(res.config);
+      setSaveMsg("Saved");
+      setTimeout(() => setSaveMsg((m) => (m === "Saved" ? null : m)), 2500);
+    } catch (e: any) {
+      setError(e.message);
+    } finally {
+      setSaving(false);
+    }
+  }
+  async function downloadCsv() {
+    setCsvBusy(true); setCsvErr(null);
+    try {
+      await exportOutcomesCsv(projectId, projectName, range);
+    } catch (e: any) {
+      setCsvErr(e.message);
+    } finally {
+      setCsvBusy(false);
+    }
+  }
+
+  const selectStyle: React.CSSProperties = {
+    fontSize: 12, padding: "4px 8px", borderRadius: 6, border: `1px solid ${T.border}`,
+    background: T.card, color: T.text, cursor: "pointer",
+  };
+  const segBtn = (active: boolean): React.CSSProperties => ({
+    fontSize: 12, fontWeight: 600, padding: "5px 12px", borderRadius: 6, cursor: "pointer",
+    border: `1px solid ${active ? T.primary : T.border}`,
+    background: active ? T.primary + "18" : T.card, color: active ? T.primary : T.textSecondary,
+  });
+
+  const successSourceValue = !config ? "" : config.successMode === "objective" ? OBJECTIVE_SENTINEL : (config.successField ?? "");
+  // Only wire click-to-filter when the funnel groups by the same field the table filters by.
+  const canFilter = !!config?.intentField && config.intentField === tableIntentField;
+
+  return (
+    <div style={CARD_STYLE}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 8, marginBottom: 12 }}>
+        <div style={{ ...SECTION_LABEL_STYLE, marginBottom: 0, display: "flex", alignItems: "center" }}>
+          Intention Funnel
+          <InfoTip text="Success per caller intention. 'Outcome data' cross-tabs your chosen intention column against a success column. 'Workflow steps' shows node-by-node drop-off from the evaluation path. Column choices are saved per project." />
+        </div>
+        <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+          <div style={{ display: "flex", gap: 4 }}>
+            <button style={segBtn(view === "outcome")} onClick={() => setView("outcome")}>Outcome data</button>
+            <button style={segBtn(view === "orchestration")} onClick={() => setView("orchestration")}>Workflow steps</button>
+          </div>
+          <button
+            onClick={downloadCsv}
+            disabled={csvBusy}
+            style={{ ...selectStyle, fontWeight: 600, color: T.primary, borderColor: T.primary, opacity: csvBusy ? 0.6 : 1 }}
+            title="Export every run in the selected date range (all outcome columns) as CSV"
+          >
+            {csvBusy ? "Exporting…" : "⬇ Export CSV (all runs)"}
+          </button>
+        </div>
+      </div>
+
+      {/* Config bar */}
+      {config && columns.length > 0 && (
+        <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 10, padding: "10px 12px", background: T.cardAlt, borderRadius: 8, marginBottom: 14, fontSize: 12 }}>
+          <label style={{ display: "flex", alignItems: "center", gap: 6, color: T.textSecondary }}>
+            Intention column
+            <select style={selectStyle} value={config.intentField ?? ""} onChange={(e) => updateConfig({ intentField: e.target.value })}>
+              {!config.intentField && <option value="">— select —</option>}
+              {columns.map((c) => <option key={c} value={c}>{c}</option>)}
+            </select>
+          </label>
+          <label style={{ display: "flex", alignItems: "center", gap: 6, color: T.textSecondary }}>
+            Success from
+            <select style={selectStyle} value={successSourceValue} onChange={(e) => onSuccessSourceChange(e.target.value)}>
+              <option value={OBJECTIVE_SENTINEL}>Objective (Layer 4)</option>
+              {columns.map((c) => <option key={c} value={c}>{c}</option>)}
+            </select>
+          </label>
+          {config.successMode !== "objective" && config.successField && (
+            <>
+              <div style={{ display: "flex", gap: 4 }}>
+                <button style={segBtn(config.successMode === "present")} onClick={() => updateConfig({ successMode: "present" })}>Has value</button>
+                <button style={segBtn(config.successMode === "values")} onClick={() => updateConfig({ successMode: "values" })}>Specific values</button>
+              </div>
+              {config.successMode === "values" && (
+                <div style={{ display: "flex", flexWrap: "wrap", gap: 5, alignItems: "center" }}>
+                  <span style={{ color: T.textMuted }}>= success:</span>
+                  {(columnValues[config.successField] ?? []).map((v) => {
+                    const on = config.successValues.includes(v);
+                    return (
+                      <span key={v} onClick={() => toggleSuccessValue(v)}
+                        style={{ cursor: "pointer", fontSize: 11, padding: "2px 8px", borderRadius: 12, border: `1px solid ${on ? FUNNEL_GREEN : T.border}`, background: on ? FUNNEL_GREEN + "1e" : T.card, color: on ? T.text : T.textSecondary, fontWeight: on ? 600 : 400 }}>
+                        {v}
+                      </span>
+                    );
+                  })}
+                  {(columnValues[config.successField] ?? []).length === 0 && (
+                    <span style={{ color: T.textMuted, fontStyle: "italic" }}>no observed values — use “Has value”</span>
+                  )}
+                </div>
+              )}
+            </>
+          )}
+          <div style={{ flex: 1 }} />
+          {dirty && (
+            <button onClick={persist} disabled={saving}
+              style={{ ...selectStyle, fontWeight: 600, color: "#fff", background: T.primary, borderColor: T.primary, opacity: saving ? 0.6 : 1 }}>
+              {saving ? "Saving…" : "Save as default"}
+            </button>
+          )}
+          {saveMsg && <span style={{ color: FUNNEL_GREEN, fontWeight: 600 }}>{saveMsg}</span>}
+        </div>
+      )}
+
+      {csvErr && <div style={{ color: FUNNEL_RED, fontSize: 12, marginBottom: 8 }}>CSV export failed: {csvErr}</div>}
+      {error && <div style={{ color: FUNNEL_RED, fontSize: 12, marginBottom: 8 }}>{error}</div>}
+
+      {config && !config.intentField && (
+        <div style={{ color: T.textMuted, fontSize: 12 }}>
+          No intention column detected. Pick one above — the agent must extract a field (e.g. <span style={{ fontFamily: "monospace" }}>primary_intent</span>) into the outcome result.
+        </div>
+      )}
+
+      {loading && <div style={{ color: T.textMuted, fontSize: 12, padding: "12px 0" }}>Loading…</div>}
+
+      {!loading && view === "outcome" && config?.intentField && outcomeRows && (
+        <OutcomeFunnelView rows={outcomeRows} mode={config.successMode} onSelectIntent={canFilter ? onSelectIntent : undefined} />
+      )}
+      {!loading && view === "orchestration" && config?.intentField && nodeData && (
+        <NodeFunnelView data={nodeData} onSelectIntent={canFilter ? onSelectIntent : undefined} />
+      )}
+    </div>
+  );
+}
+
+// Stacked bar per intention: Succeeded / Failed / Couldn't continue.
+function OutcomeFunnelView({ rows, mode, onSelectIntent }: {
+  rows: OutcomeFunnelRow[];
+  mode: FunnelConfig["successMode"];
+  onSelectIntent?: (intent: string) => void;
+}) {
+  if (rows.length === 0) return <div style={{ color: T.textMuted, fontSize: 12 }}>No calls with a detected intention in this range.</div>;
+  const hasFailed = mode !== "present"; // "present" mode has no explicit failed bucket
+  const legend = [
+    { label: "Succeeded", color: FUNNEL_GREEN },
+    ...(hasFailed ? [{ label: "Failed", color: FUNNEL_RED }] : []),
+    { label: "Couldn't continue", color: FUNNEL_GRAY },
+  ];
+  return (
+    <div>
+      <div style={{ display: "flex", gap: 14, marginBottom: 12 }}>
+        {legend.map((l) => (
+          <span key={l.label} style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 11, color: T.textSecondary }}>
+            <span style={{ width: 10, height: 10, borderRadius: 2, background: l.color }} /> {l.label}
+          </span>
+        ))}
+      </div>
+      <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+        {rows.map((r) => {
+          const total = r.started || 1;
+          const seg = (n: number) => `${(n / total) * 100}%`;
+          return (
+            <div key={r.intention} onClick={onSelectIntent ? () => onSelectIntent(r.intention) : undefined}
+              style={{ cursor: onSelectIntent ? "pointer" : "default" }}
+              title={onSelectIntent ? `Click to filter the call table to "${r.intention}"` : undefined}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 4 }}>
+                <span style={{ fontSize: 13, fontWeight: 600, color: T.text, textTransform: "capitalize" }}>{r.intention.replace(/_/g, " ")}</span>
+                <span style={{ fontSize: 12, color: T.textSecondary }}>
+                  <span style={{ color: FUNNEL_GREEN, fontWeight: 700 }}>{r.successRate ?? 0}%</span> success · {r.started} started
+                </span>
+              </div>
+              <div style={{ display: "flex", height: 22, borderRadius: 5, overflow: "hidden", background: T.cardAlt }}>
+                {r.succeeded > 0 && <div style={{ width: seg(r.succeeded), background: FUNNEL_GREEN }} title={`Succeeded: ${r.succeeded}`} />}
+                {hasFailed && r.failed > 0 && <div style={{ width: seg(r.failed), background: FUNNEL_RED }} title={`Failed: ${r.failed}`} />}
+                {r.incomplete > 0 && <div style={{ width: seg(r.incomplete), background: FUNNEL_GRAY }} title={`Couldn't continue: ${r.incomplete}`} />}
+              </div>
+              <div style={{ display: "flex", gap: 12, marginTop: 3, fontSize: 11, color: T.textMuted }}>
+                <span>✓ {r.succeeded} succeeded</span>
+                {hasFailed && <span>✗ {r.failed} failed</span>}
+                <span>– {r.incomplete} couldn't continue</span>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+// Per-intention node progression (workflow steps) with drop-off.
+function NodeFunnelView({ data, onSelectIntent }: {
+  data: { hasFlowGraph: boolean; capped: boolean; runWindow: number; intentions: NodeFunnelIntention[]; note?: string };
+  onSelectIntent?: (intent: string) => void;
+}) {
+  if (data.note) return <div style={{ color: T.textMuted, fontSize: 12 }}>{data.note}</div>;
+  if (data.intentions.length === 0) return <div style={{ color: T.textMuted, fontSize: 12 }}>No workflow-path data for runs in this range (calls need a layered evaluation).</div>;
+  return (
+    <div>
+      {data.capped && (
+        <div style={{ fontSize: 11, color: T.textMuted, marginBottom: 10 }}>
+          Showing the most recent {data.runWindow} evaluated calls in range (workflow analysis is capped for performance).
+        </div>
+      )}
+      <div style={{ fontSize: 11, color: T.textMuted, marginBottom: 10, fontStyle: "italic" }}>
+        Stages and order reflect the observed call paths; drop-off (↓) is callers who didn't reach the next step.
+        {!data.hasFlowGraph && " Completion = reached the final observed step."}
+      </div>
+      <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
+        {data.intentions.map((it) => {
+          const compPct = it.total > 0 ? Math.round((it.completed / it.total) * 100) : 0;
+          return (
+            <div key={it.intention}>
+              <div onClick={onSelectIntent ? () => onSelectIntent(it.intention) : undefined}
+                style={{ cursor: onSelectIntent ? "pointer" : "default", display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 6 }}
+                title={onSelectIntent ? `Click to filter the call table to "${it.intention}"` : undefined}>
+                <span style={{ fontSize: 13, fontWeight: 700, color: T.text, textTransform: "capitalize" }}>{it.intention.replace(/_/g, " ")}</span>
+                <span style={{ fontSize: 12, color: T.textSecondary }}>
+                  {it.total} calls · <span style={{ color: FUNNEL_GREEN, fontWeight: 700 }}>{compPct}%</span> completed
+                </span>
+              </div>
+              <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
+                {it.stages.map((s, i) => {
+                  const w = it.total > 0 ? (s.reached / it.total) * 100 : 0;
+                  return (
+                    <div key={s.nodeLabel + i} style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                      <span style={{ width: 150, fontSize: 11, color: T.textSecondary, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flexShrink: 0, textAlign: "right" }} title={s.nodeLabel}>
+                        {s.nodeLabel}
+                      </span>
+                      <div style={{ flex: 1, height: 18, background: T.cardAlt, borderRadius: 4, overflow: "hidden", position: "relative" }}>
+                        <div style={{ width: `${w}%`, height: "100%", background: T.primary, opacity: 0.85 }} />
+                      </div>
+                      <span style={{ width: 48, fontSize: 11, color: T.text, fontWeight: 600, flexShrink: 0 }}>{s.reached}</span>
+                      <span style={{ width: 110, fontSize: 10, color: T.textMuted, flexShrink: 0 }}>
+                        {s.droppedAfter > 0 && i < it.stages.length - 1 && <span style={{ color: FUNNEL_RED }}>↓ {s.droppedAfter} ({s.dropPct}%)</span>}
+                        {s.stuckCount > 0 && <span title="stuck" style={{ marginLeft: 5, color: "#f59e0b" }}>⏳{s.stuckCount}</span>}
+                        {s.hallucinationCount > 0 && <span title="hallucination" style={{ marginLeft: 5, color: FUNNEL_RED }}>⚠{s.hallucinationCount}</span>}
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 export default function ProjectDashboard({ project, onDashLoaded, onLoadMore, hasMoreRuns, loadingMore }: Props) {
   const [dashData, setDashData] = useState<DashData | null>(null);
   const [dashError, setDashError] = useState<string | null>(null);
@@ -271,6 +612,7 @@ export default function ProjectDashboard({ project, onDashLoaded, onLoadMore, ha
   // Runs fetched on-demand when a filter's runIds aren't all in the loaded project.runs
   const [filterExtraRuns, setFilterExtraRuns] = useState<any[]>([]);
   const [filterExtraLoading, setFilterExtraLoading] = useState(false);
+  const [fullCsvBusy, setFullCsvBusy] = useState(false);
   const tableRef = useRef<HTMLDivElement>(null);
 
   // ── Bulk selection ────────────────────────────────────────────────
@@ -827,9 +1169,22 @@ export default function ProjectDashboard({ project, onDashLoaded, onLoadMore, ha
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = `${(project.name || "project").replace(/[^a-zA-Z0-9]/g, "_")}_outcomes.csv`;
+    a.download = `${(project.name || "project").replace(/[^a-zA-Z0-9]/g, "_")}_outcomes_visible.csv`;
     a.click();
     URL.revokeObjectURL(url);
+  }
+
+  // Full server-side export — every COMPLETE run in the selected range (not just loaded rows).
+  async function exportFullCsv() {
+    setFullCsvBusy(true);
+    try {
+      await exportOutcomesCsv(project.id, project.name || "project", dateFilter || undefined);
+    } catch (e) {
+      console.error("[Dashboard] full CSV export failed:", e);
+      alert(`CSV export failed: ${(e as Error).message}`);
+    } finally {
+      setFullCsvBusy(false);
+    }
   }
 
   function getOutcomeColor(outcome: string): string {
@@ -1314,6 +1669,15 @@ export default function ProjectDashboard({ project, onDashLoaded, onLoadMore, ha
           })()}
         </div>
       </div>
+
+      {/* Intention Funnel — success per intention (outcome cross-tab + workflow drop-off) */}
+      <IntentionFunnel
+        projectId={project.id}
+        projectName={project.name || "project"}
+        dateFilter={dateFilter}
+        onSelectIntent={selectIntent}
+        tableIntentField={intentFieldKey}
+      />
 
       {/* Criteria Performance */}
       {dashData && dashData.criteriaPerformance && dashData.criteriaPerformance.length > 0 && (
@@ -2272,6 +2636,24 @@ export default function ProjectDashboard({ project, onDashLoaded, onLoadMore, ha
             />
             <button
               onClick={exportCsv}
+              title="Export only the rows currently visible/loaded in this table"
+              style={{
+                padding: "5px 12px",
+                background: T.input,
+                color: T.text,
+                border: `1px solid ${T.borderDark}`,
+                borderRadius: 5,
+                cursor: "pointer",
+                fontSize: 12,
+                fontWeight: 600,
+              }}
+            >
+              Export visible
+            </button>
+            <button
+              onClick={exportFullCsv}
+              disabled={fullCsvBusy}
+              title="Export every COMPLETE run in the selected date range, with all outcome columns"
               style={{
                 padding: "5px 12px",
                 background: T.primary,
@@ -2281,9 +2663,10 @@ export default function ProjectDashboard({ project, onDashLoaded, onLoadMore, ha
                 cursor: "pointer",
                 fontSize: 12,
                 fontWeight: 600,
+                opacity: fullCsvBusy ? 0.6 : 1,
               }}
             >
-              Export CSV
+              {fullCsvBusy ? "Exporting…" : "Export all (range)"}
             </button>
           </div>
         </div>
@@ -2474,18 +2857,23 @@ export default function ProjectDashboard({ project, onDashLoaded, onLoadMore, ha
                   {showObjective && (
                     <td style={{ padding: "6px 10px", whiteSpace: "nowrap" }}>
                       {(() => {
-                        // Primary: layered eval objectiveAchieved (from dashData aggregation)
+                        // Canonical: per-run objectiveStatus from the layered eval (computed
+                        // server-side, correct for every loaded run regardless of any sample cap).
+                        const st = (run as any).objectiveStatus;
+                        if (st === "met")     return <span style={{ fontSize: 11, fontWeight: 600, color: "#17B26A", background: "#17B26A18", borderRadius: 4, padding: "2px 7px" }}>✓ Met</span>;
+                        if (st === "not_met") return <span style={{ fontSize: 11, fontWeight: 600, color: "#ef4444", background: "#ef444418", borderRadius: 4, padding: "2px 7px" }}>✗ Not met</span>;
+                        if (st === "na" || st === null) return <span style={{ fontSize: 11, color: T.textMuted }}>—</span>;
+                        // Legacy fallback: runs from endpoints that don't yet carry objectiveStatus
+                        // (st === undefined). Use the dashData sets, then the agent self-report.
                         if (achievedSet.has(run.id)) return <span style={{ fontSize: 11, fontWeight: 600, color: "#17B26A", background: "#17B26A18", borderRadius: 4, padding: "2px 7px" }}>✓ Met</span>;
                         if (notAchievedSet.has(run.id)) return <span style={{ fontSize: 11, fontWeight: 600, color: "#ef4444", background: "#ef444418", borderRadius: 4, padding: "2px 7px" }}>✗ Not met</span>;
-                        // Indeterminate: Layer 4 explicitly returned null (e.g. caller hang-up)
                         if (indeterminateSet.has(run.id)) return <span style={{ fontSize: 11, color: T.textMuted }}>—</span>;
-                        // Fallback: Hamsa's objective_met field — only for evaluated runs that
-                        // arrived after dashData was loaded. Skip abandoned/unevaluated calls
-                        // (overallScore === null) to avoid showing "Not met" for zero-turn calls.
                         if (run.overallScore != null) {
-                          const om = (run.outcomeResult?.objective_met || "").toLowerCase();
-                          if (om === "yes") return <span style={{ fontSize: 11, fontWeight: 600, color: "#17B26A", background: "#17B26A18", borderRadius: 4, padding: "2px 7px", opacity: 0.7 }}>✓ Met</span>;
-                          if (om === "no")  return <span style={{ fontSize: 11, fontWeight: 600, color: "#ef4444", background: "#ef444418", borderRadius: 4, padding: "2px 7px", opacity: 0.7 }}>✗ Not met</span>;
+                          // String() guard: objective_met may be a boolean (true/false), which would
+                          // otherwise throw on .toLowerCase(). Faded badge = agent self-report.
+                          const om = String(run.outcomeResult?.objective_met ?? "").toLowerCase();
+                          if (om === "yes") return <span title="Agent self-reported (not evaluated)" style={{ fontSize: 11, fontWeight: 600, color: "#17B26A", background: "#17B26A18", borderRadius: 4, padding: "2px 7px", opacity: 0.7 }}>✓ Met</span>;
+                          if (om === "no")  return <span title="Agent self-reported (not evaluated)" style={{ fontSize: 11, fontWeight: 600, color: "#ef4444", background: "#ef444418", borderRadius: 4, padding: "2px 7px", opacity: 0.7 }}>✗ Not met</span>;
                         }
                         return <span style={{ fontSize: 11, color: T.textMuted }}>—</span>;
                       })()}

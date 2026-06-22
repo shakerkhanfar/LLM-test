@@ -87,6 +87,24 @@ export function startWorker() {
           return;
         }
 
+        // Project-level AI evaluation switch. When off, keep the ingested run + its data
+        // but skip evaluation (mark COMPLETE). Mirrors the gate in runEvaluationCheck so the
+        // toggle holds even for jobs enqueued via the fetch-call-log → check-and-evaluate path.
+        const proj = await prisma.project.findUnique({
+          where: { id: run.projectId },
+          select: { evaluationEnabled: true },
+        });
+        if (proj?.evaluationEnabled === false) {
+          // Mark ingested runs COMPLETE (no eval), but never disturb a run that's done,
+          // awaiting human review, actively evaluating, or a live call in progress.
+          const PROTECTED = ["COMPLETE", "PENDING_REVIEW", "EVALUATING", "RUNNING"];
+          if (!PROTECTED.includes(run.status)) {
+            await prisma.run.update({ where: { id: runId }, data: { status: "COMPLETE" } });
+          }
+          console.log(`[Worker] AI evaluation disabled for run ${runId}'s project — stored without evaluation`);
+          return;
+        }
+
         // Check if we have both data sources
         const hasCallLog = run.callLog != null;
         const hasTranscript = run.transcript != null;

@@ -540,6 +540,190 @@ router.post("/hamsa-projects", async (req: AuthRequest, res) => {
   }
 });
 
+/**
+ * Compact per-run objective verdict, derived from the layered eval — the single
+ * source of truth used everywhere we display "Met / Not met / N/A".
+ *   "met"     — Layer 4 set objectiveAchieved true
+ *   "not_met" — Layer 4 set objectiveAchieved false (incl. ACTION_HALLUCINATION override)
+ *   "na"      — call abandoned/notApplicable, eval errored, or no objective verdict
+ *   null      — no layered eval at all (not yet evaluated)
+ * Deliberately does NOT fall back to the agent's self-reported outcomeResult.objective_met,
+ * which can contradict the eval (e.g. WEBHOOK false positives) and produced the
+ * "zero-turn call shows Not met" bug.
+ */
+function computeRunObjectiveStatus(
+  evalResults: Array<{ detail?: string | null; criterion?: { type?: string | null } | null }> | null | undefined,
+): "met" | "not_met" | "na" | null {
+  const layered = (evalResults ?? []).find((er) => er.criterion?.type === "LAYERED_EVALUATION");
+  if (!layered || !layered.detail) return null;
+  let detail: any;
+  try {
+    detail = typeof layered.detail === "string" ? JSON.parse(layered.detail) : layered.detail;
+  } catch {
+    return null;
+  }
+  if (!detail || typeof detail !== "object") return null;
+  if (detail.notApplicable === true || detail.error === true) return "na";
+  const oa = detail.objectiveAchieved;
+  if (oa === true || oa === 1) return "met";
+  if (oa === false || oa === 0) return "not_met";
+  return "na"; // null or undefined verdict → indeterminate
+}
+
+// ─── Intention funnel helpers ─────────────────────────────────────────
+// Candidate keys (priority order) the agent uses to record the caller's intention.
+// Mirrors the frontend detection in ProjectDashboard.tsx so server and client agree.
+const INTENT_CANDIDATES = ["primary_intent", "intention", "intent", "call_intent", "caller_intent"];
+// Values that mean "could not determine" — routed to the funnel's "couldn't continue"
+// bucket, never counted as success or failure (mirrors the dashboard's N/A handling).
+const INDETERMINATE_MARKERS = ["n/a", "na", "none", "null", "unknown", "undetermined", ""];
+
+type FunnelSuccessMode = "values" | "present" | "objective";
+interface FunnelConfig {
+  intentField: string | null;   // outcomeResult key that holds the caller's intention
+  successField: string | null;  // outcomeResult key that decides success (null when mode = "objective")
+  successMode: FunnelSuccessMode;
+  successValues: string[];       // values (lower-cased on compare) counted as success when mode = "values"
+}
+
+// Pick the intention field by scanning outcomeResult objects: highest-priority candidate
+// present in ANY run, else the first key whose name contains "intent", else null.
+function detectIntentField(samples: Array<Record<string, any>>): string | null {
+  const present = new Set<string>();
+  const fallbacks = new Set<string>();
+  for (const or of samples) {
+    if (!or || typeof or !== "object") continue;
+    for (const c of INTENT_CANDIDATES) {
+      if (or[c] != null && String(or[c]).trim() !== "") present.add(c);
+    }
+    for (const k of Object.keys(or)) {
+      if (k.toLowerCase().includes("intent") && !INTENT_CANDIDATES.includes(k)) fallbacks.add(k);
+    }
+  }
+  for (const c of INTENT_CANDIDATES) if (present.has(c)) return c;
+  return fallbacks.size > 0 ? [...fallbacks][0] : null;
+}
+
+// Coerce a stored/POSTed config into a valid FunnelConfig, or null if unusable.
+function normalizeFunnelConfig(raw: any): FunnelConfig | null {
+  if (!raw || typeof raw !== "object") return null;
+  const mode: FunnelSuccessMode = ["values", "present", "objective"].includes(raw.successMode)
+    ? raw.successMode : "objective";
+  return {
+    intentField: typeof raw.intentField === "string" && raw.intentField.trim() ? raw.intentField : null,
+    successField: typeof raw.successField === "string" && raw.successField.trim() ? raw.successField : null,
+    successMode: mode,
+    successValues: Array.isArray(raw.successValues)
+      ? raw.successValues.filter((v: any) => typeof v === "string" && v.trim() !== "")
+      : [],
+  };
+}
+
+// Default config when a project has none saved: intention auto-detected; success from
+// outcomeResult.objective_met if present ("yes"/"true"), else the canonical Layer 4 verdict.
+function defaultFunnelConfig(samples: Array<Record<string, any>>): FunnelConfig {
+  const intentField = detectIntentField(samples);
+  const hasObjectiveMet = samples.some((s) => s && Object.prototype.hasOwnProperty.call(s, "objective_met"));
+  if (hasObjectiveMet) {
+    return { intentField, successField: "objective_met", successMode: "values", successValues: ["yes", "true"] };
+  }
+  return { intentField, successField: null, successMode: "objective", successValues: [] };
+}
+
+// Recent COMPLETE runs' outcomeResult objects — used for field detection & value pickers.
+async function loadOutcomeSamples(projectId: string, limit = 800): Promise<Array<Record<string, any>>> {
+  const runs = await prisma.run.findMany({
+    where: { projectId, status: "COMPLETE" },
+    orderBy: { callDate: "desc" },
+    take: limit,
+    select: { outcomeResult: true },
+  });
+  const out: Array<Record<string, any>> = [];
+  for (const r of runs) {
+    const or = r.outcomeResult as any;
+    if (or && typeof or === "object" && !Array.isArray(or)) out.push(or);
+  }
+  return out;
+}
+
+// Distinct non-empty scalar values per outcomeResult column (capped) for the success-value picker.
+function columnValueMap(samples: Array<Record<string, any>>, cap = 40): Record<string, string[]> {
+  const sets: Record<string, Set<string>> = {};
+  for (const s of samples) {
+    for (const [k, v] of Object.entries(s)) {
+      if (v == null || typeof v === "object") continue; // skip null & nested objects/arrays
+      const str = String(v).trim();
+      if (!str) continue;
+      (sets[k] ??= new Set()).add(str);
+    }
+  }
+  const out: Record<string, string[]> = {};
+  for (const [k, set] of Object.entries(sets)) out[k] = [...set].slice(0, cap);
+  return out;
+}
+
+// Parse ?from/?to into Date bounds + a reusable SQL date clause (alias "r" for Run).
+function funnelDateRange(req: AuthRequest): { dateFrom: Date | null; dateTo: Date | null; dateClause: Prisma.Sql } {
+  const re = /^\d{4}-\d{2}-\d{2}(T[\d:.Z+-]*)?$/;
+  const parse = (raw: string | undefined, endOfDay = false): Date | null => {
+    if (!raw || !re.test(raw)) return null;
+    const d = new Date(raw.length <= 10 ? raw + "T00:00:00Z" : raw);
+    if (!Number.isFinite(d.getTime())) return null;
+    if (endOfDay && raw.length <= 10) d.setUTCHours(23, 59, 59, 999);
+    return d;
+  };
+  const dateFrom = parse(req.query.from as string | undefined);
+  const dateTo = parse(req.query.to as string | undefined, true);
+  const dateClause = dateFrom && dateTo
+    ? Prisma.sql`AND COALESCE(r."callDate", r."createdAt") >= ${dateFrom} AND COALESCE(r."callDate", r."createdAt") <= ${dateTo}`
+    : dateFrom ? Prisma.sql`AND COALESCE(r."callDate", r."createdAt") >= ${dateFrom}`
+    : dateTo ? Prisma.sql`AND COALESCE(r."callDate", r."createdAt") <= ${dateTo}`
+    : Prisma.empty;
+  return { dateFrom, dateTo, dateClause };
+}
+
+// Optional per-request config override (?intentField&successField&successMode&successValues=a,b)
+// so the UI can live-preview a column choice before persisting it. Null when no override given.
+function configFromQuery(req: AuthRequest): FunnelConfig | null {
+  const intentField = req.query.intentField as string | undefined;
+  if (!intentField) return null;
+  const successValues = typeof req.query.successValues === "string" && req.query.successValues
+    ? (req.query.successValues as string).split(",").map((s) => s.trim()).filter(Boolean)
+    : [];
+  return normalizeFunnelConfig({
+    intentField,
+    successField: (req.query.successField as string | undefined) ?? null,
+    successMode: (req.query.successMode as string | undefined) ?? "objective",
+    successValues,
+  });
+}
+
+// BFS the flowDefinition graph from the start node → canonical ordered stages (by label).
+function canonicalStageOrder(flowDef: any): Array<{ label: string; type: string }> {
+  if (!flowDef?.nodes || !flowDef.startNodeId) return [];
+  const nodes = flowDef.nodes as Record<string, { label?: string; type?: string }>;
+  const adjacency = (flowDef.adjacency ?? {}) as Record<string, string[]>;
+  const order: Array<{ label: string; type: string }> = [];
+  const seenLabel = new Set<string>();
+  const visited = new Set<string>();
+  const queue: string[] = [flowDef.startNodeId];
+  while (queue.length) {
+    const id = queue.shift()!;
+    if (visited.has(id)) continue;
+    visited.add(id);
+    const n = nodes[id];
+    const label = n?.label || id;
+    if (!seenLabel.has(label)) { seenLabel.add(label); order.push({ label, type: n?.type || "unknown" }); }
+    for (const t of adjacency[id] ?? []) if (!visited.has(t)) queue.push(t);
+  }
+  // Append any unreachable nodes so the funnel can still surface them.
+  for (const n of Object.values(nodes)) {
+    const label = (n as any)?.label;
+    if (label && !seenLabel.has(label)) { seenLabel.add(label); order.push({ label, type: (n as any).type || "unknown" }); }
+  }
+  return order;
+}
+
 // Get single project with criteria and runs (most recent 100 runs, cursor-paginatable)
 // Query params:
 //   ?before=<runId>  — cursor: return 100 runs older than this run (exclusive)
@@ -560,9 +744,14 @@ router.get("/:id", async (req: AuthRequest, res) => {
           // Cursor pagination: skip the cursor run itself, then take the next PAGE_SIZE
           ...(beforeId ? { cursor: { id: beforeId }, skip: 1 } : {}),
           include: {
-            // Only the fields the project page needs — no criterion JOIN, no detail/metadata
+            // {id, criterionId, passed, score} drive the table; detail + criterion.type
+            // are pulled ONLY to compute a compact per-run objectiveStatus below, then
+            // stripped from the response so the payload stays small.
             evalResults: {
-              select: { id: true, criterionId: true, passed: true, score: true },
+              select: {
+                id: true, criterionId: true, passed: true, score: true,
+                detail: true, criterion: { select: { type: true } },
+              },
             },
           },
         },
@@ -599,12 +788,21 @@ router.get("/:id", async (req: AuthRequest, res) => {
         callType: wd.callType,                         // history runs: alternate field
         data: wd.data ? { channelType: wd.data.channelType } : undefined, // webhook runs
       } : undefined;
+      // Canonical per-run objective verdict, computed once from the layered eval
+      // (single source of truth). The table renders this directly so it is correct
+      // for every loaded run regardless of any aggregation sample cap.
+      const objectiveStatus = computeRunObjectiveStatus(run.evalResults);
+      // Strip detail + criterion back out so the list payload stays small.
+      const lightEvalResults = (run.evalResults ?? []).map((er: any) => ({
+        id: er.id, criterionId: er.criterionId, passed: er.passed, score: er.score,
+      }));
       return {
         ...run,
+        evalResults: lightEvalResults,
+        objectiveStatus,                            // "met" | "not_met" | "na" | null
         webhookData: lightWebhookData,
         callLog: run.callLog ? true : null,        // boolean flag — frontend checks existence
         transcript: run.transcript ? true : null,  // boolean flag — frontend checks existence
-        // evalResults: already {id, criterionId, passed, score} — no change needed
       };
     });
     const hasMoreRuns = lightRuns.length === PAGE_SIZE;
@@ -890,7 +1088,12 @@ router.get("/:id/dashboard", async (req: AuthRequest, res) => {
         indeterminateRunIds.push(run.id);
         continue;
       }
-      if (detail?.error === true) continue;
+      if (detail?.error === true) {
+        // Errored eval has no valid metrics — but track as indeterminate so the run
+        // shows "—" rather than silently vanishing from the objective view.
+        indeterminateRunIds.push(run.id);
+        continue;
+      }
 
       // Compliance score (from split eval: quality vs compliance)
       if (detail.complianceScore != null && typeof detail.complianceScore === "number") {
@@ -961,9 +1164,11 @@ router.get("/:id/dashboard", async (req: AuthRequest, res) => {
         } else {
           notAchievedRunIds.push(run.id);
         }
-      } else if (detail.objectiveAchieved === null) {
-        // Layer 4 explicitly returned null (indeterminate — e.g. caller hang-up).
-        // Track these so the frontend can show "—" instead of falling back to Hamsa.
+      } else {
+        // No objective verdict — explicit null (indeterminate, e.g. caller hang-up)
+        // OR the field was omitted entirely (undefined). Both must be tracked as
+        // indeterminate so the frontend shows "—" instead of falling back to
+        // outcomeResult.objective_met, which would surface a false "Not met".
         indeterminateRunIds.push(run.id);
       }
 
@@ -1081,9 +1286,11 @@ router.get("/:id/dashboard", async (req: AuthRequest, res) => {
       outcomeObjectiveTotal: outcomeObjTotal,
       outcomeObjectiveCount: outcomeObjCount,  // raw count — avoids lossy rate×total reconstruction on frontend
       outcomeObjectiveNa: outcomeObjNa,
-      achievedRunIds,
-      notAchievedRunIds,
-      indeterminateRunIds,
+      // Dedup defensively — a run should only land in one bucket per request, but
+      // guarantee uniqueness so the frontend can rely on disjoint sets.
+      achievedRunIds: [...new Set(achievedRunIds)],
+      notAchievedRunIds: [...new Set(notAchievedRunIds)],
+      indeterminateRunIds: [...new Set(indeterminateRunIds)],
       nodePerformance,
       topIssues,
       outcomeBreakdown,
@@ -1157,6 +1364,380 @@ router.post("/:id/report/intelligence", llmRateLimit, async (req: AuthRequest, r
     }
     const statusCode = msg.startsWith("At least 3") ? 400 : 500;
     res.status(statusCode).json({ error: msg });
+  }
+});
+
+// ─── Intention funnel ────────────────────────────────────────────────
+// GET /:id/funnel-config — saved intention/success column config (or auto-detected default),
+// plus the available outcomeResult columns and their observed values for the UI pickers.
+router.get("/:id/funnel-config", async (req: AuthRequest, res) => {
+  try {
+    const project = await prisma.project.findUnique({
+      where: { id: req.params.id },
+      select: { userId: true, intentionConfig: true },
+    });
+    if (!project) return res.status(404).json({ error: "Project not found" });
+    if (!await canAccess(project.userId, req)) return res.status(403).json({ error: "Access denied" });
+
+    const samples = await loadOutcomeSamples(req.params.id);
+    const columnValues = columnValueMap(samples);
+    const columns = Object.keys(columnValues).sort();
+    const saved = normalizeFunnelConfig(project.intentionConfig);
+    const config = saved ?? defaultFunnelConfig(samples);
+    res.json({ config, columns, columnValues, saved: !!saved });
+  } catch (err) {
+    res.status(500).json({ error: (err as Error).message });
+  }
+});
+
+// PUT /:id/funnel-config — persist the chosen intention/success columns on the project.
+router.put("/:id/funnel-config", async (req: AuthRequest, res) => {
+  try {
+    const project = await prisma.project.findUnique({ where: { id: req.params.id }, select: { userId: true } });
+    if (!project) return res.status(404).json({ error: "Project not found" });
+    if (!await canAccess(project.userId, req)) return res.status(403).json({ error: "Access denied" });
+
+    const config = normalizeFunnelConfig(req.body?.config ?? req.body);
+    if (!config) return res.status(400).json({ error: "Invalid config" });
+    if (!config.intentField) return res.status(400).json({ error: "intentField is required" });
+    if (config.successMode !== "objective" && !config.successField) {
+      return res.status(400).json({ error: "successField is required unless successMode is 'objective'" });
+    }
+    if (config.successMode === "values" && config.successValues.length === 0) {
+      return res.status(400).json({ error: "successValues must list at least one value when successMode is 'values'" });
+    }
+    const updated = await prisma.project.update({
+      where: { id: req.params.id },
+      data: { intentionConfig: config as unknown as Prisma.InputJsonValue },
+      select: { intentionConfig: true },
+    });
+    res.json({ config: updated.intentionConfig });
+  } catch (err) {
+    res.status(500).json({ error: (err as Error).message });
+  }
+});
+
+// GET /:id/outcome-funnel?from&to — Approach B: cross-tab of intention column × success
+// column, computed in SQL over ALL complete runs in range (not capped). Each intention is
+// split into started / succeeded / failed / incomplete ("couldn't continue").
+router.get("/:id/outcome-funnel", async (req: AuthRequest, res) => {
+  try {
+    const project = await prisma.project.findUnique({
+      where: { id: req.params.id },
+      select: { userId: true, intentionConfig: true },
+    });
+    if (!project) return res.status(404).json({ error: "Project not found" });
+    if (!await canAccess(project.userId, req)) return res.status(403).json({ error: "Access denied" });
+
+    let config = configFromQuery(req) ?? normalizeFunnelConfig(project.intentionConfig);
+    if (!config) config = defaultFunnelConfig(await loadOutcomeSamples(req.params.id));
+    if (!config.intentField) return res.json({ config, rows: [] });
+
+    const { dateClause } = funnelDateRange(req);
+    const intentExpr = Prisma.sql`LOWER(TRIM(r."outcomeResult" ->> ${config.intentField}))`;
+    const intentNotEmpty = Prisma.sql`r."outcomeResult" ->> ${config.intentField} IS NOT NULL AND TRIM(r."outcomeResult" ->> ${config.intentField}) <> ''`;
+
+    let rows: Array<{ intention: string | null; started: bigint; succeeded: bigint; failed?: bigint; incomplete?: bigint }>;
+    if (config.successMode === "objective") {
+      // Success = canonical Layer 4 objective verdict (LATERAL join, one row per run).
+      rows = await prisma.$queryRaw`
+        SELECT ${intentExpr} AS intention,
+          COUNT(*) AS started,
+          COUNT(*) FILTER (WHERE oa.verdict IN ('true','1','yes'))  AS succeeded,
+          COUNT(*) FILTER (WHERE oa.verdict IN ('false','0','no'))  AS failed
+        FROM "Run" r
+        LEFT JOIN LATERAL (
+          SELECT lower(er.detail::jsonb ->> 'objectiveAchieved') AS verdict
+          FROM "EvalResult" er
+          JOIN "Criterion" c ON c.id = er."criterionId" AND c.type = 'LAYERED_EVALUATION'
+          WHERE er."runId" = r.id
+            AND er.detail IS NOT NULL
+            AND er.detail ~ '^\\s*\\{'
+            AND jsonb_typeof(er.detail::jsonb) = 'object'
+          LIMIT 1
+        ) oa ON true
+        WHERE r."projectId" = ${req.params.id} AND r.status = 'COMPLETE'
+          AND ${intentNotEmpty}
+          ${dateClause}
+        GROUP BY 1
+        ORDER BY started DESC
+      `;
+    } else {
+      const successRaw = Prisma.sql`r."outcomeResult" ->> ${config.successField}`;
+      const successNorm = Prisma.sql`LOWER(TRIM(${successRaw}))`;
+      const incompleteBase = Prisma.sql`(${successRaw} IS NULL OR TRIM(${successRaw}) = '' OR ${successNorm} = ANY(${INDETERMINATE_MARKERS}))`;
+      const successValuesLower = config.successValues.map((v) => v.trim().toLowerCase());
+      const successCond = config.successMode === "values"
+        ? Prisma.sql`${successNorm} = ANY(${successValuesLower})`
+        : Prisma.sql`NOT ${incompleteBase}`;
+      // Keep buckets disjoint: a value counted as success is never also counted incomplete.
+      const incompleteCond = Prisma.sql`${incompleteBase} AND NOT (${successCond})`;
+      rows = await prisma.$queryRaw`
+        SELECT ${intentExpr} AS intention,
+          COUNT(*) AS started,
+          COUNT(*) FILTER (WHERE ${successCond})    AS succeeded,
+          COUNT(*) FILTER (WHERE ${incompleteCond}) AS incomplete
+        FROM "Run" r
+        WHERE r."projectId" = ${req.params.id} AND r.status = 'COMPLETE'
+          AND ${intentNotEmpty}
+          ${dateClause}
+        GROUP BY 1
+        ORDER BY started DESC
+      `;
+    }
+
+    const out = rows.map((r) => {
+      const started = Number(r.started);
+      const succeeded = Number(r.succeeded ?? 0);
+      let failed: number, incomplete: number;
+      if (config!.successMode === "objective") {
+        failed = Number(r.failed ?? 0);
+        incomplete = Math.max(0, started - succeeded - failed);
+      } else {
+        incomplete = Number(r.incomplete ?? 0);
+        failed = Math.max(0, started - succeeded - incomplete);
+      }
+      return {
+        intention: r.intention ?? "unknown",
+        started, succeeded, failed, incomplete,
+        successRate: started > 0 ? Math.round((succeeded / started) * 1000) / 10 : null,
+      };
+    });
+    res.json({ config, rows: out });
+  } catch (err) {
+    console.error("[Projects] outcome-funnel error:", (err as Error).message);
+    res.status(500).json({ error: "Failed to compute outcome funnel" });
+  }
+});
+
+// GET /:id/intention-node-funnel?from&to — Approach A: per-intention progression through
+// the agent's workflow nodes, with drop-off at each stage. Reuses the dashboard's run window
+// (COMPLETE, date-filtered, capped at 1000 for JSON path analysis).
+router.get("/:id/intention-node-funnel", async (req: AuthRequest, res) => {
+  try {
+    const project = await prisma.project.findUnique({
+      where: { id: req.params.id },
+      select: { userId: true, intentionConfig: true, flowDefinition: true, agentStructure: true },
+    });
+    if (!project) return res.status(404).json({ error: "Project not found" });
+    if (!await canAccess(project.userId, req)) return res.status(403).json({ error: "Access denied" });
+
+    // Canonical stage order + label→type from the flow graph (fall back to deriving from agentStructure).
+    const flowDef = project.flowDefinition
+      ?? ((project.agentStructure as any)?.workflow ? extractFlowDefinition((project.agentStructure as any).workflow) : null);
+    const canonical = canonicalStageOrder(flowDef);
+    const labelType = new Map<string, string>(canonical.map((s) => [s.label, s.type]));
+    const hasEndCall = canonical.some((s) => s.type === "end_call");
+
+    const { dateFrom, dateTo } = funnelDateRange(req);
+    const dateWhere = (dateFrom || dateTo) ? {
+      OR: [
+        { callDate: { ...(dateFrom ? { gte: dateFrom } : {}), ...(dateTo ? { lte: dateTo } : {}) } },
+        { callDate: null, createdAt: { ...(dateFrom ? { gte: dateFrom } : {}), ...(dateTo ? { lte: dateTo } : {}) } },
+      ],
+    } : {};
+    const RUN_CAP = 1000;
+    const runs = await prisma.run.findMany({
+      where: { projectId: req.params.id, status: "COMPLETE", ...dateWhere },
+      orderBy: { callDate: "desc" }, // most recent N when capped — matches the UI's wording
+      take: RUN_CAP,
+      select: {
+        outcomeResult: true,
+        evalResults: {
+          where: { criterion: { type: "LAYERED_EVALUATION" } },
+          select: { detail: true },
+        },
+      },
+    });
+
+    let config = configFromQuery(req) ?? normalizeFunnelConfig(project.intentionConfig);
+    if (!config) config = defaultFunnelConfig(runs.map((r) => r.outcomeResult as any).filter((o) => o && typeof o === "object"));
+    const intentField = config.intentField;
+    if (!intentField) {
+      return res.json({ intentField: null, intentions: [], capped: runs.length >= RUN_CAP, runWindow: runs.length, note: "No intention field detected." });
+    }
+
+    interface Bucket {
+      total: number; completed: number;
+      reached: Record<string, number>; stuck: Record<string, number>; hallucination: Record<string, number>;
+    }
+    const intentions: Record<string, Bucket> = {};
+    const minIndex = new Map<string, number>(); // earliest observed position per node label → stage order
+    let anyEndCallVisited = false;              // did any run actually reach a label typed end_call?
+
+    for (const run of runs) {
+      const or = run.outcomeResult as any;
+      const intentRaw = or && typeof or === "object" ? or[intentField] : null;
+      const intent = (intentRaw == null ? "" : String(intentRaw)).trim().toLowerCase();
+      if (!intent) continue;
+      const layered = run.evalResults[0];
+      if (!layered?.detail) continue;
+      let detail: any;
+      try { detail = typeof layered.detail === "string" ? JSON.parse(layered.detail) : layered.detail; } catch { continue; }
+      if (!detail || typeof detail !== "object") continue;
+
+      const seq: string[] = Array.isArray(detail?.navigation?.nodeSequence)
+        ? detail.navigation.nodeSequence.map((s: any) => String(s))
+        : Array.isArray(detail?.perNode)
+        ? detail.perNode.map((n: any) => n?.nodeLabel || n?.label).filter(Boolean).map((s: any) => String(s))
+        : [];
+      if (seq.length === 0) continue;
+
+      const bucket = (intentions[intent] ??= { total: 0, completed: 0, reached: {}, stuck: {}, hallucination: {} });
+      bucket.total++;
+
+      const visited = new Set<string>();
+      seq.forEach((label, idx) => {
+        visited.add(label);
+        if (!minIndex.has(label) || idx < (minIndex.get(label) as number)) minIndex.set(label, idx);
+      });
+      for (const label of visited) bucket.reached[label] = (bucket.reached[label] || 0) + 1;
+
+      // Completed = reached an end_call node (only counts when the eval's node labels
+      // actually align with the graph's typed labels — see anyEndCallVisited fallback below).
+      const reachedEnd = hasEndCall && [...visited].some((l) => labelType.get(l) === "end_call");
+      if (reachedEnd) { bucket.completed++; anyEndCallVisited = true; }
+
+      if (Array.isArray(detail.perNode)) {
+        for (const n of detail.perNode) {
+          const label = n?.nodeLabel || n?.label;
+          if (!label) continue;
+          if (n?.stuck?.detected === true) bucket.stuck[label] = (bucket.stuck[label] || 0) + 1;
+          if (n?.hallucination?.detected === true) bucket.hallucination[label] = (bucket.hallucination[label] || 0) + 1;
+        }
+      }
+    }
+
+    // Stage order is taken from the OBSERVED call paths (earliest position a label was
+    // seen), not the flow graph: in practice the evaluator emits human node labels while
+    // the graph stores raw node IDs, so the two rarely align. The graph is used only as a
+    // best-effort source of node type. Only stages that ≥1 run actually reached are shown.
+    const order = [...minIndex.entries()]
+      .sort((a, b) => a[1] - b[1])
+      .map(([label]) => ({ label, type: labelType.get(label) || "unknown" }));
+    // If the graph's end_call label never matched a visited label, completion can't be
+    // derived from it — fall back to "reached the final observed stage".
+    const useEndCall = hasEndCall && anyEndCallVisited;
+
+    const intentionsOut = Object.entries(intentions)
+      .map(([intention, b]) => {
+        const stages = order
+          .filter((s) => (b.reached[s.label] || 0) > 0)
+          .map((s) => ({
+            nodeLabel: s.label,
+            nodeType: s.type,
+            reached: b.reached[s.label] || 0,
+            stuckCount: b.stuck[s.label] || 0,
+            hallucinationCount: b.hallucination[s.label] || 0,
+          }));
+        // Drop-off between consecutive funnel stages (clamped at 0 for branchy paths).
+        for (let i = 0; i < stages.length; i++) {
+          const next = stages[i + 1]?.reached ?? stages[i].reached;
+          const dropped = Math.max(0, stages[i].reached - next);
+          (stages[i] as any).droppedAfter = i < stages.length - 1 ? dropped : 0;
+          (stages[i] as any).dropPct = stages[i].reached > 0 && i < stages.length - 1
+            ? Math.round((dropped / stages[i].reached) * 1000) / 10 : 0;
+        }
+        const completed = useEndCall ? b.completed : (stages.length ? stages[stages.length - 1].reached : 0);
+        return { intention, total: b.total, completed, stages };
+      })
+      .sort((a, b) => b.total - a.total);
+
+    res.json({
+      intentField,
+      // True only when graph labels actually align with the eval's node labels; the UI uses
+      // this to caption how stage order / completion were derived.
+      hasFlowGraph: useEndCall,
+      capped: runs.length >= RUN_CAP,
+      runWindow: runs.length,
+      intentions: intentionsOut,
+    });
+  } catch (err) {
+    console.error("[Projects] intention-node-funnel error:", (err as Error).message);
+    res.status(500).json({ error: "Failed to compute intention node funnel" });
+  }
+});
+
+// GET /:id/outcomes.csv?from&to — full server-side CSV export of ALL complete runs in range
+// (every outcomeResult column + score/outcome/objective). Not capped, unlike the client export.
+router.get("/:id/outcomes.csv", async (req: AuthRequest, res) => {
+  try {
+    const project = await prisma.project.findUnique({ where: { id: req.params.id }, select: { userId: true, name: true } });
+    if (!project) return res.status(404).json({ error: "Project not found" });
+    if (!await canAccess(project.userId, req)) return res.status(403).json({ error: "Access denied" });
+
+    const { dateClause } = funnelDateRange(req);
+
+    // Union of outcomeResult keys across the range → dynamic columns.
+    const keyRows = await prisma.$queryRaw<Array<{ k: string }>>`
+      SELECT DISTINCT k
+      FROM "Run" r, LATERAL jsonb_object_keys(r."outcomeResult") AS k
+      WHERE r."projectId" = ${req.params.id} AND r.status = 'COMPLETE'
+        AND jsonb_typeof(r."outcomeResult") = 'object'
+        ${dateClause}
+      ORDER BY k
+    `;
+    const dynKeys = keyRows.map((r) => r.k);
+
+    const rows = await prisma.$queryRaw<Array<{
+      conv_id: string | null; dt: Date | null; call_outcome: string | null;
+      score: number | null; duration: number | null; objective: string | null; outcome_result: any;
+    }>>`
+      SELECT
+        r."conversationId" AS conv_id,
+        COALESCE(r."callDate", r."createdAt") AS dt,
+        r."callOutcome" AS call_outcome,
+        r."overallScore" AS score,
+        r."callDuration" AS duration,
+        oa.verdict AS objective,
+        r."outcomeResult" AS outcome_result
+      FROM "Run" r
+      LEFT JOIN LATERAL (
+        SELECT lower(er.detail::jsonb ->> 'objectiveAchieved') AS verdict
+        FROM "EvalResult" er
+        JOIN "Criterion" c ON c.id = er."criterionId" AND c.type = 'LAYERED_EVALUATION'
+        WHERE er."runId" = r.id
+          AND er.detail IS NOT NULL
+          AND er.detail ~ '^\\s*\\{'
+          AND jsonb_typeof(er.detail::jsonb) = 'object'
+        LIMIT 1
+      ) oa ON true
+      WHERE r."projectId" = ${req.params.id} AND r.status = 'COMPLETE'
+        ${dateClause}
+      ORDER BY COALESCE(r."callDate", r."createdAt") DESC
+    `;
+
+    const objectiveLabel = (v: string | null): string =>
+      v == null ? "" : ["true", "1", "yes"].includes(v) ? "met" : ["false", "0", "no"].includes(v) ? "not met" : "n/a";
+    const csvEscape = (v: string) => (/[",\n\r]/.test(v) ? `"${v.replace(/"/g, '""')}"` : v);
+
+    const headers = ["Conv ID", "Date", "Call Outcome", "Score", "Duration (s)", "Objective", ...dynKeys];
+    const lines = [headers.map(csvEscape).join(",")];
+    for (const r of rows) {
+      const or = (r.outcome_result && typeof r.outcome_result === "object") ? r.outcome_result : {};
+      const base = [
+        r.conv_id || "",
+        r.dt ? new Date(r.dt).toISOString() : "",
+        r.call_outcome || "",
+        r.score != null ? Math.round(r.score * 100) + "%" : "",
+        r.duration != null ? String(r.duration) : "",
+        objectiveLabel(r.objective),
+      ];
+      const dyn = dynKeys.map((k) => {
+        const val = or[k];
+        if (val == null) return "";
+        return typeof val === "object" ? JSON.stringify(val) : String(val);
+      });
+      lines.push([...base, ...dyn].map(String).map(csvEscape).join(","));
+    }
+
+    const safeName = (project.name || "project").replace(/[^a-zA-Z0-9]/g, "_");
+    res.setHeader("Content-Type", "text/csv");
+    res.setHeader("Content-Disposition", `attachment; filename="${safeName}_outcomes.csv"`);
+    res.send(lines.join("\n"));
+  } catch (err) {
+    console.error("[Projects] outcomes.csv error:", (err as Error).message);
+    res.status(500).json({ error: "Failed to export outcomes CSV" });
   }
 });
 
@@ -1491,7 +2072,7 @@ router.post("/", async (req: AuthRequest, res) => {
 
 // Update project
 router.patch("/:id", async (req: AuthRequest, res) => {
-  const { name, description, agentStructure } = req.body;
+  const { name, description, agentStructure, evaluationEnabled } = req.body;
 
   try {
     const existing = await prisma.project.findUnique({ where: { id: req.params.id }, select: { userId: true } });
@@ -1501,6 +2082,7 @@ router.patch("/:id", async (req: AuthRequest, res) => {
     const data: any = {};
     if (name !== undefined) data.name = name;
     if (description !== undefined) data.description = description;
+    if (typeof evaluationEnabled === "boolean") data.evaluationEnabled = evaluationEnabled;
     if (agentStructure !== undefined) {
       data.agentStructure = agentStructure;
       data.flowDefinition = agentStructure?.workflow
