@@ -94,6 +94,27 @@ async function recoverInlineRuns() {
  * false safety in multi-process deployments.
  */
 export async function runEvaluationCheck(runId: string) {
+  // Project-level AI evaluation switch. When off, ingestion still stores the run + its
+  // webhook data, but we skip evaluation entirely: mark the run COMPLETE (no eval results)
+  // instead of queuing/running. This is the single chokepoint for webhook, history, live,
+  // and re-evaluate paths, so the toggle holds everywhere.
+  const gate = await prisma.run.findUnique({
+    where: { id: runId },
+    select: { status: true, project: { select: { evaluationEnabled: true } } },
+  });
+  if (!gate) return;
+  if (gate.project?.evaluationEnabled === false) {
+    // Mark ingested runs COMPLETE (no eval), but never disturb a run that's done, awaiting
+    // human review, actively evaluating, or a live call in progress — avoids racing an
+    // in-flight evaluation to COMPLETE.
+    const PROTECTED = ["COMPLETE", "PENDING_REVIEW", "EVALUATING", "RUNNING"];
+    if (!PROTECTED.includes(gate.status)) {
+      await prisma.run.update({ where: { id: runId }, data: { status: "COMPLETE" } });
+    }
+    console.log(`[Eval] AI evaluation disabled for run ${runId}'s project — stored without evaluation`);
+    return;
+  }
+
   if (useQueue) {
     try {
       await queueModule.queueEvaluationCheck(runId);

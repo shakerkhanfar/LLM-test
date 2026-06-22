@@ -171,7 +171,11 @@ export async function getKpisForRange(spec: WindowSpec): Promise<KpiSnapshot> {
         WHERE er.detail IS NOT NULL
           AND er.detail ~ '^\\s*\\{'
           AND jsonb_typeof(er.detail::jsonb) = 'object'
-          AND er.detail::jsonb ? 'objectiveAchieved'
+          -- ->> returns SQL NULL when the JSON value is null OR the key is absent,
+          -- so this excludes indeterminate (null) verdicts from the denominator,
+          -- matching the dashboard aggregation (projects.ts) which routes null to
+          -- indeterminate rather than counting it as not-achieved.
+          AND er.detail::jsonb->>'objectiveAchieved' IS NOT NULL
       ) AS obj_total,
       COUNT(*) FILTER (
         WHERE er.detail IS NOT NULL
