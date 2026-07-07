@@ -7,9 +7,9 @@ import T from "../theme";
 /**
  * ChatTester — drive a Hamsa agent over the SDK's chat-only mode (no mic, no
  * phone call), then run the produced conversation through the same evaluate
- * pipeline as a live call. This is the P0 spike of the scenario testing harness:
- * one text conversation → an evaluated Run (source = CHAT_TEST) inside the
- * dashboard, reusing fetch-logs + attach-transcript + evaluate end to end.
+ * pipeline as a live call. P0 spike of the scenario testing harness: one text
+ * conversation → an evaluated Run (source = CHAT_TEST) inside the dashboard,
+ * reusing fetch-logs + attach-transcript + evaluate end to end.
  *
  * Transport parity: chat-only sessions exercise the same flow graph and tools as
  * a voice call, so flow/tool/hallucination findings surface here too — over text,
@@ -40,6 +40,10 @@ type Phase =
   | "complete"
   | "error";
 
+const CONNECT_TIMEOUT_MS = 45_000;
+const EVAL_POLL_INTERVAL_MS = 2_000;
+const EVAL_POLL_MAX = 150; // ~5 min — matches the server-side evaluation timeout
+
 // Transcript shape the backend evaluators expect (same as the webhook payload).
 function toTranscript(messages: ChatMessage[]): Array<Record<string, string>> {
   return messages.map((m): Record<string, string> =>
@@ -50,12 +54,12 @@ function toTranscript(messages: ChatMessage[]): Array<Record<string, string>> {
 export default function ChatTester({ runId, agentId, apiKey, onClose, onFinished }: ChatTesterProps) {
   const agentRef = useRef<HamsaVoiceAgent | null>(null);
   const unmountedRef = useRef(false);
-  const startedRef = useRef(false);
+  const finalizingRef = useRef(false); // guards against double-submit (user End + agent callEnded)
   const seqRef = useRef(0);
   const scrollEndRef = useRef<HTMLDivElement>(null);
   const timeoutsRef = useRef<ReturnType<typeof setTimeout>[]>([]);
-  // Keep a live ref of messages so the end-of-chat handler reads the latest
-  // transcript without depending on a stale closure.
+  // Live mirror of messages so the finalize handler reads the latest transcript
+  // without a stale closure.
   const messagesRef = useRef<ChatMessage[]>([]);
 
   const [phase, setPhase] = useState<Phase>("connecting");
@@ -66,6 +70,7 @@ export default function ChatTester({ runId, agentId, apiKey, onClose, onFinished
   const [error, setError] = useState("");
   const [evalScore, setEvalScore] = useState<number | null>(null);
   const [evalResults, setEvalResults] = useState<any[]>([]);
+  const [evalTimedOut, setEvalTimedOut] = useState(false);
 
   const safeTimeout = useCallback((fn: () => void, ms: number) => {
     const h = setTimeout(() => { if (!unmountedRef.current) fn(); }, ms);
@@ -91,110 +96,11 @@ export default function ChatTester({ runId, agentId, apiKey, onClose, onFinished
     });
   }, []);
 
-  // ── Start the chat-only session on mount ──────────────────────────────
-  useEffect(() => {
-    unmountedRef.current = false;
-    if (startedRef.current) return;
-    startedRef.current = true;
-
-    const agent = new HamsaVoiceAgent(apiKey);
-    agentRef.current = agent;
-
-    agent.on("callStarted", ({ jobId }) => {
-      if (unmountedRef.current) return;
-      setCallId(jobId);
-      setPhase("chatting");
-      updateRun(runId, { hamsaCallId: jobId, status: "RUNNING" }).catch(() => {});
-    });
-
-    agent.on("agentStateChanged", (state) => {
-      if (!unmountedRef.current) setAgentState(String(state));
-    });
-
-    // Deterministic chat event. We render agent turns from here; user turns are
-    // added optimistically on send (below) so a bubble shows even if the SDK
-    // does not echo the caller's own message back through this event.
-    agent.on("chatMessageReceived", (msg: ReceivedMessage) => {
-      if (unmountedRef.current) return;
-      if (msg.role === "agent") upsertMessage(msg.id, "agent", msg.text);
-    });
-
-    agent.on("callEnded", () => {
-      if (unmountedRef.current) return;
-      // Only auto-finalize if the user hasn't already triggered ending.
-      setPhase((p) => (p === "chatting" || p === "connecting" ? "ending" : p));
-    });
-
-    agent.on("error", (e: any) => {
-      if (unmountedRef.current) return;
-      setError(typeof e === "string" ? e : e?.message || "Chat session error");
-      setPhase("error");
-    });
-
-    agent.start({ agentId, isChatOnly: true }).catch((err) => {
-      if (unmountedRef.current) return;
-      setError((err as Error).message);
-      setPhase("error");
-    });
-
-    return () => {
-      unmountedRef.current = true;
-      timeoutsRef.current.forEach(clearTimeout);
-      try { agentRef.current?.end(); } catch { /* already ended */ }
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  async function send() {
-    const text = input.trim();
-    if (!text || phase !== "chatting") return;
-    setInput("");
-    // Optimistic user bubble with a synthetic id (SDK ids are for agent turns).
-    upsertMessage(`local-user-${seqRef.current}`, "user", text);
-    try {
-      await agentRef.current?.sendMessage(text);
-    } catch (err) {
-      setError((err as Error).message);
-      setPhase("error");
-    }
-  }
-
-  // ── End the chat and run it through the evaluate pipeline ──────────────
-  async function endAndEvaluate() {
-    if (phase === "ending" || phase === "fetching_data" || phase === "evaluating") return;
-    setPhase("ending");
-    try { agentRef.current?.end(); } catch { /* ignore */ }
-
-    const transcript = toTranscript(messagesRef.current);
-    if (transcript.length === 0) {
-      setError("No conversation to evaluate — send at least one message first.");
-      setPhase("error");
-      return;
-    }
-
-    await updateRun(runId, { status: "AWAITING_DATA" }).catch(() => {});
-    setPhase("fetching_data");
-
-    // Best-effort: pull the node/tool trace via the jobId. May be empty for chat
-    // sessions — evaluation still proceeds on the transcript.
-    try { await fetchLogs(runId); } catch { /* trace optional */ }
-
-    setPhase("evaluating");
-    try {
-      // attachTranscript stores the transcript AND triggers the single evaluation
-      // (call log already attached above, so the evaluator sees both).
-      await attachTranscript(runId, transcript, { source: "CHAT_TEST" });
-    } catch (err) {
-      setError(`Failed to submit transcript: ${(err as Error).message}`);
-      setPhase("error");
-      return;
-    }
-    pollForComplete();
-  }
-
-  function pollForComplete(attempt = 0) {
+  const pollForComplete = useCallback((attempt = 0) => {
     if (unmountedRef.current) return;
-    if (attempt >= 40) { // ~80s
+    if (attempt >= EVAL_POLL_MAX) {
+      // Don't claim "complete" with a null score — the eval is still running server-side.
+      setEvalTimedOut(true);
       setPhase("complete");
       onFinished?.();
       return;
@@ -217,7 +123,148 @@ export default function ChatTester({ runId, agentId, apiKey, onClose, onFinished
       } catch {
         pollForComplete(attempt + 1);
       }
-    }, 2000);
+    }, EVAL_POLL_INTERVAL_MS);
+    // safeTimeout / getRun / onFinished are stable enough; runId is fixed per mount.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [runId]);
+
+  // End the session (if not already) and run the conversation through the
+  // evaluate pipeline. Shared by the user's "End & Evaluate" and by an
+  // agent-initiated hangup (callEnded) so neither path strands the run.
+  const finalize = useCallback(async () => {
+    if (finalizingRef.current) return;
+    finalizingRef.current = true;
+
+    setPhase("ending");
+    try { agentRef.current?.end(); } catch { /* already ended */ }
+
+    const transcript = toTranscript(messagesRef.current);
+    if (transcript.length === 0) {
+      setError("No conversation was captured — nothing to evaluate.");
+      setPhase("error");
+      return;
+    }
+
+    await updateRun(runId, { status: "AWAITING_DATA" }).catch(() => {});
+    if (unmountedRef.current) return;
+    setPhase("fetching_data");
+
+    // Best-effort: pull the node/tool trace via the jobId. May be empty for chat
+    // sessions or absent if no jobId was captured — evaluation still proceeds on
+    // the transcript.
+    try { await fetchLogs(runId); } catch { /* trace optional */ }
+    if (unmountedRef.current) return;
+
+    setPhase("evaluating");
+    try {
+      // attachTranscript stores the transcript AND triggers the single evaluation
+      // (call log already attached above, so the evaluator sees both).
+      await attachTranscript(runId, transcript, { source: "CHAT_TEST" });
+    } catch (err) {
+      if (unmountedRef.current) return;
+      setError(`Failed to submit transcript: ${(err as Error).message}`);
+      setPhase("error");
+      return;
+    }
+    pollForComplete();
+  }, [runId, pollForComplete]);
+
+  // ── Start the chat-only session on mount ──────────────────────────────
+  // Created fresh on every effect run so React StrictMode's mount→unmount→mount
+  // in dev ends the first throwaway session and starts a live one, rather than
+  // leaving a dead agent behind. Per-effect `disposed` flag ignores events from
+  // a session that has already been torn down.
+  useEffect(() => {
+    unmountedRef.current = false;
+    let disposed = false;
+
+    const agent = new HamsaVoiceAgent(apiKey);
+    agentRef.current = agent;
+
+    agent.on("callStarted", ({ jobId }) => {
+      if (disposed) return;
+      setPhase((p) => (p === "connecting" ? "chatting" : p));
+      if (jobId) {
+        setCallId(jobId);
+        // Persist the jobId so the trace can be fetched and the run is
+        // rehydratable later. Skip empty ids to avoid a "" hamsaCallId.
+        updateRun(runId, { hamsaCallId: jobId, status: "RUNNING" }).catch(() => {});
+      }
+    });
+
+    agent.on("agentStateChanged", (state) => {
+      if (!disposed) setAgentState(String(state));
+    });
+
+    // Deterministic chat event. Render agent turns from here; user turns are
+    // added optimistically on send (below). Also flip out of "connecting" here
+    // in case callStarted did not fire first.
+    agent.on("chatMessageReceived", (msg: ReceivedMessage) => {
+      if (disposed) return;
+      setPhase((p) => (p === "connecting" ? "chatting" : p));
+      if (msg.role === "agent") upsertMessage(msg.id, "agent", msg.text);
+    });
+
+    // Agent-initiated end (e.g. it said goodbye and hung up): finalize so the
+    // conversation still gets evaluated instead of stalling on "ending".
+    agent.on("callEnded", () => {
+      if (disposed) return;
+      if (!finalizingRef.current && messagesRef.current.length > 0) {
+        void finalize();
+      } else if (!finalizingRef.current) {
+        setPhase("error");
+        setError("The session ended before any messages were exchanged.");
+      }
+    });
+
+    agent.on("error", (e: any) => {
+      if (disposed) return;
+      setError(typeof e === "string" ? e : e?.message || "Chat session error");
+      setPhase("error");
+    });
+
+    agent.start({ agentId, isChatOnly: true }).catch((err) => {
+      if (disposed) return;
+      setError((err as Error).message);
+      setPhase("error");
+    });
+
+    // Watchdog: if the session never signals it started, surface an error
+    // instead of hanging on "connecting" forever.
+    const watchdog = setTimeout(() => {
+      if (disposed) return;
+      setPhase((p) => {
+        if (p === "connecting") {
+          setError("Could not start the chat session (no response). Check the agent ID, API key, and region.");
+          return "error";
+        }
+        return p;
+      });
+    }, CONNECT_TIMEOUT_MS);
+
+    return () => {
+      disposed = true;
+      unmountedRef.current = true;
+      clearTimeout(watchdog);
+      timeoutsRef.current.forEach(clearTimeout);
+      timeoutsRef.current = [];
+      try { agent.end(); } catch { /* already ended */ }
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  async function send() {
+    const text = input.trim();
+    if (!text || phase !== "chatting") return;
+    setInput("");
+    // Optimistic user bubble with a synthetic id (SDK ids are for agent turns).
+    upsertMessage(`local-user-${seqRef.current}`, "user", text);
+    try {
+      await agentRef.current?.sendMessage(text);
+    } catch (err) {
+      setError((err as Error).message);
+      setPhase("error");
+    }
   }
 
   const phaseLabel: Record<Phase, string> = {
@@ -226,7 +273,7 @@ export default function ChatTester({ runId, agentId, apiKey, onClose, onFinished
     ending: "Ending…",
     fetching_data: "Fetching trace…",
     evaluating: "Evaluating…",
-    complete: "Evaluation complete",
+    complete: evalTimedOut ? "Still evaluating…" : "Evaluation complete",
     error: "Error",
   };
 
@@ -277,16 +324,20 @@ export default function ChatTester({ runId, agentId, apiKey, onClose, onFinished
         {phase === "complete" && (
           <div style={{
             padding: "14px 20px", borderBottom: `1px solid ${T.border}`,
-            background: evalScore == null ? T.card : evalScore >= 0.8 ? T.successBg : evalScore >= 0.5 ? T.warningBg : T.errorBg,
+            background: evalTimedOut || evalScore == null ? T.card : evalScore >= 0.8 ? T.successBg : evalScore >= 0.5 ? T.warningBg : T.errorBg,
             display: "flex", alignItems: "center", justifyContent: "space-between",
           }}>
             <div>
-              <div style={{ fontSize: 13, fontWeight: 600 }}>Evaluation complete</div>
+              <div style={{ fontSize: 13, fontWeight: 600 }}>
+                {evalTimedOut ? "Evaluation still running" : "Evaluation complete"}
+              </div>
               <div style={{ fontSize: 11, color: T.textSecondary }}>
-                {evalResults.length} criteria evaluated{callId ? ` · call ${callId.slice(0, 8)}…` : ""}
+                {evalTimedOut
+                  ? "Taking longer than expected — it will finish in the background; reopen the run to see results."
+                  : `${evalResults.length} criteria evaluated${callId ? ` · call ${callId.slice(0, 8)}…` : ""}`}
               </div>
             </div>
-            {evalScore != null && (
+            {!evalTimedOut && evalScore != null && (
               <div style={{ fontSize: 24, fontWeight: 700, color: evalScore >= 0.8 ? "#22c55e" : evalScore >= 0.5 ? "#f59e0b" : "#ef4444" }}>
                 {(evalScore * 100).toFixed(0)}%
               </div>
@@ -337,6 +388,7 @@ export default function ChatTester({ runId, agentId, apiKey, onClose, onFinished
                 onKeyDown={(e) => { if (e.key === "Enter") send(); }}
                 placeholder="Type the caller's message…"
                 dir="auto"
+                autoFocus
                 style={{
                   flex: 1, padding: "10px 12px", borderRadius: 8, fontSize: 13,
                   background: T.cardAlt, border: `1px solid ${T.border}`, color: T.text,
@@ -346,7 +398,7 @@ export default function ChatTester({ runId, agentId, apiKey, onClose, onFinished
                 background: input.trim() ? T.primary : "#374151", color: "#fff",
                 padding: "10px 18px", borderRadius: 8, border: "none", cursor: input.trim() ? "pointer" : "default", fontSize: 13, fontWeight: 600,
               }}>Send</button>
-              <button onClick={endAndEvaluate} disabled={messages.length === 0} style={{
+              <button onClick={() => finalize()} disabled={messages.length === 0} style={{
                 background: "#ef4444", color: "#fff", padding: "10px 16px", borderRadius: 8, border: "none",
                 cursor: messages.length ? "pointer" : "default", fontSize: 13, fontWeight: 600, opacity: messages.length ? 1 : 0.5,
               }}>End &amp; Evaluate</button>
@@ -361,7 +413,7 @@ export default function ChatTester({ runId, agentId, apiKey, onClose, onFinished
           {(phase === "complete" || phase === "error") && (
             <button onClick={onClose} style={{
               background: T.primary, color: "#fff", padding: "10px 24px", borderRadius: 8, border: "none", cursor: "pointer", fontSize: 13, fontWeight: 600, marginLeft: "auto",
-            }}>{phase === "complete" ? "View Results" : "Close"}</button>
+            }}>{phase === "complete" && !evalTimedOut ? "View Results" : "Close"}</button>
           )}
         </div>
       </div>
