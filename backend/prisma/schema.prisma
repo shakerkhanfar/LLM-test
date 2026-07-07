@@ -180,6 +180,7 @@ enum RunSource {
   LIVE
   HISTORY
   WEBHOOK
+  CHAT_TEST
 }
 
 enum RunStatus {

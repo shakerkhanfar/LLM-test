@@ -257,10 +257,18 @@ router.get("/:id/recording-stream", async (req: AuthRequest, res) => {
   }
 });
 
+// Sources a client may set when creating a run directly. LIVE = SDK voice call,
+// CHAT_TEST = SDK chat-only scenario test. HISTORY/WEBHOOK runs are created by
+// their own ingestion paths, not this endpoint.
+const CLIENT_SETTABLE_SOURCES = new Set<string>(["LIVE", "CHAT_TEST"]);
+
 // Create a new run
 router.post("/", async (req: AuthRequest, res) => {
-  const { projectId, modelUsed } = req.body;
+  const { projectId, modelUsed, source } = req.body;
   if (!projectId) return res.status(400).json({ error: "projectId is required" });
+  if (source !== undefined && !CLIENT_SETTABLE_SOURCES.has(source)) {
+    return res.status(400).json({ error: `Invalid source: ${source}` });
+  }
 
   try {
     const project = await assertProjectAccess(projectId, req, res);
@@ -270,6 +278,8 @@ router.post("/", async (req: AuthRequest, res) => {
       data: {
         projectId,
         modelUsed: modelUsed || null,
+        // Omit when unset so the schema default (LIVE) applies.
+        source: source ?? undefined,
         status: "PENDING",
         startedAt: new Date(),
       },

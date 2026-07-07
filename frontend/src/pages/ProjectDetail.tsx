@@ -9,6 +9,7 @@ import {
   searchToolResults, type ToolSearchResult,
 } from "../api/client";
 import CallAgent from "../components/CallAgent";
+import ChatTester from "../components/ChatTester";
 import ProjectDashboard from "../components/ProjectDashboard";
 import McpAccessPanel from "../components/McpAccessPanel";
 import ReviewQueueTab from "../components/ReviewQueueTab";
@@ -103,6 +104,7 @@ export default function ProjectDetail() {
   const [modelInput, setModelInput] = useState("openai/gpt-4.1");
   const [showUpload, setShowUpload] = useState<string | null>(null);
   const [callingRunId, setCallingRunId] = useState<string | null>(null);
+  const [chatTestRunId, setChatTestRunId] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<"dashboard" | "evaluation" | "outcomes" | "review" | "issues" | "docs">("dashboard");
   const [showMcpPanel, setShowMcpPanel] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
@@ -257,6 +259,18 @@ export default function ProjectDetail() {
     try { await switchModel(run.id); } catch { /* allow manual call */ }
     load();
     setCallingRunId(run.id);
+  }
+
+  // Drive the agent over chat (no phone call), then evaluate the conversation.
+  // Unlike a live run we do NOT switch the agent model — the agent is tested as-is.
+  async function handleChatTest() {
+    const run = await createRun({
+      projectId: project.id,
+      modelUsed: modelInput || "chat-test",
+      source: "CHAT_TEST",
+    });
+    load();
+    setChatTestRunId(run.id);
   }
 
   async function handleHistoryImport() {
@@ -658,6 +672,15 @@ export default function ProjectDetail() {
         {!isHistory && !isWebhook && (
           <button onClick={() => setShowNewRun(true)} style={btnStyle}>
             + New Run
+          </button>
+        )}
+        {project.hamsaApiKey && (
+          <button
+            onClick={handleChatTest}
+            style={btnStyle}
+            title="Drive the agent over chat (no phone call) and evaluate the conversation"
+          >
+            💬 Chat Test
           </button>
         )}
         {/* Import History — not shown for WEBHOOK projects (they get data via webhook) */}
@@ -1650,6 +1673,17 @@ export default function ProjectDetail() {
           webhookUrl={`${window.location.origin}/api/webhooks/hamsa`}
           onCallEnded={() => { setTimeout(load, 2000); }}
           onClose={() => { setCallingRunId(null); load(); }}
+        />
+      )}
+
+      {/* Chat Tester dialog — drive the agent over chat, then evaluate */}
+      {chatTestRunId && project.hamsaApiKey && (
+        <ChatTester
+          runId={chatTestRunId}
+          agentId={project.agentId}
+          apiKey={project.hamsaApiKey}
+          onFinished={() => { setTimeout(load, 1500); }}
+          onClose={() => { setChatTestRunId(null); load(); }}
         />
       )}
 

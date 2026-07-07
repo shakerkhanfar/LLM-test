@@ -128,7 +128,7 @@ export function getRecordingUrl(runId: string) {
   return request<{ url: string }>(`/runs/${runId}/recording-url`);
 }
 
-export function createRun(data: { projectId: string; modelUsed: string }) {
+export function createRun(data: { projectId: string; modelUsed: string; source?: "LIVE" | "CHAT_TEST" }) {
   return request<any>("/runs", {
     method: "POST",
     body: JSON.stringify(data),
